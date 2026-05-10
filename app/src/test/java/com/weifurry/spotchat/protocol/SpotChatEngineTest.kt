@@ -4,6 +4,7 @@ import com.weifurry.spotchat.crypto.SpotChatCrypto
 import com.weifurry.spotchat.domain.SpotChatEngine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Test
 
 class SpotChatEngineTest {
@@ -19,6 +20,7 @@ class SpotChatEngineTest {
 
         assertEquals(trustedPhone.pairingCode, trustedWatch.pairingCode)
         assertNotEquals(trustedPhone.fingerprint, trustedWatch.fingerprint)
+        assertEquals(phoneHello.publicKey, trustedPhone.publicKey)
 
         val encrypted = watch.encryptTextForPeer(trustedPhone.fingerprint, "局域网可用")
         val decoded =
@@ -30,5 +32,15 @@ class SpotChatEngineTest {
 
         assertEquals("局域网可用", plain.text)
         assertEquals(watch.localFingerprint, plain.senderFingerprint)
+    }
+
+    @Test
+    fun ackPacketsCarryDeliveredMessageId() {
+        val watch = SpotChatEngine("手表", SpotChatCrypto.generateIdentity())
+
+        val ack = watch.ackPacket("message-42").ack
+
+        assertNotNull(ack)
+        assertEquals("message-42", ack?.messageId)
     }
 }

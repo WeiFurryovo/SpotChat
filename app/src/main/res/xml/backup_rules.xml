@@ -3,4 +3,7 @@
     <exclude
         domain="sharedpref"
         path="spotchat_identity.xml" />
+    <exclude
+        domain="sharedpref"
+        path="spotchat_trusted_peers.xml" />
 </full-backup-content>

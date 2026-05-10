@@ -2,6 +2,7 @@ package com.weifurry.spotchat.domain
 
 import com.weifurry.spotchat.crypto.EncryptedFrame
 import com.weifurry.spotchat.crypto.SpotChatCrypto
+import com.weifurry.spotchat.protocol.DeliveryAck
 import com.weifurry.spotchat.protocol.EncryptedChatMessage
 import com.weifurry.spotchat.protocol.PacketKind
 import com.weifurry.spotchat.protocol.PeerHello
@@ -14,6 +15,7 @@ import javax.crypto.SecretKey
 data class TrustedPeer(
     val deviceName: String,
     val fingerprint: String,
+    val publicKey: String,
     val pairingCode: String
 )
 
@@ -50,6 +52,7 @@ class SpotChatEngine(
         return TrustedPeer(
             deviceName = hello.deviceName,
             fingerprint = fingerprint,
+            publicKey = hello.publicKey,
             pairingCode =
                 SpotChatCrypto.pairingCode(
                     localPublicKey = localIdentity.public,
@@ -87,6 +90,19 @@ class SpotChatEngine(
                 )
         )
     }
+
+    fun ackPacket(
+        messageId: String,
+        receivedAtEpochMillis: Long = System.currentTimeMillis()
+    ): WirePacket =
+        WirePacket(
+            kind = PacketKind.ACK,
+            ack =
+                DeliveryAck(
+                    messageId = messageId,
+                    receivedAtEpochMillis = receivedAtEpochMillis
+                )
+        )
 
     fun decryptText(message: EncryptedChatMessage): PlainChatMessage {
         val sessionKey =
