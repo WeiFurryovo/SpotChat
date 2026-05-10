@@ -591,10 +591,21 @@ private fun WatchChatSurface(
                             )
                     )
                 )
-                .padding(horizontal = 18.dp, vertical = 16.dp)
+                .padding(
+                    start = 20.dp,
+                    top = 22.dp,
+                    end = 20.dp,
+                    bottom = 28.dp
+                )
     ) {
-        val compact = maxWidth < 220.dp
-        val quickReplyHeight = if (compact) 30.dp else 34.dp
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val quickReplyHeight = if (compact) 28.dp else 32.dp
+        val visibleMessageCount =
+            when {
+                pendingPeer != null -> 1
+                compact -> 1
+                else -> 2
+            }
 
         Column(
             modifier = Modifier.fillMaxSize(),
@@ -606,22 +617,24 @@ private fun WatchChatSurface(
                 compact = compact
             )
 
-            Spacer(modifier = Modifier.height(if (compact) 6.dp else 8.dp))
+            Spacer(modifier = Modifier.height(if (compact) 4.dp else 6.dp))
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth(if (compact) 0.82f else 0.76f),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 TransportToggle(
                     mode = TransportMode.Lan,
                     selected = transportMode == TransportMode.Lan,
+                    compact = compact,
                     onClick = { onSelectMode(TransportMode.Lan) }
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(if (compact) 6.dp else 8.dp))
                 TransportToggle(
                     mode = TransportMode.Bluetooth,
                     selected = transportMode == TransportMode.Bluetooth,
+                    compact = compact,
                     onClick = { onSelectMode(TransportMode.Bluetooth) }
                 )
             }
@@ -629,7 +642,8 @@ private fun WatchChatSurface(
             FingerprintPill(
                 fingerprint = fingerprint,
                 pairingCode = pairingCode,
-                trustedPeerCount = trustedPeerCount
+                trustedPeerCount = trustedPeerCount,
+                compact = compact
             )
 
             if (pendingPeer != null) {
@@ -644,21 +658,24 @@ private fun WatchChatSurface(
                 modifier =
                     Modifier
                         .weight(1f)
-                        .fillMaxWidth()
-                        .heightIn(min = 62.dp)
+                        .fillMaxWidth(if (compact) 0.84f else 0.78f)
+                        .heightIn(min = if (compact) 42.dp else 56.dp)
                         .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp)
             ) {
-                messages.takeLast(5).forEach { message ->
-                    MessageBubble(message = message)
+                messages.takeLast(visibleMessageCount).forEach { message ->
+                    MessageBubble(
+                        message = message,
+                        compact = compact
+                    )
                 }
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(if (compact) 5.dp else 6.dp))
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth(if (compact) 0.78f else 0.72f),
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 QuickReplyChip(
@@ -689,7 +706,7 @@ private fun StatusHeader(
     compact: Boolean
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(0.82f),
+        modifier = Modifier.fillMaxWidth(if (compact) 0.78f else 0.82f),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -705,22 +722,22 @@ private fun StatusHeader(
                 imageVector = Icons.Filled.Lock,
                 contentDescription = "端到端加密",
                 tint = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.size(if (compact) 15.dp else 17.dp)
+                modifier = Modifier.size(if (compact) 14.dp else 17.dp)
             )
         }
-        Spacer(modifier = Modifier.width(7.dp))
+        Spacer(modifier = Modifier.width(if (compact) 6.dp else 7.dp))
         Column(horizontalAlignment = Alignment.Start) {
             Text(
                 text = "SpotChat",
                 color = MaterialTheme.colorScheme.onBackground,
-                fontSize = if (compact) 16.sp else 18.sp,
+                fontSize = if (compact) 15.sp else 18.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1
             )
             Text(
                 text = "${transportMode.label} · $trustState",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = if (compact) 10.sp else 11.sp,
+                fontSize = if (compact) 9.sp else 11.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -732,6 +749,7 @@ private fun StatusHeader(
 private fun TransportToggle(
     mode: TransportMode,
     selected: Boolean,
+    compact: Boolean,
     onClick: () -> Unit
 ) {
     val background =
@@ -750,11 +768,11 @@ private fun TransportToggle(
     Row(
         modifier =
             Modifier
-                .height(28.dp)
-                .clip(RoundedCornerShape(14.dp))
+                .height(if (compact) 26.dp else 28.dp)
+                .clip(RoundedCornerShape(if (compact) 13.dp else 14.dp))
                 .background(background)
                 .clickable(onClick = onClick)
-                .padding(horizontal = 10.dp),
+                .padding(horizontal = if (compact) 8.dp else 10.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -762,13 +780,13 @@ private fun TransportToggle(
             imageVector = mode.icon,
             contentDescription = mode.label,
             tint = foreground,
-            modifier = Modifier.size(14.dp)
+            modifier = Modifier.size(if (compact) 13.dp else 14.dp)
         )
-        Spacer(modifier = Modifier.width(4.dp))
+        Spacer(modifier = Modifier.width(if (compact) 3.dp else 4.dp))
         Text(
             text = mode.label,
             color = foreground,
-            fontSize = 11.sp,
+            fontSize = if (compact) 10.sp else 11.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1
         )
@@ -779,16 +797,17 @@ private fun TransportToggle(
 private fun FingerprintPill(
     fingerprint: String,
     pairingCode: String?,
-    trustedPeerCount: Int
+    trustedPeerCount: Int,
+    compact: Boolean
 ) {
     Row(
         modifier =
             Modifier
-                .padding(top = 7.dp, bottom = 6.dp)
-                .fillMaxWidth(0.88f)
-                .clip(RoundedCornerShape(13.dp))
+                .padding(top = if (compact) 5.dp else 7.dp, bottom = if (compact) 5.dp else 6.dp)
+                .fillMaxWidth(if (compact) 0.78f else 0.88f)
+                .clip(RoundedCornerShape(if (compact) 12.dp else 13.dp))
                 .background(Color(0x332DE6D1))
-                .padding(horizontal = 9.dp, vertical = 5.dp),
+                .padding(horizontal = if (compact) 8.dp else 9.dp, vertical = if (compact) 4.dp else 5.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -796,13 +815,13 @@ private fun FingerprintPill(
             imageVector = Icons.Filled.Key,
             contentDescription = "本机密钥指纹",
             tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(12.dp)
+            modifier = Modifier.size(if (compact) 10.dp else 12.dp)
         )
-        Spacer(modifier = Modifier.width(5.dp))
+        Spacer(modifier = Modifier.width(if (compact) 4.dp else 5.dp))
         Text(
             text = pairingCode?.let { "校验 $it" } ?: "本机 $fingerprint · 已信任 $trustedPeerCount",
             color = MaterialTheme.colorScheme.onBackground,
-            fontSize = 10.sp,
+            fontSize = if (compact) 9.sp else 10.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -896,7 +915,10 @@ private fun PairingButton(
 }
 
 @Composable
-private fun MessageBubble(message: ChatBubble) {
+private fun MessageBubble(
+    message: ChatBubble,
+    compact: Boolean
+) {
     val alignment = if (message.mine) Alignment.CenterEnd else Alignment.CenterStart
     val background =
         if (message.mine) {
@@ -918,44 +940,49 @@ private fun MessageBubble(message: ChatBubble) {
         Column(
             modifier =
                 Modifier
-                    .fillMaxWidth(0.78f)
+                    .fillMaxWidth(if (message.mine) 0.78f else 1f)
                     .clip(RoundedCornerShape(8.dp))
                     .background(background)
-                    .padding(horizontal = 9.dp, vertical = 7.dp)
+                    .padding(
+                        horizontal = if (compact) 8.dp else 9.dp,
+                        vertical = if (compact) 6.dp else 7.dp
+                    )
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Filled.VerifiedUser,
-                    contentDescription = if (message.encrypted) "已加密" else "未加密",
-                    tint = foreground.copy(alpha = 0.78f),
-                    modifier = Modifier.size(11.dp)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text =
-                        if (message.mine) {
-                            "${if (message.encrypted) "E2EE" else "明文"} · ${message.deliveryState.label}"
-                        } else {
-                            if (message.encrypted) "E2EE" else "明文"
-                        },
-                    color = foreground.copy(alpha = 0.78f),
-                    fontSize = 9.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.weight(1f))
-                Text(
-                    text = message.timestamp,
-                    color = foreground.copy(alpha = 0.62f),
-                    fontSize = 9.sp,
-                    maxLines = 1
-                )
+            if (message.deliveryState != DeliveryState.System) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Filled.VerifiedUser,
+                        contentDescription = if (message.encrypted) "已加密" else "未加密",
+                        tint = foreground.copy(alpha = 0.78f),
+                        modifier = Modifier.size(if (compact) 10.dp else 11.dp)
+                    )
+                    Spacer(modifier = Modifier.width(if (compact) 3.dp else 4.dp))
+                    Text(
+                        text =
+                            if (message.mine) {
+                                "${if (message.encrypted) "E2EE" else "明文"} · ${message.deliveryState.label}"
+                            } else {
+                                if (message.encrypted) "E2EE" else "明文"
+                            },
+                        color = foreground.copy(alpha = 0.78f),
+                        fontSize = 9.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    Text(
+                        text = message.timestamp,
+                        color = foreground.copy(alpha = 0.62f),
+                        fontSize = 9.sp,
+                        maxLines = 1
+                    )
+                }
             }
             Text(
                 text = message.text,
                 color = foreground,
-                fontSize = 13.sp,
-                lineHeight = 16.sp,
+                fontSize = if (compact) 12.sp else 13.sp,
+                lineHeight = if (compact) 15.sp else 16.sp,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
