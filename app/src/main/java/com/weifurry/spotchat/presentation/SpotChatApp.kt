@@ -5,7 +5,9 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -22,13 +24,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lan
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,7 +46,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,6 +61,8 @@ import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.Text
 import com.weifurry.spotchat.crypto.IdentityStore
 import com.weifurry.spotchat.crypto.SpotChatCrypto
+import com.weifurry.spotchat.domain.ProfileSettings
+import com.weifurry.spotchat.domain.ProfileStore
 import com.weifurry.spotchat.domain.StoredTrustedPeer
 import com.weifurry.spotchat.domain.SpotChatEngine
 import com.weifurry.spotchat.domain.TrustedPeer
@@ -97,6 +104,18 @@ private enum class DeliveryState(
     System("状态")
 }
 
+private enum class AppSurface {
+    Chat,
+    Profile
+}
+
+private data class DefaultAvatar(
+    val id: String,
+    val label: String,
+    val background: Color,
+    val foreground: Color
+)
+
 private data class ChatBubble(
     val text: String,
     val mine: Boolean,
@@ -106,19 +125,40 @@ private data class ChatBubble(
     val deliveryState: DeliveryState = DeliveryState.Received
 )
 
+private val defaultAvatars =
+    listOf(
+        DefaultAvatar("mint", "S", Color(0xFF6CE5D4), Color(0xFF003733)),
+        DefaultAvatar("sun", "光", Color(0xFFFFCC66), Color(0xFF3B2D00)),
+        DefaultAvatar("rose", "心", Color(0xFFFFB4C8), Color(0xFF5A1230)),
+        DefaultAvatar("sky", "云", Color(0xFF81D5FF), Color(0xFF00354B)),
+        DefaultAvatar("violet", "密", Color(0xFFD0BCFF), Color(0xFF34205F)),
+        DefaultAvatar("slate", "点", Color(0xFFB8C9CA), Color(0xFF203033))
+    )
+
 @Composable
 internal fun SpotChatApp() {
     val context = LocalContext.current
-    val identity =
-        remember(context) {
-            IdentityStore(context).getOrCreateIdentity()
-        }
-    val deviceName =
+    val defaultDeviceName =
         remember {
             listOf(Build.MANUFACTURER, Build.MODEL)
                 .joinToString(separator = " ")
                 .trim()
                 .ifBlank { "SpotChat Watch" }
+        }
+    val profileStore =
+        remember(context) {
+            ProfileStore(context)
+        }
+    var profile by remember(defaultDeviceName) {
+        mutableStateOf(profileStore.load(defaultDeviceName))
+    }
+    val identity =
+        remember(context) {
+            IdentityStore(context).getOrCreateIdentity()
+        }
+    val deviceName =
+        remember(profile.displayName, defaultDeviceName) {
+            profile.displayName.trim().ifBlank { defaultDeviceName }
         }
     val engine =
         remember(identity, deviceName) {
@@ -172,6 +212,7 @@ internal fun SpotChatApp() {
     var activePeerFingerprint by remember { mutableStateOf<String?>(null) }
     var pendingPeer by remember { mutableStateOf<TrustedPeer?>(null) }
     var pairingCode by remember { mutableStateOf<String?>(null) }
+    var appSurface by remember { mutableStateOf(AppSurface.Chat) }
     val greetedPeers = remember { mutableSetOf<String>() }
     val permissionLauncher =
         rememberLauncherForActivityResult(
@@ -431,6 +472,10 @@ internal fun SpotChatApp() {
         }
     }
 
+    fun updateProfile(updated: ProfileSettings) {
+        profile = profileStore.save(updated)
+    }
+
     fun sendQuickReply(text: String) {
         val peer = activePeer
         val peerFingerprint = activePeerFingerprint
@@ -499,7 +544,7 @@ internal fun SpotChatApp() {
         }
     }
 
-    LaunchedEffect(transportMode) {
+    LaunchedEffect(transportMode, deviceName) {
         val transport = currentTransport()
         activePeer = null
         activePeerFingerprint = null
@@ -535,35 +580,287 @@ internal fun SpotChatApp() {
     }
 
     SpotChatTheme {
+        val swipeThreshold = with(LocalDensity.current) { 48.dp.toPx() }
         AppScaffold {
             Box(
                 modifier =
                     Modifier
                         .fillMaxSize()
                         .background(Color.Black)
-                        .padding(6.dp),
+                        .padding(6.dp)
+                        .pointerInput(appSurface, swipeThreshold) {
+                            var dragAmount = 0f
+                            detectHorizontalDragGestures(
+                                onHorizontalDrag = { _, delta ->
+                                    dragAmount += delta
+                                },
+                                onDragEnd = {
+                                    when {
+                                        dragAmount < -swipeThreshold && appSurface == AppSurface.Chat -> {
+                                            appSurface = AppSurface.Profile
+                                        }
+
+                                        dragAmount > swipeThreshold && appSurface == AppSurface.Profile -> {
+                                            appSurface = AppSurface.Chat
+                                        }
+                                    }
+                                    dragAmount = 0f
+                                },
+                                onDragCancel = {
+                                    dragAmount = 0f
+                                }
+                            )
+                        },
                 contentAlignment = Alignment.Center
             ) {
-                WatchChatSurface(
-                    transportMode = transportMode,
-                    trustState = trustState,
-                    fingerprint = localFingerprint,
-                    pairingCode = pairingCode,
-                    pendingPeer = pendingPeer,
-                    trustedPeerCount = trustedPeers.size,
-                    messages = messages,
-                    onSelectMode = ::selectMode,
-                    onConfirmPairing = ::confirmPairing,
-                    onRejectPairing = ::rejectPairing,
-                    onSendQuickReply = ::sendQuickReply
-                )
+                when (appSurface) {
+                    AppSurface.Chat ->
+                        WatchChatSurface(
+                            profile = profile,
+                            transportMode = transportMode,
+                            trustState = trustState,
+                            fingerprint = localFingerprint,
+                            pairingCode = pairingCode,
+                            pendingPeer = pendingPeer,
+                            trustedPeerCount = trustedPeers.size,
+                            messages = messages,
+                            onSelectMode = ::selectMode,
+                            onConfirmPairing = ::confirmPairing,
+                            onRejectPairing = ::rejectPairing,
+                            onSendQuickReply = ::sendQuickReply
+                        )
+
+                    AppSurface.Profile ->
+                        WatchProfileSurface(
+                            profile = profile,
+                            avatars = defaultAvatars,
+                            onProfileChange = ::updateProfile
+                        )
+                }
             }
         }
     }
 }
 
 @Composable
+private fun WatchProfileSurface(
+    profile: ProfileSettings,
+    avatars: List<DefaultAvatar>,
+    onProfileChange: (ProfileSettings) -> Unit
+) {
+    BoxWithConstraints(
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .clip(CircleShape)
+                .background(
+                    Brush.radialGradient(
+                        colors =
+                            listOf(
+                                Color(0xFF231A2B),
+                                Color(0xFF10141D),
+                                Color(0xFF030506)
+                            )
+                    )
+                )
+                .padding(
+                    start = 22.dp,
+                    top = 24.dp,
+                    end = 22.dp,
+                    bottom = 28.dp
+                )
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val selectedAvatar = avatarFor(profile.avatarId)
+
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(if (compact) 0.78f else 0.82f),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                AvatarBubble(
+                    avatar = selectedAvatar,
+                    size = if (compact) 32.dp else 36.dp,
+                    textSize = if (compact) 15.sp else 17.sp,
+                    selected = false,
+                    onClick = null
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(horizontalAlignment = Alignment.Start) {
+                    Text(
+                        text = "个人资料",
+                        color = MaterialTheme.colorScheme.onBackground,
+                        fontSize = if (compact) 15.sp else 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = "显示名与头像",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = if (compact) 9.sp else 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(if (compact) 10.dp else 12.dp))
+
+            ProfileNameField(
+                displayName = profile.displayName,
+                compact = compact,
+                onDisplayNameChange = { displayName ->
+                    onProfileChange(
+                        profile.copy(
+                            displayName =
+                                displayName
+                                    .replace("\n", "")
+                                    .take(ProfileStore.MAX_DISPLAY_NAME_CHARS)
+                        )
+                    )
+                }
+            )
+
+            Spacer(modifier = Modifier.height(if (compact) 10.dp else 12.dp))
+
+            Text(
+                text = "头像",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = if (compact) 10.sp else 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+
+            Spacer(modifier = Modifier.height(if (compact) 6.dp else 8.dp))
+
+            Column(
+                modifier = Modifier.fillMaxWidth(if (compact) 0.74f else 0.7f),
+                verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                avatars.chunked(3).forEach { rowAvatars ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        rowAvatars.forEach { avatar ->
+                            AvatarBubble(
+                                avatar = avatar,
+                                size = if (compact) 34.dp else 38.dp,
+                                textSize = if (compact) 15.sp else 16.sp,
+                                selected = avatar.id == profile.avatarId,
+                                onClick = {
+                                    onProfileChange(profile.copy(avatarId = avatar.id))
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            Text(
+                text = profile.displayName.ifBlank { "SpotChat Watch" },
+                modifier = Modifier.fillMaxWidth(if (compact) 0.72f else 0.78f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = if (compact) 10.sp else 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProfileNameField(
+    displayName: String,
+    compact: Boolean,
+    onDisplayNameChange: (String) -> Unit
+) {
+    Box(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (compact) 0.78f else 0.82f)
+                .height(if (compact) 32.dp else 36.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        BasicTextField(
+            value = displayName,
+            onValueChange = onDisplayNameChange,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            textStyle =
+                TextStyle(
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = if (compact) 13.sp else 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+        )
+        if (displayName.isBlank()) {
+            Text(
+                text = "SpotChat Watch",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = if (compact) 13.sp else 14.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun AvatarBubble(
+    avatar: DefaultAvatar,
+    size: androidx.compose.ui.unit.Dp,
+    textSize: androidx.compose.ui.unit.TextUnit,
+    selected: Boolean,
+    onClick: (() -> Unit)?
+) {
+    val baseModifier =
+        Modifier
+            .size(size)
+            .border(
+                width = if (selected) 2.dp else 0.dp,
+                color = if (selected) MaterialTheme.colorScheme.secondary else Color.Transparent,
+                shape = CircleShape
+            )
+            .clip(CircleShape)
+            .background(avatar.background)
+    val clickableModifier =
+        if (onClick == null) {
+            baseModifier
+        } else {
+            baseModifier.clickable(onClick = onClick)
+        }
+
+    Box(
+        modifier = clickableModifier,
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = avatar.label,
+            color = avatar.foreground,
+            fontSize = textSize,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
 private fun WatchChatSurface(
+    profile: ProfileSettings,
     transportMode: TransportMode,
     trustState: String,
     fingerprint: String,
@@ -612,6 +909,7 @@ private fun WatchChatSurface(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             StatusHeader(
+                avatar = avatarFor(profile.avatarId),
                 trustState = trustState,
                 transportMode = transportMode,
                 compact = compact
@@ -701,6 +999,7 @@ private fun WatchChatSurface(
 
 @Composable
 private fun StatusHeader(
+    avatar: DefaultAvatar,
     trustState: String,
     transportMode: TransportMode,
     compact: Boolean
@@ -710,21 +1009,13 @@ private fun StatusHeader(
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier =
-                Modifier
-                    .size(if (compact) 26.dp else 30.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Lock,
-                contentDescription = "端到端加密",
-                tint = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.size(if (compact) 14.dp else 17.dp)
-            )
-        }
+        AvatarBubble(
+            avatar = avatar,
+            size = if (compact) 26.dp else 30.dp,
+            textSize = if (compact) 13.sp else 15.sp,
+            selected = false,
+            onClick = null
+        )
         Spacer(modifier = Modifier.width(if (compact) 6.dp else 7.dp))
         Column(horizontalAlignment = Alignment.Start) {
             Text(
@@ -1044,6 +1335,9 @@ private fun SendButton(
 
 private fun nowTime(): String =
     SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+
+private fun avatarFor(avatarId: String): DefaultAvatar =
+    defaultAvatars.firstOrNull { avatar -> avatar.id == avatarId } ?: defaultAvatars.first()
 
 private fun PeerHello.lanPort(): Int? =
     transports.firstNotNullOfOrNull { hint ->
