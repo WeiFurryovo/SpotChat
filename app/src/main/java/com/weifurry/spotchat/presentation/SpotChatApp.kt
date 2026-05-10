@@ -715,7 +715,11 @@ private fun WatchProfileSurface(
         val selectedAvatar = avatarFor(profile.avatarId)
 
         Column(
-            modifier = Modifier.fillMaxSize(),
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(bottom = if (compact) 34.dp else 42.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(
@@ -811,7 +815,7 @@ private fun WatchProfileSurface(
                 }
             }
 
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(if (compact) 12.dp else 14.dp))
 
             Text(
                 text = profile.displayName.ifBlank { "SpotChat Watch" },
