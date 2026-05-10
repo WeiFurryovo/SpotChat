@@ -38,6 +38,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Key
@@ -149,6 +150,7 @@ private val defaultAvatars =
         DefaultAvatar("echo", Color(0xFFFFDFBF), Color.White, R.drawable.avatar_echo),
         DefaultAvatar("zed", Color(0xFFD1D4F9), Color.White, R.drawable.avatar_zed)
     )
+private const val PROFILE_AVATARS_PER_PAGE = 3
 
 @Composable
 internal fun SpotChatApp() {
@@ -728,13 +730,24 @@ private fun WatchProfileSurface(
     ) {
         val compact = maxWidth < 260.dp || maxHeight < 260.dp
         val selectedAvatar = avatarFor(profile.avatarId)
+        val avatarPages =
+            remember(avatars) {
+                avatars.chunked(PROFILE_AVATARS_PER_PAGE)
+            }
+        var avatarPage by remember(avatarPages) {
+            mutableStateOf(avatarPageFor(profile.avatarId, avatarPages))
+        }
+
+        LaunchedEffect(profile.avatarId, avatarPages) {
+            avatarPage = avatarPageFor(profile.avatarId, avatarPages)
+        }
 
         Column(
             modifier =
                 Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(bottom = if (compact) 34.dp else 42.dp),
+                    .padding(bottom = if (compact) 12.dp else 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(
@@ -793,42 +806,22 @@ private fun WatchProfileSurface(
 
             Spacer(modifier = Modifier.height(if (compact) 10.dp else 12.dp))
 
-            Text(
-                text = "头像",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = if (compact) 10.sp else 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1
-            )
-
-            Spacer(modifier = Modifier.height(if (compact) 6.dp else 8.dp))
-
-            Column(
-                modifier = Modifier.fillMaxWidth(if (compact) 0.74f else 0.7f),
-                verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                avatars.chunked(3).forEach { rowAvatars ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        rowAvatars.forEach { avatar ->
-                            AvatarBubble(
-                                avatar = avatar,
-                                displayName = profile.displayName,
-                                size = if (compact) 34.dp else 38.dp,
-                                textSize = if (compact) 15.sp else 16.sp,
-                                selected = avatar.id == selectedAvatar.id,
-                                onClick = {
-                                    onProfileChange(profile.copy(avatarId = avatar.id))
-                                }
-                            )
-                        }
-                    }
+            AvatarPager(
+                pages = avatarPages,
+                currentPage = avatarPage,
+                selectedAvatar = selectedAvatar,
+                displayName = profile.displayName,
+                compact = compact,
+                onPreviousPage = {
+                    avatarPage = (avatarPage - 1).coerceAtLeast(0)
+                },
+                onNextPage = {
+                    avatarPage = (avatarPage + 1).coerceAtMost(avatarPages.lastIndex)
+                },
+                onSelectAvatar = { avatar ->
+                    onProfileChange(profile.copy(avatarId = avatar.id))
                 }
-            }
+            )
 
             Spacer(modifier = Modifier.height(if (compact) 12.dp else 14.dp))
 
@@ -842,6 +835,143 @@ private fun WatchProfileSurface(
                 textAlign = TextAlign.Center
             )
         }
+    }
+}
+
+@Composable
+private fun AvatarPager(
+    pages: List<List<DefaultAvatar>>,
+    currentPage: Int,
+    selectedAvatar: DefaultAvatar,
+    displayName: String,
+    compact: Boolean,
+    onPreviousPage: () -> Unit,
+    onNextPage: () -> Unit,
+    onSelectAvatar: (DefaultAvatar) -> Unit
+) {
+    val pageAvatars = pages.getOrElse(currentPage) { emptyList() }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(if (compact) 0.76f else 0.72f),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AvatarPageButton(
+            icon = Icons.AutoMirrored.Filled.ArrowBack,
+            contentDescription = "上一组头像",
+            enabled = currentPage > 0,
+            compact = compact,
+            onClick = onPreviousPage
+        )
+        Spacer(modifier = Modifier.width(if (compact) 8.dp else 10.dp))
+        Text(
+            text = "头像 ${currentPage + 1}/${pages.size.coerceAtLeast(1)}",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = if (compact) 10.sp else 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+        Spacer(modifier = Modifier.width(if (compact) 8.dp else 10.dp))
+        AvatarPageButton(
+            icon = Icons.AutoMirrored.Filled.ArrowForward,
+            contentDescription = "下一组头像",
+            enabled = currentPage < pages.lastIndex,
+            compact = compact,
+            onClick = onNextPage
+        )
+    }
+
+    Spacer(modifier = Modifier.height(if (compact) 6.dp else 8.dp))
+
+    Row(
+        modifier = Modifier.fillMaxWidth(if (compact) 0.76f else 0.72f),
+        horizontalArrangement =
+            Arrangement.spacedBy(
+                space = if (compact) 12.dp else 14.dp,
+                alignment = Alignment.CenterHorizontally
+            ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        pageAvatars.forEach { avatar ->
+            AvatarBubble(
+                avatar = avatar,
+                displayName = displayName,
+                size = if (compact) 34.dp else 38.dp,
+                textSize = if (compact) 15.sp else 16.sp,
+                selected = avatar.id == selectedAvatar.id,
+                onClick = {
+                    onSelectAvatar(avatar)
+                }
+            )
+        }
+    }
+
+    if (pages.size > 1) {
+        Spacer(modifier = Modifier.height(if (compact) 7.dp else 8.dp))
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            pages.indices.forEach { page ->
+                Box(
+                    modifier =
+                        Modifier
+                            .size(if (page == currentPage) 5.dp else 4.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (page == currentPage) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.outlineVariant
+                                }
+                            )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AvatarPageButton(
+    icon: ImageVector,
+    contentDescription: String,
+    enabled: Boolean,
+    compact: Boolean,
+    onClick: () -> Unit
+) {
+    val baseModifier =
+        Modifier
+            .size(if (compact) 24.dp else 26.dp)
+            .clip(CircleShape)
+            .background(
+                if (enabled) {
+                    MaterialTheme.colorScheme.surfaceContainerHigh
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerLow
+                }
+            )
+    val clickableModifier =
+        if (enabled) {
+            baseModifier.clickable(onClick = onClick)
+        } else {
+            baseModifier
+        }
+
+    Box(
+        modifier = clickableModifier,
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint =
+                if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
+                },
+            modifier = Modifier.size(if (compact) 13.dp else 14.dp)
+        )
     }
 }
 
@@ -1441,6 +1571,16 @@ private fun nowTime(): String =
 
 private fun avatarFor(avatarId: String): DefaultAvatar =
     defaultAvatars.firstOrNull { avatar -> avatar.id == avatarId } ?: defaultAvatars.first()
+
+private fun avatarPageFor(
+    avatarId: String,
+    pages: List<List<DefaultAvatar>>
+): Int {
+    val pageIndex = pages.indexOfFirst { avatars ->
+        avatars.any { avatar -> avatar.id == avatarId }
+    }
+    return pageIndex.coerceAtLeast(0)
+}
 
 private fun profileInitial(displayName: String): String {
     val trimmedName = displayName.trim()
