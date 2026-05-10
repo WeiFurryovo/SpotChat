@@ -1,6 +1,7 @@
 package com.weifurry.spotchat.presentation
 
 import android.Manifest
+import android.app.Activity
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -296,6 +297,9 @@ private data class WatchSurfaceSpec(
     val pairingWidth: Float
         get() = if (isRound) 0.88f else 0.94f
 
+    val scrollIndicatorEndPadding: Dp
+        get() = if (isRound) 12.dp else 6.dp
+
     fun visibleMessageCount(hasPendingPeer: Boolean): Int =
         when {
             hasPendingPeer && isRound -> 1
@@ -310,6 +314,7 @@ private data class WatchSurfaceSpec(
 @Composable
 internal fun SpotChatApp() {
     val context = LocalContext.current
+    val activity = context as? Activity
     val defaultDeviceName =
         remember {
             listOf(Build.MANUFACTURER, Build.MODEL)
@@ -768,9 +773,13 @@ internal fun SpotChatApp() {
     SpotChatTheme {
         val isRoundScreen = LocalConfiguration.current.isScreenRound
         val dismissState = rememberSwipeToDismissBoxState()
+        val rootDismissState = rememberSwipeToDismissBoxState()
         LaunchedEffect(appSurface) {
             if (appSurface == AppSurface.Profile) {
                 dismissState.snapTo(SwipeToDismissValue.Default)
+            }
+            if (appSurface == AppSurface.Chat) {
+                rootDismissState.snapTo(SwipeToDismissValue.Default)
             }
         }
         BackHandler(enabled = appSurface == AppSurface.Profile) {
@@ -806,24 +815,43 @@ internal fun SpotChatApp() {
                 ) { targetSurface ->
                     when (targetSurface) {
                         AppSurface.Chat ->
-                            WatchChatSurface(
-                                isRoundScreen = isRoundScreen,
-                                profile = profile,
-                                transportMode = transportMode,
-                                trustState = trustState,
-                                fingerprint = localFingerprint,
-                                pairingCode = pairingCode,
-                                pendingPeer = pendingPeer,
-                                trustedPeerCount = trustedPeers.size,
-                                messages = messages,
-                                onSelectMode = ::selectMode,
-                                onConfirmPairing = ::confirmPairing,
-                                onRejectPairing = ::rejectPairing,
-                                onSendQuickReply = ::sendQuickReply,
-                                onOpenProfile = {
-                                    appSurface = AppSurface.Profile
+                            SwipeToDismissBox(
+                                onDismissed = {
+                                    activity?.finish()
+                                },
+                                modifier = Modifier.fillMaxSize(),
+                                state = rootDismissState,
+                                backgroundKey = "SpotChatRootDismissBackground",
+                                contentKey = AppSurface.Chat
+                            ) { isBackground ->
+                                if (isBackground) {
+                                    Box(
+                                        modifier =
+                                            Modifier
+                                                .fillMaxSize()
+                                                .background(Color.Black)
+                                    )
+                                } else {
+                                    WatchChatSurface(
+                                        isRoundScreen = isRoundScreen,
+                                        profile = profile,
+                                        transportMode = transportMode,
+                                        trustState = trustState,
+                                        fingerprint = localFingerprint,
+                                        pairingCode = pairingCode,
+                                        pendingPeer = pendingPeer,
+                                        trustedPeerCount = trustedPeers.size,
+                                        messages = messages,
+                                        onSelectMode = ::selectMode,
+                                        onConfirmPairing = ::confirmPairing,
+                                        onRejectPairing = ::rejectPairing,
+                                        onSendQuickReply = ::sendQuickReply,
+                                        onOpenProfile = {
+                                            appSurface = AppSurface.Profile
+                                        }
+                                    )
                                 }
-                            )
+                            }
 
                         AppSurface.Profile ->
                             SwipeToDismissBox(
@@ -921,7 +949,10 @@ private fun WatchProfileSurface(
                         bottom = surfaceSpec.profileBottomPadding
                     ),
                 scrollIndicator = {
-                    ScrollIndicator(state = listState)
+                    ScrollIndicator(
+                        state = listState,
+                        modifier = Modifier.padding(end = surfaceSpec.scrollIndicatorEndPadding)
+                    )
                 }
             ) { scaffoldPadding ->
                 ScalingLazyColumn(
@@ -1272,9 +1303,7 @@ private fun WatchChatSurface(
                 scrollState = messageScrollState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(),
-                scrollIndicator = {
-                    ScrollIndicator(state = messageScrollState)
-                }
+                scrollIndicator = {}
             ) { scaffoldPadding ->
                 Column(
                     modifier =
