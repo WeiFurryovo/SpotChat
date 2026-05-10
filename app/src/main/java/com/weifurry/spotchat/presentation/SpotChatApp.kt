@@ -4,6 +4,15 @@ import android.Manifest
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.DrawableRes
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -47,8 +56,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -59,6 +70,7 @@ import androidx.wear.compose.material3.AppScaffold
 import androidx.wear.compose.material3.Icon
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.Text
+import com.weifurry.spotchat.R
 import com.weifurry.spotchat.crypto.IdentityStore
 import com.weifurry.spotchat.crypto.SpotChatCrypto
 import com.weifurry.spotchat.domain.ProfileSettings
@@ -111,9 +123,9 @@ private enum class AppSurface {
 
 private data class DefaultAvatar(
     val id: String,
-    val label: String,
     val background: Color,
-    val foreground: Color
+    val foreground: Color,
+    @param:DrawableRes val imageRes: Int? = null
 )
 
 private data class ChatBubble(
@@ -127,12 +139,12 @@ private data class ChatBubble(
 
 private val defaultAvatars =
     listOf(
-        DefaultAvatar("mint", "S", Color(0xFF6CE5D4), Color(0xFF003733)),
-        DefaultAvatar("sun", "光", Color(0xFFFFCC66), Color(0xFF3B2D00)),
-        DefaultAvatar("rose", "心", Color(0xFFFFB4C8), Color(0xFF5A1230)),
-        DefaultAvatar("sky", "云", Color(0xFF81D5FF), Color(0xFF00354B)),
-        DefaultAvatar("violet", "密", Color(0xFFD0BCFF), Color(0xFF34205F)),
-        DefaultAvatar("slate", "点", Color(0xFFB8C9CA), Color(0xFF203033))
+        DefaultAvatar("initial", Color(0xFF6CE5D4), Color(0xFF003733)),
+        DefaultAvatar("mira", Color(0xFFB6E3F4), Color.White, R.drawable.avatar_mira),
+        DefaultAvatar("nova", Color(0xFFC0AEDE), Color.White, R.drawable.avatar_nova),
+        DefaultAvatar("kiki", Color(0xFFFFD5DC), Color.White, R.drawable.avatar_kiki),
+        DefaultAvatar("echo", Color(0xFFFFDFBF), Color.White, R.drawable.avatar_echo),
+        DefaultAvatar("zed", Color(0xFFD1D4F9), Color.White, R.drawable.avatar_zed)
     )
 
 @Composable
@@ -613,29 +625,49 @@ internal fun SpotChatApp() {
                         },
                 contentAlignment = Alignment.Center
             ) {
-                when (appSurface) {
-                    AppSurface.Chat ->
-                        WatchChatSurface(
-                            profile = profile,
-                            transportMode = transportMode,
-                            trustState = trustState,
-                            fingerprint = localFingerprint,
-                            pairingCode = pairingCode,
-                            pendingPeer = pendingPeer,
-                            trustedPeerCount = trustedPeers.size,
-                            messages = messages,
-                            onSelectMode = ::selectMode,
-                            onConfirmPairing = ::confirmPairing,
-                            onRejectPairing = ::rejectPairing,
-                            onSendQuickReply = ::sendQuickReply
-                        )
+                AnimatedContent(
+                    targetState = appSurface,
+                    modifier = Modifier.fillMaxSize(),
+                    transitionSpec = {
+                        val opensProfile = targetState == AppSurface.Profile
+                        val enter =
+                            slideInHorizontally(animationSpec = tween(durationMillis = 220)) { fullWidth ->
+                                if (opensProfile) fullWidth else -fullWidth
+                            } + fadeIn(animationSpec = tween(durationMillis = 160))
+                        val exit =
+                            slideOutHorizontally(animationSpec = tween(durationMillis = 220)) { fullWidth ->
+                                if (opensProfile) -fullWidth else fullWidth
+                            } + fadeOut(animationSpec = tween(durationMillis = 140))
 
-                    AppSurface.Profile ->
-                        WatchProfileSurface(
-                            profile = profile,
-                            avatars = defaultAvatars,
-                            onProfileChange = ::updateProfile
-                        )
+                        enter togetherWith exit
+                    },
+                    contentAlignment = Alignment.Center,
+                    label = "SpotChatSurfaceTransition"
+                ) { targetSurface ->
+                    when (targetSurface) {
+                        AppSurface.Chat ->
+                            WatchChatSurface(
+                                profile = profile,
+                                transportMode = transportMode,
+                                trustState = trustState,
+                                fingerprint = localFingerprint,
+                                pairingCode = pairingCode,
+                                pendingPeer = pendingPeer,
+                                trustedPeerCount = trustedPeers.size,
+                                messages = messages,
+                                onSelectMode = ::selectMode,
+                                onConfirmPairing = ::confirmPairing,
+                                onRejectPairing = ::rejectPairing,
+                                onSendQuickReply = ::sendQuickReply
+                            )
+
+                        AppSurface.Profile ->
+                            WatchProfileSurface(
+                                profile = profile,
+                                avatars = defaultAvatars,
+                                onProfileChange = ::updateProfile
+                            )
+                    }
                 }
             }
         }
@@ -684,6 +716,7 @@ private fun WatchProfileSurface(
             ) {
                 AvatarBubble(
                     avatar = selectedAvatar,
+                    displayName = profile.displayName,
                     size = if (compact) 32.dp else 36.dp,
                     textSize = if (compact) 15.sp else 17.sp,
                     selected = false,
@@ -751,9 +784,10 @@ private fun WatchProfileSurface(
                         rowAvatars.forEach { avatar ->
                             AvatarBubble(
                                 avatar = avatar,
+                                displayName = profile.displayName,
                                 size = if (compact) 34.dp else 38.dp,
                                 textSize = if (compact) 15.sp else 16.sp,
-                                selected = avatar.id == profile.avatarId,
+                                selected = avatar.id == selectedAvatar.id,
                                 onClick = {
                                     onProfileChange(profile.copy(avatarId = avatar.id))
                                 }
@@ -821,6 +855,7 @@ private fun ProfileNameField(
 @Composable
 private fun AvatarBubble(
     avatar: DefaultAvatar,
+    displayName: String,
     size: androidx.compose.ui.unit.Dp,
     textSize: androidx.compose.ui.unit.TextUnit,
     selected: Boolean,
@@ -847,14 +882,23 @@ private fun AvatarBubble(
         modifier = clickableModifier,
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = avatar.label,
-            color = avatar.foreground,
-            fontSize = textSize,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            textAlign = TextAlign.Center
-        )
+        if (avatar.imageRes == null) {
+            Text(
+                text = profileInitial(displayName),
+                color = avatar.foreground,
+                fontSize = textSize,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                textAlign = TextAlign.Center
+            )
+        } else {
+            Image(
+                painter = painterResource(avatar.imageRes),
+                contentDescription = "头像",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        }
     }
 }
 
@@ -910,6 +954,7 @@ private fun WatchChatSurface(
         ) {
             StatusHeader(
                 avatar = avatarFor(profile.avatarId),
+                displayName = profile.displayName,
                 trustState = trustState,
                 transportMode = transportMode,
                 compact = compact
@@ -1000,6 +1045,7 @@ private fun WatchChatSurface(
 @Composable
 private fun StatusHeader(
     avatar: DefaultAvatar,
+    displayName: String,
     trustState: String,
     transportMode: TransportMode,
     compact: Boolean
@@ -1011,6 +1057,7 @@ private fun StatusHeader(
     ) {
         AvatarBubble(
             avatar = avatar,
+            displayName = displayName,
             size = if (compact) 26.dp else 30.dp,
             textSize = if (compact) 13.sp else 15.sp,
             selected = false,
@@ -1338,6 +1385,14 @@ private fun nowTime(): String =
 
 private fun avatarFor(avatarId: String): DefaultAvatar =
     defaultAvatars.firstOrNull { avatar -> avatar.id == avatarId } ?: defaultAvatars.first()
+
+private fun profileInitial(displayName: String): String {
+    val trimmedName = displayName.trim()
+    if (trimmedName.isEmpty()) {
+        return "S"
+    }
+    return String(Character.toChars(trimmedName.codePointAt(0))).uppercase(Locale.getDefault())
+}
 
 private fun PeerHello.lanPort(): Int? =
     transports.firstNotNullOfOrNull { hint ->

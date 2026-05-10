@@ -34,7 +34,7 @@ class ProfileStore(context: Context) {
     }
 
     companion object {
-        const val DEFAULT_AVATAR_ID = "mint"
+        const val DEFAULT_AVATAR_ID = "initial"
         const val MAX_DISPLAY_NAME_CHARS = 18
         private const val PREFS_NAME = "spotchat_profile"
         private const val KEY_DISPLAY_NAME = "display_name"

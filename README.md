@@ -5,7 +5,8 @@ SpotChat 是一个面向 Android / Wear OS 手表的本地聊天软件原型，�
 ## 当前能力
 
 - Wear OS 优先的圆形小屏 Compose 界面，中文 UI。
-- 左滑进入个人资料页，可修改显示名并从默认头像中选择。
+- 左滑进入个人资料页、右滑返回聊天页，页面切换带滑入动画。
+- 可修改显示名并从默认头像中选择：第一个头像使用显示名首字母，其余头像为本地打包的图片资源。
 - 本地身份密钥生成和持久化，不进入 Android 备份。
 - P-256 ECDH 密钥协商、HKDF-SHA256 会话密钥派生、AES-GCM 消息加密。
 - 配对指纹和短校验码，用于两台设备人工确认，降低中间人攻击风险。
@@ -38,6 +39,10 @@ sdk.dir=/home/weifurry/Android/Sdk
 ```
 
 生成的 APK 位于 `app/build/outputs/apk/debug/`。
+
+## 资源来源
+
+- `app/src/main/res/drawable-nodpi/avatar_*.png` 由 DiceBear 的 Lorelei Neutral 头像风格通过 HTTP API 生成，并作为本地资源随 APK 打包。
 
 ## GitHub Actions APK
 
