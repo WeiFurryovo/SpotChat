@@ -2,6 +2,7 @@ package com.weifurry.spotchat.presentation
 
 import android.Manifest
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
@@ -36,6 +37,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Key
@@ -593,6 +595,9 @@ internal fun SpotChatApp() {
 
     SpotChatTheme {
         val swipeThreshold = with(LocalDensity.current) { 48.dp.toPx() }
+        BackHandler(enabled = appSurface == AppSurface.Profile) {
+            appSurface = AppSurface.Chat
+        }
         AppScaffold {
             Box(
                 modifier =
@@ -665,6 +670,9 @@ internal fun SpotChatApp() {
                             WatchProfileSurface(
                                 profile = profile,
                                 avatars = defaultAvatars,
+                                onNavigateBack = {
+                                    appSurface = AppSurface.Chat
+                                },
                                 onProfileChange = ::updateProfile
                             )
                     }
@@ -678,6 +686,7 @@ internal fun SpotChatApp() {
 private fun WatchProfileSurface(
     profile: ProfileSettings,
     avatars: List<DefaultAvatar>,
+    onNavigateBack: () -> Unit,
     onProfileChange: (ProfileSettings) -> Unit
 ) {
     BoxWithConstraints(
@@ -710,10 +719,15 @@ private fun WatchProfileSurface(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(if (compact) 0.78f else 0.82f),
+                modifier = Modifier.fillMaxWidth(if (compact) 0.86f else 0.88f),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                ProfileBackButton(
+                    compact = compact,
+                    onClick = onNavigateBack
+                )
+                Spacer(modifier = Modifier.width(if (compact) 6.dp else 7.dp))
                 AvatarBubble(
                     avatar = selectedAvatar,
                     displayName = profile.displayName,
@@ -809,6 +823,29 @@ private fun WatchProfileSurface(
                 textAlign = TextAlign.Center
             )
         }
+    }
+}
+
+@Composable
+private fun ProfileBackButton(
+    compact: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier =
+            Modifier
+                .size(if (compact) 28.dp else 32.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+            contentDescription = "返回主界面",
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(if (compact) 15.dp else 16.dp)
+        )
     }
 }
 
