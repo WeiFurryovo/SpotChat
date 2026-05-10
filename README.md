@@ -12,10 +12,11 @@ SpotChat 是一个面向 Android / Wear OS 手表的本地聊天软件原型，�
 - 配对指纹和短校验码，用于两台设备人工确认，降低中间人攻击风险。
 - 已确认设备会保存为可信设备，后续重连可自动恢复可信状态。
 - 加密消息带发送状态，收到消息后会回 ACK 并显示送达结果。
+- 已收到的加密消息 ID 会短期去重，重复密文包不会再次显示。
 - 局域网 UDP 广播发现和 TCP 加密帧发送通道。
 - 蓝牙 RFCOMM 加密帧发送/监听通道。
 - JVM 单元测试覆盖核心加密和协议编解码。
-- GitHub Actions 自动测试并打包固定 debug 签名 APK，方便直接从 Actions artifacts 下载。
+- GitHub Actions 自动测试、lint、检查 release 构建，并打包固定 debug 签名 APK，方便直接从 Actions artifacts 下载。
 
 ## 安全模型
 

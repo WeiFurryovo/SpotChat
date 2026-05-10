@@ -1,10 +1,12 @@
 package com.weifurry.spotchat.protocol
 
 import com.weifurry.spotchat.crypto.SpotChatCrypto
+import com.weifurry.spotchat.domain.DuplicateMessageException
 import com.weifurry.spotchat.domain.SpotChatEngine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.fail
 import org.junit.Test
 
 class SpotChatEngineTest {
@@ -32,6 +34,33 @@ class SpotChatEngineTest {
 
         assertEquals("局域网可用", plain.text)
         assertEquals(watch.localFingerprint, plain.senderFingerprint)
+    }
+
+    @Test
+    fun duplicateEncryptedMessagesAreRejected() {
+        val watch = SpotChatEngine("手表", SpotChatCrypto.generateIdentity())
+        val phone = SpotChatEngine("手机", SpotChatCrypto.generateIdentity())
+
+        val trustedPhone =
+            watch.openSession(phone.helloPacket().hello ?: error("missing phone hello"))
+        phone.openSession(watch.helloPacket().hello ?: error("missing watch hello"))
+        val message =
+            ChatCodec
+                .decode(
+                    ChatCodec.encode(
+                        watch.encryptTextForPeer(trustedPhone.fingerprint, "只收一次")
+                    )
+                )
+                .encryptedMessage
+                ?: error("missing encrypted message")
+
+        assertEquals("只收一次", phone.decryptText(message).text)
+        try {
+            phone.decryptText(message)
+            fail("duplicate encrypted messages must be rejected")
+        } catch (expected: DuplicateMessageException) {
+            assertEquals(message.messageId, expected.messageId)
+        }
     }
 
     @Test

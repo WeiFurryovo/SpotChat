@@ -41,8 +41,14 @@ jobs:
       - name: Test
         run: ./gradlew testDebugUnitTest --stacktrace
 
+      - name: Lint debug
+        run: ./gradlew :app:lintDebug --stacktrace
+
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
+
+      - name: Build release APK
+        run: ./gradlew :app:assembleRelease --stacktrace
 
       - name: Prepare fixed-signed APK artifact
         run: |

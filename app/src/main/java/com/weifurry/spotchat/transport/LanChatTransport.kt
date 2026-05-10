@@ -39,18 +39,22 @@ class LanChatTransport(
         val job = SupervisorJob()
         supervisor = job
         val scope = CoroutineScope(job + Dispatchers.IO)
-        startServer(scope)
-        startDiscovery(scope)
-        mutableEvents.emit(TransportEvent.StateChanged("局域网发现已启动"))
+        try {
+            startServer(scope)
+            startDiscovery(scope)
+            mutableEvents.emit(TransportEvent.StateChanged("局域网发现已启动"))
+        } catch (error: Throwable) {
+            job.cancel()
+            closeSockets()
+            supervisor = null
+            throw error
+        }
     }
 
     override suspend fun stop() {
         supervisor?.cancel()
         supervisor = null
-        serverSocket.closeQuietly()
-        discoverySocket.closeQuietly()
-        serverSocket = null
-        discoverySocket = null
+        closeSockets()
         mutableEvents.emit(TransportEvent.StateChanged("局域网传输已停止"))
     }
 
@@ -174,6 +178,13 @@ class LanChatTransport(
                 .withoutPadding()
                 .encodeToString(deviceName.toByteArray(Charsets.UTF_8))
         return "$BEACON_PREFIX|$instanceId|$encodedName|$servicePort"
+    }
+
+    private fun closeSockets() {
+        serverSocket.closeQuietly()
+        discoverySocket.closeQuietly()
+        serverSocket = null
+        discoverySocket = null
     }
 
     private fun ServerSocket?.closeQuietly() {

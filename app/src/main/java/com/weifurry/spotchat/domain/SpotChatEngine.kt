@@ -9,6 +9,7 @@ import com.weifurry.spotchat.protocol.PeerHello
 import com.weifurry.spotchat.protocol.WirePacket
 import java.security.KeyPair
 import java.util.Base64
+import java.util.LinkedHashMap
 import java.util.UUID
 import javax.crypto.SecretKey
 
@@ -26,12 +27,19 @@ data class PlainChatMessage(
     val text: String
 )
 
+class DuplicateMessageException(
+    val messageId: String,
+    val senderFingerprint: String
+) : IllegalStateException("Duplicate message $messageId from $senderFingerprint")
+
 class SpotChatEngine(
     private val localDeviceName: String,
     private val localIdentity: KeyPair
 ) {
     val localFingerprint: String = SpotChatCrypto.fingerprint(localIdentity.public)
     private val sessions = mutableMapOf<String, SecretKey>()
+    private val seenMessages = LinkedHashMap<String, Unit>()
+    private val seenMessagesLock = Any()
 
     fun helloPacket(transports: List<String> = listOf("lan", "bluetooth")): WirePacket =
         WirePacket(
@@ -105,6 +113,12 @@ class SpotChatEngine(
         )
 
     fun decryptText(message: EncryptedChatMessage): PlainChatMessage {
+        val replayKey = replayKey(message)
+        synchronized(seenMessagesLock) {
+            if (seenMessages.containsKey(replayKey)) {
+                throw DuplicateMessageException(message.messageId, message.senderFingerprint)
+            }
+        }
         val sessionKey =
             sessions[message.senderFingerprint]
                 ?: error("No trusted session for sender ${message.senderFingerprint}")
@@ -119,6 +133,7 @@ class SpotChatEngine(
                 frame = frame,
                 associatedData = messageAssociatedData(message.messageId, message.senderFingerprint)
             )
+        rememberMessage(replayKey, message)
         return PlainChatMessage(
             messageId = message.messageId,
             senderFingerprint = message.senderFingerprint,
@@ -135,4 +150,31 @@ class SpotChatEngine(
 
     private fun base64(bytes: ByteArray): String =
         Base64.getEncoder().encodeToString(bytes)
+
+    private fun replayKey(message: EncryptedChatMessage): String =
+        "${message.senderFingerprint}:${message.messageId}"
+
+    private fun rememberMessage(
+        replayKey: String,
+        message: EncryptedChatMessage
+    ) {
+        synchronized(seenMessagesLock) {
+            if (seenMessages.containsKey(replayKey)) {
+                throw DuplicateMessageException(message.messageId, message.senderFingerprint)
+            }
+            seenMessages[replayKey] = Unit
+            while (seenMessages.size > MAX_SEEN_MESSAGES) {
+                val oldest = seenMessages.keys.iterator()
+                if (!oldest.hasNext()) {
+                    break
+                }
+                oldest.next()
+                oldest.remove()
+            }
+        }
+    }
+
+    companion object {
+        private const val MAX_SEEN_MESSAGES = 512
+    }
 }

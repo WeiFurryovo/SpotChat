@@ -75,6 +75,7 @@ import androidx.wear.compose.material3.Text
 import com.weifurry.spotchat.R
 import com.weifurry.spotchat.crypto.IdentityStore
 import com.weifurry.spotchat.crypto.SpotChatCrypto
+import com.weifurry.spotchat.domain.DuplicateMessageException
 import com.weifurry.spotchat.domain.ProfileSettings
 import com.weifurry.spotchat.domain.ProfileStore
 import com.weifurry.spotchat.domain.StoredTrustedPeer
@@ -412,14 +413,28 @@ internal fun SpotChatApp() {
                                 }
                             }
                             .onFailure { error ->
-                                messages +=
-                                    ChatBubble(
-                                        text = error.readableMessage("无法解密消息"),
-                                        mine = false,
-                                        encrypted = false,
-                                        timestamp = nowTime()
-                                    )
-                                trustState = "解密失败"
+                                if (error is DuplicateMessageException) {
+                                    trustState = "重复消息已忽略"
+                                    val replyPeer = activePeer ?: event.peer
+                                    runCatching {
+                                        sendPacket(
+                                            transport,
+                                            replyPeer,
+                                            engine.ackPacket(error.messageId)
+                                        )
+                                    }.onFailure {
+                                        trustState = "重复回执发送失败"
+                                    }
+                                } else {
+                                    messages +=
+                                        ChatBubble(
+                                            text = error.readableMessage("无法解密消息"),
+                                            mine = false,
+                                            encrypted = false,
+                                            timestamp = nowTime()
+                                        )
+                                    trustState = "解密失败"
+                                }
                             }
                     }
 

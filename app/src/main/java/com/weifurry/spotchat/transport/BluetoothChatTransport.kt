@@ -53,16 +53,22 @@ class BluetoothChatTransport(
         val job = SupervisorJob()
         supervisor = job
         val scope = CoroutineScope(job + Dispatchers.IO)
-        serverSocket = adapter.listenUsingRfcommWithServiceRecord(SERVICE_NAME, serviceUuid)
-        scope.launch { acceptLoop() }
-        mutableEvents.emit(TransportEvent.StateChanged("蓝牙监听已启动"))
+        try {
+            serverSocket = adapter.listenUsingRfcommWithServiceRecord(SERVICE_NAME, serviceUuid)
+            scope.launch { acceptLoop(scope) }
+            mutableEvents.emit(TransportEvent.StateChanged("蓝牙监听已启动"))
+        } catch (error: Throwable) {
+            job.cancel()
+            closeServerSocket()
+            supervisor = null
+            throw error
+        }
     }
 
     override suspend fun stop() {
         supervisor?.cancel()
         supervisor = null
-        runCatching { serverSocket?.close() }
-        serverSocket = null
+        closeServerSocket()
         mutableEvents.emit(TransportEvent.StateChanged("蓝牙传输已停止"))
     }
 
@@ -86,11 +92,11 @@ class BluetoothChatTransport(
         }
     }
 
-    private suspend fun acceptLoop() {
+    private suspend fun acceptLoop(scope: CoroutineScope) {
         while (supervisor?.isActive == true) {
             try {
                 val socket = serverSocket?.accept() ?: break
-                handleSocket(socket)
+                scope.launch { handleSocket(socket) }
             } catch (error: Throwable) {
                 if (supervisor?.isActive == true) {
                     mutableEvents.emit(TransportEvent.Failure("蓝牙接收失败", error))
@@ -117,6 +123,11 @@ class BluetoothChatTransport(
             address = address,
             kind = TransportKind.BLUETOOTH
         )
+
+    private fun closeServerSocket() {
+        runCatching { serverSocket?.close() }
+        serverSocket = null
+    }
 
     companion object {
         private const val SERVICE_NAME = "SpotChat"
