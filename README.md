@@ -11,7 +11,7 @@ SpotChat 是一个面向 Android / Wear OS 手表的本地聊天软件原型，�
 - 局域网 UDP 广播发现和 TCP 加密帧发送通道。
 - 蓝牙 RFCOMM 加密帧发送/监听通道。
 - JVM 单元测试覆盖核心加密和协议编解码。
-- GitHub Actions 自动测试并打包 debug APK。
+- GitHub Actions 自动测试并打包固定 debug 签名 APK，方便直接从 Actions artifacts 下载。
 
 ## 安全模型
 
@@ -35,6 +35,12 @@ sdk.dir=/home/weifurry/Android/Sdk
 ```
 
 生成的 APK 位于 `app/build/outputs/apk/debug/`。
+
+## GitHub Actions APK
+
+进入 GitHub 仓库的 **Actions** 页面，打开 `Android Build` 工作流，可以手动运行或在 `main` 分支 push 后自动运行。成功后下载名为 `SpotChat-debug-fixed-signed-apk` 的 artifact，里面会有类似 `SpotChat-debug-fixed-8aaa563.apk` 的 debug APK。
+
+这个 APK 使用仓库内固定 debug key：`app/signing/spotchat-debug.keystore`。它不是生产发布密钥，公开提交是为了让每次 Action 产物的 Android 签名保持一致。只要设备上已安装的是这套固定 debug key 签出来的 SpotChat，之后的新 Action APK 就可以直接覆盖安装。
 
 ## 后续方向
 

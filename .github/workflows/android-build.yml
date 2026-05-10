@@ -7,6 +7,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -41,9 +44,23 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: Upload debug APK
+      - name: Prepare fixed-signed APK artifact
+        run: |
+          mkdir -p artifacts
+          APK_NAME="SpotChat-debug-fixed-${GITHUB_SHA::7}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "artifacts/${APK_NAME}"
+          {
+            echo "### SpotChat APK"
+            echo
+            echo "- File: \`${APK_NAME}\`"
+            echo "- Signing: fixed repository debug key \`app/signing/spotchat-debug.keystore\`"
+            echo "- Install type: debug APK, can upgrade over future Action builds with the same package name."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload fixed-signed debug APK
         uses: actions/upload-artifact@v6
         with:
-          name: spotchat-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: SpotChat-debug-fixed-signed-apk
+          path: artifacts/*.apk
           if-no-files-found: error
+          retention-days: 30
