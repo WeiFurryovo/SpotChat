@@ -60,6 +60,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -67,15 +68,22 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.wear.compose.material3.AppScaffold
-import androidx.wear.compose.material3.Icon
-import androidx.wear.compose.material3.MaterialTheme
-import androidx.wear.compose.material3.Text
+import androidx.wear.compose.foundation.SwipeToDismissValue
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.ScalingLazyListAnchorType
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.foundation.rememberSwipeToDismissBoxState
+import androidx.wear.compose.material3.AppScaffold
+import androidx.wear.compose.material3.Icon
+import androidx.wear.compose.material3.MaterialTheme
+import androidx.wear.compose.material3.ScreenScaffold
+import androidx.wear.compose.material3.ScrollIndicator
+import androidx.wear.compose.material3.SwipeToDismissBox
+import androidx.wear.compose.material3.Text
 import com.weifurry.spotchat.R
 import com.weifurry.spotchat.crypto.IdentityStore
 import com.weifurry.spotchat.crypto.SpotChatCrypto
@@ -154,6 +162,150 @@ private val defaultAvatars =
         DefaultAvatar("zed", Color(0xFFD1D4F9), Color.White, R.drawable.avatar_zed)
     )
 private const val PROFILE_AVATARS_PER_ROW = 3
+
+private data class WatchSurfaceSpec(
+    val isRound: Boolean,
+    val compact: Boolean
+) {
+    val screenShape
+        get() = if (isRound) CircleShape else RoundedCornerShape(8.dp)
+
+    val appPadding: Dp
+        get() = if (isRound) 6.dp else 0.dp
+
+    val profileHorizontalPadding: Dp
+        get() = if (isRound) 18.dp else 12.dp
+
+    val profileTopPadding: Dp
+        get() =
+            when {
+                isRound && compact -> 22.dp
+                isRound -> 28.dp
+                compact -> 12.dp
+                else -> 14.dp
+            }
+
+    val profileBottomPadding: Dp
+        get() =
+            when {
+                isRound && compact -> 44.dp
+                isRound -> 52.dp
+                compact -> 18.dp
+                else -> 22.dp
+            }
+
+    val profileVerticalGap: Dp
+        get() =
+            when {
+                isRound && compact -> 8.dp
+                isRound -> 10.dp
+                compact -> 9.dp
+                else -> 11.dp
+            }
+
+    val profileHeaderWidth: Float
+        get() = if (isRound) {
+            if (compact) 0.88f else 0.9f
+        } else {
+            0.96f
+        }
+
+    val profileFieldWidth: Float
+        get() = if (isRound) {
+            if (compact) 0.78f else 0.82f
+        } else {
+            0.92f
+        }
+
+    val profileAvatarRowWidth: Float
+        get() = if (isRound) {
+            if (compact) 0.74f else 0.72f
+        } else {
+            0.86f
+        }
+
+    val profileSummaryWidth: Float
+        get() = if (isRound) {
+            if (compact) 0.72f else 0.78f
+        } else {
+            0.9f
+        }
+
+    val profileAvatarSize: Dp
+        get() =
+            when {
+                isRound && compact -> 36.dp
+                isRound -> 40.dp
+                compact -> 38.dp
+                else -> 42.dp
+            }
+
+    val profileAvatarSpacing: Dp
+        get() =
+            when {
+                isRound && compact -> 12.dp
+                isRound -> 14.dp
+                compact -> 13.dp
+                else -> 16.dp
+            }
+
+    val chatHorizontalPadding: Dp
+        get() = if (isRound) 20.dp else 12.dp
+
+    val chatTopPadding: Dp
+        get() = if (isRound) 22.dp else 12.dp
+
+    val chatBottomPadding: Dp
+        get() = if (isRound) 28.dp else 12.dp
+
+    val chatHeaderWidth: Float
+        get() = if (isRound) {
+            if (compact) 0.78f else 0.82f
+        } else {
+            0.94f
+        }
+
+    val chatToggleWidth: Float
+        get() = if (isRound) {
+            if (compact) 0.82f else 0.76f
+        } else {
+            0.94f
+        }
+
+    val fingerprintWidth: Float
+        get() = if (isRound) {
+            if (compact) 0.78f else 0.88f
+        } else {
+            0.94f
+        }
+
+    val chatMessageWidth: Float
+        get() = if (isRound) {
+            if (compact) 0.84f else 0.78f
+        } else {
+            0.94f
+        }
+
+    val quickReplyWidth: Float
+        get() = if (isRound) {
+            if (compact) 0.78f else 0.72f
+        } else {
+            0.94f
+        }
+
+    val pairingWidth: Float
+        get() = if (isRound) 0.88f else 0.94f
+
+    fun visibleMessageCount(hasPendingPeer: Boolean): Int =
+        when {
+            hasPendingPeer && isRound -> 1
+            hasPendingPeer -> 2
+            isRound && compact -> 1
+            isRound -> 2
+            compact -> 3
+            else -> 4
+        }
+}
 
 @Composable
 internal fun SpotChatApp() {
@@ -614,7 +766,13 @@ internal fun SpotChatApp() {
     }
 
     SpotChatTheme {
-        val swipeThreshold = with(LocalDensity.current) { 48.dp.toPx() }
+        val isRoundScreen = LocalConfiguration.current.isScreenRound
+        val dismissState = rememberSwipeToDismissBoxState()
+        LaunchedEffect(appSurface) {
+            if (appSurface == AppSurface.Profile) {
+                dismissState.snapTo(SwipeToDismissValue.Default)
+            }
+        }
         BackHandler(enabled = appSurface == AppSurface.Profile) {
             appSurface = AppSurface.Chat
         }
@@ -624,30 +782,7 @@ internal fun SpotChatApp() {
                     Modifier
                         .fillMaxSize()
                         .background(Color.Black)
-                        .padding(6.dp)
-                        .pointerInput(appSurface, swipeThreshold) {
-                            var dragAmount = 0f
-                            detectHorizontalDragGestures(
-                                onHorizontalDrag = { _, delta ->
-                                    dragAmount += delta
-                                },
-                                onDragEnd = {
-                                    when {
-                                        dragAmount < -swipeThreshold && appSurface == AppSurface.Chat -> {
-                                            appSurface = AppSurface.Profile
-                                        }
-
-                                        dragAmount > swipeThreshold && appSurface == AppSurface.Profile -> {
-                                            appSurface = AppSurface.Chat
-                                        }
-                                    }
-                                    dragAmount = 0f
-                                },
-                                onDragCancel = {
-                                    dragAmount = 0f
-                                }
-                            )
-                        },
+                        .padding(WatchSurfaceSpec(isRound = isRoundScreen, compact = false).appPadding),
                 contentAlignment = Alignment.Center
             ) {
                 AnimatedContent(
@@ -672,6 +807,7 @@ internal fun SpotChatApp() {
                     when (targetSurface) {
                         AppSurface.Chat ->
                             WatchChatSurface(
+                                isRoundScreen = isRoundScreen,
                                 profile = profile,
                                 transportMode = transportMode,
                                 trustState = trustState,
@@ -683,18 +819,52 @@ internal fun SpotChatApp() {
                                 onSelectMode = ::selectMode,
                                 onConfirmPairing = ::confirmPairing,
                                 onRejectPairing = ::rejectPairing,
-                                onSendQuickReply = ::sendQuickReply
+                                onSendQuickReply = ::sendQuickReply,
+                                onOpenProfile = {
+                                    appSurface = AppSurface.Profile
+                                }
                             )
 
                         AppSurface.Profile ->
-                            WatchProfileSurface(
-                                profile = profile,
-                                avatars = defaultAvatars,
-                                onNavigateBack = {
+                            SwipeToDismissBox(
+                                onDismissed = {
                                     appSurface = AppSurface.Chat
                                 },
-                                onProfileChange = ::updateProfile
-                            )
+                                modifier = Modifier.fillMaxSize(),
+                                state = dismissState,
+                                backgroundKey = AppSurface.Chat,
+                                contentKey = AppSurface.Profile
+                            ) { isBackground ->
+                                if (isBackground) {
+                                    WatchChatSurface(
+                                        isRoundScreen = isRoundScreen,
+                                        profile = profile,
+                                        transportMode = transportMode,
+                                        trustState = trustState,
+                                        fingerprint = localFingerprint,
+                                        pairingCode = pairingCode,
+                                        pendingPeer = pendingPeer,
+                                        trustedPeerCount = trustedPeers.size,
+                                        messages = messages,
+                                        onSelectMode = ::selectMode,
+                                        onConfirmPairing = ::confirmPairing,
+                                        onRejectPairing = ::rejectPairing,
+                                        onSendQuickReply = ::sendQuickReply,
+                                        onOpenProfile = {},
+                                        profileNavigationEnabled = false
+                                    )
+                                } else {
+                                    WatchProfileSurface(
+                                        isRoundScreen = isRoundScreen,
+                                        profile = profile,
+                                        avatars = defaultAvatars,
+                                        onNavigateBack = {
+                                            appSurface = AppSurface.Chat
+                                        },
+                                        onProfileChange = ::updateProfile
+                                    )
+                                }
+                            }
                     }
                 }
             }
@@ -704,34 +874,17 @@ internal fun SpotChatApp() {
 
 @Composable
 private fun WatchProfileSurface(
+    isRoundScreen: Boolean,
     profile: ProfileSettings,
     avatars: List<DefaultAvatar>,
     onNavigateBack: () -> Unit,
     onProfileChange: (ProfileSettings) -> Unit
 ) {
     BoxWithConstraints(
-        modifier =
-            Modifier
-                .fillMaxSize()
-                .clip(CircleShape)
-                .background(
-                    Brush.radialGradient(
-                        colors =
-                            listOf(
-                                Color(0xFF231A2B),
-                                Color(0xFF10141D),
-                                Color(0xFF030506)
-                            )
-                    )
-                )
-                .padding(
-                    start = 18.dp,
-                    top = 0.dp,
-                    end = 18.dp,
-                    bottom = 0.dp
-                )
+        modifier = Modifier.fillMaxSize()
     ) {
         val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
         val selectedAvatar = avatarFor(profile.avatarId)
         val avatarRows =
             remember(avatars) {
@@ -742,78 +895,105 @@ private fun WatchProfileSurface(
                 initialCenterItemIndex = 1
             )
 
-        ScalingLazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            state = listState,
-            contentPadding =
-                PaddingValues(
-                    top = if (compact) 22.dp else 28.dp,
-                    bottom = if (compact) 44.dp else 52.dp
-                ),
-            verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            anchorType = ScalingLazyListAnchorType.ItemCenter
+        Box(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .clip(surfaceSpec.screenShape)
+                    .background(
+                        Brush.radialGradient(
+                            colors =
+                                listOf(
+                                    Color(0xFF231A2B),
+                                    Color(0xFF10141D),
+                                    Color(0xFF030506)
+                                )
+                        )
+                    )
+                    .padding(horizontal = surfaceSpec.profileHorizontalPadding)
         ) {
-            item {
-                ProfileHeader(
-                    profile = profile,
-                    selectedAvatar = selectedAvatar,
-                    compact = compact,
-                    onNavigateBack = onNavigateBack
-                )
-            }
-
-            item {
-                ProfileNameField(
-                    displayName = profile.displayName,
-                    compact = compact,
-                    onDisplayNameChange = { displayName ->
-                        onProfileChange(
-                            profile.copy(
-                                displayName =
-                                    displayName
-                                        .replace("\n", "")
-                                        .take(ProfileStore.MAX_DISPLAY_NAME_CHARS)
-                            )
+            ScreenScaffold(
+                scrollState = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding =
+                    PaddingValues(
+                        top = surfaceSpec.profileTopPadding,
+                        bottom = surfaceSpec.profileBottomPadding
+                    ),
+                scrollIndicator = {
+                    ScrollIndicator(state = listState)
+                }
+            ) { scaffoldPadding ->
+                ScalingLazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    state = listState,
+                    contentPadding = scaffoldPadding,
+                    verticalArrangement = Arrangement.spacedBy(surfaceSpec.profileVerticalGap),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    anchorType = ScalingLazyListAnchorType.ItemCenter
+                ) {
+                    item {
+                        ProfileHeader(
+                            profile = profile,
+                            selectedAvatar = selectedAvatar,
+                            surfaceSpec = surfaceSpec,
+                            onNavigateBack = onNavigateBack
                         )
                     }
-                )
-            }
 
-            item {
-                Text(
-                    text = "头像",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = if (compact) 10.sp else 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1
-                )
-            }
+                    item {
+                        ProfileNameField(
+                            displayName = profile.displayName,
+                            surfaceSpec = surfaceSpec,
+                            onDisplayNameChange = { displayName ->
+                                onProfileChange(
+                                    profile.copy(
+                                        displayName =
+                                            displayName
+                                                .replace("\n", "")
+                                                .take(ProfileStore.MAX_DISPLAY_NAME_CHARS)
+                                    )
+                                )
+                            }
+                        )
+                    }
 
-            avatarRows.forEach { rowAvatars ->
-                item {
-                    ProfileAvatarRow(
-                        avatars = rowAvatars,
-                        selectedAvatar = selectedAvatar,
-                        displayName = profile.displayName,
-                        compact = compact,
-                        onSelectAvatar = { avatar ->
-                            onProfileChange(profile.copy(avatarId = avatar.id))
+                    item {
+                        Text(
+                            text = "头像",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = if (compact) 10.sp else 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
+
+                    avatarRows.forEach { rowAvatars ->
+                        item {
+                            ProfileAvatarRow(
+                                avatars = rowAvatars,
+                                selectedAvatar = selectedAvatar,
+                                displayName = profile.displayName,
+                                surfaceSpec = surfaceSpec,
+                                onSelectAvatar = { avatar ->
+                                    onProfileChange(profile.copy(avatarId = avatar.id))
+                                }
+                            )
                         }
-                    )
-                }
-            }
+                    }
 
-            item {
-                Text(
-                    text = profile.displayName.ifBlank { "SpotChat Watch" },
-                    modifier = Modifier.fillMaxWidth(if (compact) 0.72f else 0.78f),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = if (compact) 10.sp else 11.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.Center
-                )
+                    item {
+                        Text(
+                            text = profile.displayName.ifBlank { "SpotChat Watch" },
+                            modifier = Modifier.fillMaxWidth(surfaceSpec.profileSummaryWidth),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = if (compact) 10.sp else 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
             }
         }
     }
@@ -823,11 +1003,12 @@ private fun WatchProfileSurface(
 private fun ProfileHeader(
     profile: ProfileSettings,
     selectedAvatar: DefaultAvatar,
-    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
     onNavigateBack: () -> Unit
 ) {
+    val compact = surfaceSpec.compact
     Row(
-        modifier = Modifier.fillMaxWidth(if (compact) 0.88f else 0.9f),
+        modifier = Modifier.fillMaxWidth(surfaceSpec.profileHeaderWidth),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -869,14 +1050,15 @@ private fun ProfileAvatarRow(
     avatars: List<DefaultAvatar>,
     selectedAvatar: DefaultAvatar,
     displayName: String,
-    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
     onSelectAvatar: (DefaultAvatar) -> Unit
 ) {
+    val compact = surfaceSpec.compact
     Row(
-        modifier = Modifier.fillMaxWidth(if (compact) 0.74f else 0.72f),
+        modifier = Modifier.fillMaxWidth(surfaceSpec.profileAvatarRowWidth),
         horizontalArrangement =
             Arrangement.spacedBy(
-                space = if (compact) 12.dp else 14.dp,
+                space = surfaceSpec.profileAvatarSpacing,
                 alignment = Alignment.CenterHorizontally
             ),
         verticalAlignment = Alignment.CenterVertically
@@ -885,7 +1067,7 @@ private fun ProfileAvatarRow(
             AvatarBubble(
                 avatar = avatar,
                 displayName = displayName,
-                size = if (compact) 36.dp else 40.dp,
+                size = surfaceSpec.profileAvatarSize,
                 textSize = if (compact) 16.sp else 17.sp,
                 selected = avatar.id == selectedAvatar.id,
                 onClick = {
@@ -922,13 +1104,14 @@ private fun ProfileBackButton(
 @Composable
 private fun ProfileNameField(
     displayName: String,
-    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
     onDisplayNameChange: (String) -> Unit
 ) {
+    val compact = surfaceSpec.compact
     Box(
         modifier =
             Modifier
-                .fillMaxWidth(if (compact) 0.78f else 0.82f)
+                .fillMaxWidth(surfaceSpec.profileFieldWidth)
                 .height(if (compact) 32.dp else 36.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surfaceContainerHigh)
@@ -963,8 +1146,8 @@ private fun ProfileNameField(
 private fun AvatarBubble(
     avatar: DefaultAvatar,
     displayName: String,
-    size: androidx.compose.ui.unit.Dp,
-    textSize: androidx.compose.ui.unit.TextUnit,
+    size: Dp,
+    textSize: TextUnit,
     selected: Boolean,
     onClick: (() -> Unit)?
 ) {
@@ -1011,6 +1194,7 @@ private fun AvatarBubble(
 
 @Composable
 private fun WatchChatSurface(
+    isRoundScreen: Boolean,
     profile: ProfileSettings,
     transportMode: TransportMode,
     trustState: String,
@@ -1022,128 +1206,172 @@ private fun WatchChatSurface(
     onSelectMode: (TransportMode) -> Unit,
     onConfirmPairing: () -> Unit,
     onRejectPairing: () -> Unit,
-    onSendQuickReply: (String) -> Unit
+    onSendQuickReply: (String) -> Unit,
+    onOpenProfile: () -> Unit,
+    profileNavigationEnabled: Boolean = true
 ) {
+    val swipeThreshold = with(LocalDensity.current) { 48.dp.toPx() }
+    val profileSwipeModifier =
+        if (profileNavigationEnabled) {
+            Modifier.pointerInput(swipeThreshold) {
+                var dragAmount = 0f
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { _, delta ->
+                        dragAmount += delta
+                    },
+                    onDragEnd = {
+                        if (dragAmount < -swipeThreshold) {
+                            onOpenProfile()
+                        }
+                        dragAmount = 0f
+                    },
+                    onDragCancel = {
+                        dragAmount = 0f
+                    }
+                )
+            }
+        } else {
+            Modifier
+        }
+
     BoxWithConstraints(
         modifier =
             Modifier
                 .fillMaxSize()
-                .clip(CircleShape)
-                .background(
-                    Brush.radialGradient(
-                        colors =
-                            listOf(
-                                Color(0xFF173032),
-                                Color(0xFF081719),
-                                Color(0xFF020506)
-                            )
-                    )
-                )
-                .padding(
-                    start = 20.dp,
-                    top = 22.dp,
-                    end = 20.dp,
-                    bottom = 28.dp
-                )
+                .then(profileSwipeModifier)
     ) {
         val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
         val quickReplyHeight = if (compact) 28.dp else 32.dp
-        val visibleMessageCount =
-            when {
-                pendingPeer != null -> 1
-                compact -> 1
-                else -> 2
-            }
+        val visibleMessageCount = surfaceSpec.visibleMessageCount(pendingPeer != null)
+        val messageScrollState = rememberScrollState()
 
-        Column(
-            modifier = Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            StatusHeader(
-                avatar = avatarFor(profile.avatarId),
-                displayName = profile.displayName,
-                trustState = trustState,
-                transportMode = transportMode,
-                compact = compact
-            )
-
-            Spacer(modifier = Modifier.height(if (compact) 4.dp else 6.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(if (compact) 0.82f else 0.76f),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TransportToggle(
-                    mode = TransportMode.Lan,
-                    selected = transportMode == TransportMode.Lan,
-                    compact = compact,
-                    onClick = { onSelectMode(TransportMode.Lan) }
-                )
-                Spacer(modifier = Modifier.width(if (compact) 6.dp else 8.dp))
-                TransportToggle(
-                    mode = TransportMode.Bluetooth,
-                    selected = transportMode == TransportMode.Bluetooth,
-                    compact = compact,
-                    onClick = { onSelectMode(TransportMode.Bluetooth) }
-                )
-            }
-
-            FingerprintPill(
-                fingerprint = fingerprint,
-                pairingCode = pairingCode,
-                trustedPeerCount = trustedPeerCount,
-                compact = compact
-            )
-
-            if (pendingPeer != null) {
-                PairingActionRow(
-                    peer = pendingPeer,
-                    onConfirmPairing = onConfirmPairing,
-                    onRejectPairing = onRejectPairing
-                )
-            }
-
-            Column(
-                modifier =
-                    Modifier
-                        .weight(1f)
-                        .fillMaxWidth(if (compact) 0.84f else 0.78f)
-                        .heightIn(min = if (compact) 42.dp else 56.dp)
-                        .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp)
-            ) {
-                messages.takeLast(visibleMessageCount).forEach { message ->
-                    MessageBubble(
-                        message = message,
-                        compact = compact
+        Box(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .clip(surfaceSpec.screenShape)
+                    .background(
+                        Brush.radialGradient(
+                            colors =
+                                listOf(
+                                    Color(0xFF173032),
+                                    Color(0xFF081719),
+                                    Color(0xFF020506)
+                                )
+                        )
                     )
+                    .padding(
+                        start = surfaceSpec.chatHorizontalPadding,
+                        top = surfaceSpec.chatTopPadding,
+                        end = surfaceSpec.chatHorizontalPadding,
+                        bottom = surfaceSpec.chatBottomPadding
+                    ),
+        ) {
+            ScreenScaffold(
+                scrollState = messageScrollState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(),
+                scrollIndicator = {
+                    ScrollIndicator(state = messageScrollState)
                 }
-            }
+            ) { scaffoldPadding ->
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .padding(scaffoldPadding),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    StatusHeader(
+                        avatar = avatarFor(profile.avatarId),
+                        displayName = profile.displayName,
+                        trustState = trustState,
+                        transportMode = transportMode,
+                        surfaceSpec = surfaceSpec,
+                        onOpenProfile = if (profileNavigationEnabled) onOpenProfile else null
+                    )
 
-            Spacer(modifier = Modifier.height(if (compact) 5.dp else 6.dp))
+                    Spacer(modifier = Modifier.height(if (compact) 4.dp else 6.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(if (compact) 0.78f else 0.72f),
-                horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                QuickReplyChip(
-                    text = "收到",
-                    height = quickReplyHeight,
-                    modifier = Modifier.weight(1f),
-                    onClick = { onSendQuickReply("收到") }
-                )
-                QuickReplyChip(
-                    text = "马上到",
-                    height = quickReplyHeight,
-                    modifier = Modifier.weight(1f),
-                    onClick = { onSendQuickReply("马上到") }
-                )
-                SendButton(
-                    height = quickReplyHeight,
-                    onClick = { onSendQuickReply("稍后联系") }
-                )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(surfaceSpec.chatToggleWidth),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TransportToggle(
+                            mode = TransportMode.Lan,
+                            selected = transportMode == TransportMode.Lan,
+                            compact = compact,
+                            onClick = { onSelectMode(TransportMode.Lan) }
+                        )
+                        Spacer(modifier = Modifier.width(if (compact) 6.dp else 8.dp))
+                        TransportToggle(
+                            mode = TransportMode.Bluetooth,
+                            selected = transportMode == TransportMode.Bluetooth,
+                            compact = compact,
+                            onClick = { onSelectMode(TransportMode.Bluetooth) }
+                        )
+                    }
+
+                    FingerprintPill(
+                        fingerprint = fingerprint,
+                        pairingCode = pairingCode,
+                        trustedPeerCount = trustedPeerCount,
+                        surfaceSpec = surfaceSpec
+                    )
+
+                    if (pendingPeer != null) {
+                        PairingActionRow(
+                            peer = pendingPeer,
+                            surfaceSpec = surfaceSpec,
+                            onConfirmPairing = onConfirmPairing,
+                            onRejectPairing = onRejectPairing
+                        )
+                    }
+
+                    Column(
+                        modifier =
+                            Modifier
+                                .weight(1f)
+                                .fillMaxWidth(surfaceSpec.chatMessageWidth)
+                                .heightIn(min = if (compact) 42.dp else 56.dp)
+                                .verticalScroll(messageScrollState),
+                        verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp)
+                    ) {
+                        messages.takeLast(visibleMessageCount).forEach { message ->
+                            MessageBubble(
+                                message = message,
+                                compact = compact
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(if (compact) 5.dp else 6.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(surfaceSpec.quickReplyWidth),
+                        horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        QuickReplyChip(
+                            text = "收到",
+                            height = quickReplyHeight,
+                            modifier = Modifier.weight(1f),
+                            onClick = { onSendQuickReply("收到") }
+                        )
+                        QuickReplyChip(
+                            text = "马上到",
+                            height = quickReplyHeight,
+                            modifier = Modifier.weight(1f),
+                            onClick = { onSendQuickReply("马上到") }
+                        )
+                        SendButton(
+                            height = quickReplyHeight,
+                            onClick = { onSendQuickReply("稍后联系") }
+                        )
+                    }
+                }
             }
         }
     }
@@ -1155,10 +1383,12 @@ private fun StatusHeader(
     displayName: String,
     trustState: String,
     transportMode: TransportMode,
-    compact: Boolean
+    surfaceSpec: WatchSurfaceSpec,
+    onOpenProfile: (() -> Unit)?
 ) {
+    val compact = surfaceSpec.compact
     Row(
-        modifier = Modifier.fillMaxWidth(if (compact) 0.78f else 0.82f),
+        modifier = Modifier.fillMaxWidth(surfaceSpec.chatHeaderWidth),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1168,7 +1398,7 @@ private fun StatusHeader(
             size = if (compact) 26.dp else 30.dp,
             textSize = if (compact) 13.sp else 15.sp,
             selected = false,
-            onClick = null
+            onClick = onOpenProfile
         )
         Spacer(modifier = Modifier.width(if (compact) 6.dp else 7.dp))
         Column(horizontalAlignment = Alignment.Start) {
@@ -1243,13 +1473,14 @@ private fun FingerprintPill(
     fingerprint: String,
     pairingCode: String?,
     trustedPeerCount: Int,
-    compact: Boolean
+    surfaceSpec: WatchSurfaceSpec
 ) {
+    val compact = surfaceSpec.compact
     Row(
         modifier =
             Modifier
                 .padding(top = if (compact) 5.dp else 7.dp, bottom = if (compact) 5.dp else 6.dp)
-                .fillMaxWidth(if (compact) 0.78f else 0.88f)
+                .fillMaxWidth(surfaceSpec.fingerprintWidth)
                 .clip(RoundedCornerShape(if (compact) 12.dp else 13.dp))
                 .background(Color(0x332DE6D1))
                 .padding(horizontal = if (compact) 8.dp else 9.dp, vertical = if (compact) 4.dp else 5.dp),
@@ -1276,6 +1507,7 @@ private fun FingerprintPill(
 @Composable
 private fun PairingActionRow(
     peer: TrustedPeer,
+    surfaceSpec: WatchSurfaceSpec,
     onConfirmPairing: () -> Unit,
     onRejectPairing: () -> Unit
 ) {
@@ -1283,7 +1515,7 @@ private fun PairingActionRow(
         modifier =
             Modifier
                 .padding(bottom = 6.dp)
-                .fillMaxWidth(0.88f)
+                .fillMaxWidth(surfaceSpec.pairingWidth)
                 .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                 .padding(horizontal = 8.dp, vertical = 7.dp),
@@ -1438,7 +1670,7 @@ private fun MessageBubble(
 @Composable
 private fun QuickReplyChip(
     text: String,
-    height: androidx.compose.ui.unit.Dp,
+    height: Dp,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
@@ -1466,7 +1698,7 @@ private fun QuickReplyChip(
 
 @Composable
 private fun SendButton(
-    height: androidx.compose.ui.unit.Dp,
+    height: Dp,
     onClick: () -> Unit
 ) {
     Box(
