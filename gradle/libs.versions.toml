@@ -4,6 +4,7 @@ androidx-activity = "1.13.0"
 androidx-compose-bom = "2026.03.01"
 androidx-wear-compose = "1.6.0"
 androidx-wear-compose-material3 = "1.6.0"
+androidx-wear-input = "1.2.0"
 org-jetbrains-kotlin = "2.3.20"
 kotlinx-coroutines = "1.10.2"
 kotlinx-serialization = "1.10.0"
@@ -23,6 +24,7 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
 wear-compose-foundation = { module = "androidx.wear.compose:compose-foundation", version.ref = "androidx-wear-compose" }
 wear-compose-material = { module = "androidx.wear.compose:compose-material3", version.ref = "androidx-wear-compose-material3" }
+wear-input = { module = "androidx.wear:wear-input", version.ref = "androidx-wear-input" }
 
 [plugins]
 com-android-application = { id = "com.android.application", version.ref = "android-gradle-plugin" }

@@ -2,7 +2,9 @@ package com.weifurry.spotchat.presentation
 
 import android.Manifest
 import android.app.Activity
+import android.app.RemoteInput
 import android.os.Build
+import android.view.inputmethod.EditorInfo
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -85,6 +87,8 @@ import androidx.wear.compose.material3.ScreenScaffold
 import androidx.wear.compose.material3.ScrollIndicator
 import androidx.wear.compose.material3.SwipeToDismissBox
 import androidx.wear.compose.material3.Text
+import androidx.wear.input.RemoteInputIntentHelper
+import androidx.wear.input.WearableRemoteInputExtender
 import com.weifurry.spotchat.R
 import com.weifurry.spotchat.crypto.IdentityStore
 import com.weifurry.spotchat.crypto.SpotChatCrypto
@@ -163,6 +167,9 @@ private val defaultAvatars =
         DefaultAvatar("zed", Color(0xFFD1D4F9), Color.White, R.drawable.avatar_zed)
     )
 private const val PROFILE_AVATARS_PER_ROW = 3
+private const val CUSTOM_MESSAGE_REMOTE_INPUT_KEY = "spotchat_custom_message"
+private const val MAX_CUSTOM_MESSAGE_CHARS = 280
+private val customMessageQuickChoices = arrayOf("收到", "马上到", "稍后联系")
 
 private data class WatchSurfaceSpec(
     val isRound: Boolean,
@@ -735,6 +742,56 @@ internal fun SpotChatApp() {
         }
     }
 
+    val messageInputLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode != Activity.RESULT_OK) {
+                return@rememberLauncherForActivityResult
+            }
+
+            val message =
+                result.data
+                    ?.let { intent -> RemoteInput.getResultsFromIntent(intent) }
+                    ?.getCharSequence(CUSTOM_MESSAGE_REMOTE_INPUT_KEY)
+                    ?.toString()
+                    ?.trim()
+                    ?.take(MAX_CUSTOM_MESSAGE_CHARS)
+                    .orEmpty()
+
+            if (message.isNotBlank()) {
+                sendQuickReply(message)
+            }
+        }
+
+    fun openCustomMessageInput() {
+        val remoteInputBuilder =
+            RemoteInput.Builder(CUSTOM_MESSAGE_REMOTE_INPUT_KEY)
+                .setLabel("输入消息")
+                .setChoices(customMessageQuickChoices)
+                .setAllowFreeFormInput(true)
+        WearableRemoteInputExtender(remoteInputBuilder)
+            .setEmojisAllowed(true)
+            .setInputActionType(EditorInfo.IME_ACTION_SEND)
+
+        val inputIntent = RemoteInputIntentHelper.createActionRemoteInputIntent()
+        RemoteInputIntentHelper.putTitleExtra(inputIntent, "SpotChat")
+        RemoteInputIntentHelper.putConfirmLabelExtra(inputIntent, "发送")
+        RemoteInputIntentHelper.putCancelLabelExtra(inputIntent, "取消")
+        RemoteInputIntentHelper.putRemoteInputsExtra(inputIntent, listOf(remoteInputBuilder.build()))
+
+        val replyContext =
+            messages
+                .filter { message -> !message.mine && message.deliveryState != DeliveryState.System }
+                .takeLast(3)
+                .map { message -> message.text }
+        if (replyContext.isNotEmpty()) {
+            RemoteInputIntentHelper.putSmartReplyContextExtra(inputIntent, replyContext)
+        }
+
+        messageInputLauncher.launch(inputIntent)
+    }
+
     LaunchedEffect(transportMode, deviceName) {
         val transport = currentTransport()
         activePeer = null
@@ -846,6 +903,7 @@ internal fun SpotChatApp() {
                                         onConfirmPairing = ::confirmPairing,
                                         onRejectPairing = ::rejectPairing,
                                         onSendQuickReply = ::sendQuickReply,
+                                        onOpenCustomMessageInput = ::openCustomMessageInput,
                                         onOpenProfile = {
                                             appSurface = AppSurface.Profile
                                         }
@@ -878,6 +936,7 @@ internal fun SpotChatApp() {
                                         onConfirmPairing = ::confirmPairing,
                                         onRejectPairing = ::rejectPairing,
                                         onSendQuickReply = ::sendQuickReply,
+                                        onOpenCustomMessageInput = ::openCustomMessageInput,
                                         onOpenProfile = {},
                                         profileNavigationEnabled = false
                                     )
@@ -1238,6 +1297,7 @@ private fun WatchChatSurface(
     onConfirmPairing: () -> Unit,
     onRejectPairing: () -> Unit,
     onSendQuickReply: (String) -> Unit,
+    onOpenCustomMessageInput: () -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
 ) {
@@ -1397,7 +1457,7 @@ private fun WatchChatSurface(
                         )
                         SendButton(
                             height = quickReplyHeight,
-                            onClick = { onSendQuickReply("稍后联系") }
+                            onClick = onOpenCustomMessageInput
                         )
                     }
                 }

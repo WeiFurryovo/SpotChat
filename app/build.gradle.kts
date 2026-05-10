@@ -75,6 +75,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.material.icons.extended)
     implementation(libs.wear.compose.foundation)
+    implementation(libs.wear.input)
     implementation(libs.wear.compose.material)
 
     coreLibraryDesugaring(libs.desugar.jdk.libs)
