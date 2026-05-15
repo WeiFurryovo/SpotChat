@@ -78,8 +78,9 @@ class BluetoothChatTransport(
     ) {
         val adapter = bluetoothAdapter
         if (adapter == null || !adapter.isEnabled) {
-            mutableEvents.emit(TransportEvent.Failure("蓝牙不可用或尚未开启"))
-            return
+            val error = IllegalStateException("蓝牙不可用或尚未开启")
+            mutableEvents.emit(TransportEvent.Failure(error.message.orEmpty(), error))
+            throw error
         }
 
         withContext(Dispatchers.IO) {

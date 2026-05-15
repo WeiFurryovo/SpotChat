@@ -73,4 +73,16 @@ class SpotChatCryptoTest {
             SpotChatCrypto.fingerprint(bob.public)
         )
     }
+
+    @Test
+    fun fingerprintsKeepFullIdentityButDisplayShort() {
+        val identity = SpotChatCrypto.generateIdentity()
+        val fingerprint = SpotChatCrypto.fingerprint(identity.public)
+
+        assertEquals(64, fingerprint.length)
+        assertEquals(
+            fingerprint.chunked(2).take(8).joinToString(separator = " "),
+            SpotChatCrypto.displayFingerprint(fingerprint)
+        )
+    }
 }

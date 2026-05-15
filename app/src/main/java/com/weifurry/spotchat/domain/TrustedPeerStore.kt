@@ -48,7 +48,10 @@ class TrustedPeerStore(context: Context) {
             )
         val updatedPeers =
             all()
-                .filterNot { existing -> existing.fingerprint == storedPeer.fingerprint }
+                .filterNot { existing ->
+                    existing.fingerprint == storedPeer.fingerprint ||
+                        existing.publicKey == storedPeer.publicKey
+                }
                 .plus(storedPeer)
         prefs
             .edit()
@@ -57,8 +60,14 @@ class TrustedPeerStore(context: Context) {
         return storedPeer
     }
 
-    fun forget(fingerprint: String) {
-        val updatedPeers = all().filterNot { peer -> peer.fingerprint == fingerprint }
+    fun forget(
+        fingerprint: String,
+        publicKey: String? = null
+    ) {
+        val updatedPeers =
+            all().filterNot { peer ->
+                peer.fingerprint == fingerprint || peer.publicKey == publicKey
+            }
         prefs
             .edit()
             .putString(KEY_PEERS, json.encodeToString(updatedPeers))

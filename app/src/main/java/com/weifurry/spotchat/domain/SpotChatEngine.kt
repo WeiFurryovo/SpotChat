@@ -12,6 +12,8 @@ import java.util.Base64
 import java.util.LinkedHashMap
 import java.util.UUID
 import javax.crypto.SecretKey
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 data class TrustedPeer(
     val deviceName: String,
@@ -40,6 +42,11 @@ class SpotChatEngine(
     private val sessions = mutableMapOf<String, SecretKey>()
     private val seenMessages = LinkedHashMap<String, Unit>()
     private val seenMessagesLock = Any()
+    private val json =
+        Json {
+            encodeDefaults = true
+            ignoreUnknownKeys = true
+        }
 
     fun helloPacket(transports: List<String> = listOf("lan", "bluetooth")): WirePacket =
         WirePacket(
@@ -79,7 +86,12 @@ class SpotChatEngine(
             sessions[peerFingerprint]
                 ?: error("No trusted session for peer $peerFingerprint")
         val messageId = UUID.randomUUID().toString()
-        val associatedData = messageAssociatedData(messageId, localFingerprint)
+        val associatedData =
+            payloadAssociatedData(
+                kind = PacketKind.ENCRYPTED_MESSAGE,
+                messageId = messageId,
+                senderFingerprint = localFingerprint
+            )
         val frame =
             SpotChatCrypto.encrypt(
                 sessionKey = sessionKey,
@@ -99,18 +111,43 @@ class SpotChatEngine(
         )
     }
 
-    fun ackPacket(
-        messageId: String,
+    fun encryptAckForPeer(
+        peerFingerprint: String,
+        deliveredMessageId: String,
         receivedAtEpochMillis: Long = System.currentTimeMillis()
-    ): WirePacket =
-        WirePacket(
-            kind = PacketKind.ACK,
-            ack =
-                DeliveryAck(
-                    messageId = messageId,
-                    receivedAtEpochMillis = receivedAtEpochMillis
+    ): WirePacket {
+        val sessionKey =
+            sessions[peerFingerprint]
+                ?: error("No trusted session for peer $peerFingerprint")
+        val ackEnvelopeId = UUID.randomUUID().toString()
+        val ack =
+            DeliveryAck(
+                messageId = deliveredMessageId,
+                receivedAtEpochMillis = receivedAtEpochMillis
+            )
+        val frame =
+            SpotChatCrypto.encrypt(
+                sessionKey = sessionKey,
+                plaintext = json.encodeToString(ack).toByteArray(Charsets.UTF_8),
+                associatedData =
+                    payloadAssociatedData(
+                        kind = PacketKind.ENCRYPTED_ACK,
+                        messageId = ackEnvelopeId,
+                        senderFingerprint = localFingerprint
+                    )
+            )
+        return WirePacket(
+            kind = PacketKind.ENCRYPTED_ACK,
+            encryptedMessage =
+                EncryptedChatMessage(
+                    messageId = ackEnvelopeId,
+                    senderFingerprint = localFingerprint,
+                    sentAtEpochMillis = receivedAtEpochMillis,
+                    nonce = base64(frame.nonce),
+                    ciphertext = base64(frame.ciphertext)
                 )
         )
+    }
 
     fun decryptText(message: EncryptedChatMessage): PlainChatMessage {
         val replayKey = replayKey(message)
@@ -131,7 +168,12 @@ class SpotChatEngine(
             SpotChatCrypto.decrypt(
                 sessionKey = sessionKey,
                 frame = frame,
-                associatedData = messageAssociatedData(message.messageId, message.senderFingerprint)
+                associatedData =
+                    payloadAssociatedData(
+                        kind = PacketKind.ENCRYPTED_MESSAGE,
+                        messageId = message.messageId,
+                        senderFingerprint = message.senderFingerprint
+                    )
             )
         rememberMessage(replayKey, message)
         return PlainChatMessage(
@@ -142,11 +184,35 @@ class SpotChatEngine(
         )
     }
 
-    private fun messageAssociatedData(
+    fun decryptAck(message: EncryptedChatMessage): DeliveryAck {
+        val sessionKey =
+            sessions[message.senderFingerprint]
+                ?: error("No trusted session for sender ${message.senderFingerprint}")
+        val frame =
+            EncryptedFrame(
+                nonce = Base64.getDecoder().decode(message.nonce),
+                ciphertext = Base64.getDecoder().decode(message.ciphertext)
+            )
+        val plaintext =
+            SpotChatCrypto.decrypt(
+                sessionKey = sessionKey,
+                frame = frame,
+                associatedData =
+                    payloadAssociatedData(
+                        kind = PacketKind.ENCRYPTED_ACK,
+                        messageId = message.messageId,
+                        senderFingerprint = message.senderFingerprint
+                    )
+            )
+        return json.decodeFromString(plaintext.toString(Charsets.UTF_8))
+    }
+
+    private fun payloadAssociatedData(
+        kind: PacketKind,
         messageId: String,
         senderFingerprint: String
     ): ByteArray =
-        "SpotChat/v1/message/$messageId/$senderFingerprint".toByteArray(Charsets.UTF_8)
+        "SpotChat/v1/${kind.name}/$messageId/$senderFingerprint".toByteArray(Charsets.UTF_8)
 
     private fun base64(bytes: ByteArray): String =
         Base64.getEncoder().encodeToString(bytes)

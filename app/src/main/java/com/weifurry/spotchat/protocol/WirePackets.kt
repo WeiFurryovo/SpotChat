@@ -6,6 +6,7 @@ import kotlinx.serialization.Serializable
 enum class PacketKind {
     HELLO,
     ENCRYPTED_MESSAGE,
+    ENCRYPTED_ACK,
     ACK
 }
 

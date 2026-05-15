@@ -5,7 +5,6 @@ import com.weifurry.spotchat.domain.DuplicateMessageException
 import com.weifurry.spotchat.domain.SpotChatEngine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -64,12 +63,22 @@ class SpotChatEngineTest {
     }
 
     @Test
-    fun ackPacketsCarryDeliveredMessageId() {
+    fun encryptedAckPacketsCarryDeliveredMessageId() {
         val watch = SpotChatEngine("手表", SpotChatCrypto.generateIdentity())
+        val phone = SpotChatEngine("手机", SpotChatCrypto.generateIdentity())
 
-        val ack = watch.ackPacket("message-42").ack
+        watch.openSession(phone.helloPacket().hello ?: error("missing phone hello"))
+        val trustedWatch = phone.openSession(watch.helloPacket().hello ?: error("missing watch hello"))
+        val ackPacket = phone.encryptAckForPeer(trustedWatch.fingerprint, "message-42")
+        val encryptedAck =
+            ChatCodec
+                .decode(ChatCodec.encode(ackPacket))
+                .encryptedMessage
+                ?: error("missing encrypted ack")
+        val ack = watch.decryptAck(encryptedAck)
 
-        assertNotNull(ack)
-        assertEquals("message-42", ack?.messageId)
+        assertEquals(PacketKind.ENCRYPTED_ACK, ackPacket.kind)
+        assertEquals(phone.localFingerprint, encryptedAck.senderFingerprint)
+        assertEquals("message-42", ack.messageId)
     }
 }

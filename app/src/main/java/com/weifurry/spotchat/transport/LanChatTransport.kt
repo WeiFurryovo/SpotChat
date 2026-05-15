@@ -142,10 +142,18 @@ class LanChatTransport(
         val socket = discoverySocket ?: return
         val address = InetAddress.getByName("255.255.255.255")
         while (supervisor?.isActive == true) {
-            val payload = beaconPayload().toByteArray(Charsets.UTF_8)
-            val packet =
-                DatagramPacket(payload, payload.size, address, discoveryPort)
-            socket.send(packet)
+            try {
+                val payload = beaconPayload().toByteArray(Charsets.UTF_8)
+                val packet =
+                    DatagramPacket(payload, payload.size, address, discoveryPort)
+                socket.send(packet)
+            } catch (error: Throwable) {
+                if (supervisor?.isActive == true) {
+                    mutableEvents.emit(
+                        TransportEvent.Failure("局域网广播失败", error)
+                    )
+                }
+            }
             delay(DISCOVERY_INTERVAL_MS)
         }
     }

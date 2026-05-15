@@ -12,6 +12,7 @@ import java.security.spec.ECGenParameterSpec
 import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
 import java.util.Base64
+import java.util.Locale
 import javax.crypto.Cipher
 import javax.crypto.KeyAgreement
 import javax.crypto.Mac
@@ -91,8 +92,16 @@ object SpotChatCrypto {
 
     fun fingerprint(publicKey: PublicKey): String =
         sha256(publicKey.encoded)
+            .joinToString(separator = "") { byte ->
+                "%02X".format(Locale.US, byte.toInt() and 0xFF)
+            }
+
+    fun displayFingerprint(fingerprint: String): String =
+        fingerprint
+            .filter { character -> character.isLetterOrDigit() }
+            .chunked(2)
             .take(8)
-            .joinToString(separator = " ") { byte -> "%02X".format(byte) }
+            .joinToString(separator = " ") { chunk -> chunk.uppercase(Locale.US) }
 
     fun pairingCode(
         localPublicKey: PublicKey,

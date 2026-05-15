@@ -472,6 +472,39 @@ internal fun SpotChatApp() {
     fun trustedPeer(fingerprint: String): StoredTrustedPeer? =
         trustedPeers.firstOrNull { peer -> peer.fingerprint == fingerprint }
 
+    fun trustedPeer(peer: TrustedPeer): StoredTrustedPeer? =
+        trustedPeers.firstOrNull { storedPeer ->
+            storedPeer.fingerprint == peer.fingerprint || storedPeer.publicKey == peer.publicKey
+        }
+
+    fun removeTrustedPeer(storedPeer: StoredTrustedPeer) {
+        trustedPeers.removeAll { existing ->
+            existing.fingerprint == storedPeer.fingerprint || existing.publicKey == storedPeer.publicKey
+        }
+    }
+
+    suspend fun sendEncryptedAck(
+        transport: SpotChatTransport,
+        peer: TransportPeer,
+        senderFingerprint: String,
+        messageId: String,
+        failureState: String
+    ) {
+        runCatching {
+            sendPacket(
+                transport = transport,
+                peer = peer,
+                packet =
+                    engine.encryptAckForPeer(
+                        peerFingerprint = senderFingerprint,
+                        deliveredMessageId = messageId
+                    )
+            )
+        }.onFailure {
+            trustState = failureState
+        }
+    }
+
     fun mergePeerWithHello(
         eventPeer: TransportPeer,
         hello: PeerHello
@@ -529,11 +562,14 @@ internal fun SpotChatApp() {
                         val mergedPeer = mergePeerWithHello(event.peer, hello)
                         activePeer = mergedPeer
                         pairingCode = openedPeer.pairingCode
-                        val storedPeer = trustedPeer(openedPeer.fingerprint)
+                        val storedPeer = trustedPeer(openedPeer)
                         if (storedPeer != null && storedPeer.publicKey == openedPeer.publicKey) {
+                            val refreshedPeer = trustedPeerStore.trust(openedPeer)
+                            removeTrustedPeer(refreshedPeer)
+                            trustedPeers.add(0, refreshedPeer)
                             pendingPeer = null
                             activePeerFingerprint = openedPeer.fingerprint
-                            trustState = "已信任 ${storedPeer.deviceName}"
+                            trustState = "已信任 ${refreshedPeer.deviceName}"
                         } else {
                             activePeerFingerprint = null
                             pendingPeer = openedPeer
@@ -571,29 +607,25 @@ internal fun SpotChatApp() {
                                     )
                                 trustState = "收到加密消息"
                                 val replyPeer = activePeer ?: event.peer
-                                runCatching {
-                                    sendPacket(
-                                        transport,
-                                        replyPeer,
-                                        engine.ackPacket(plain.messageId)
-                                    )
-                                }.onFailure {
-                                    trustState = "回执发送失败"
-                                }
+                                sendEncryptedAck(
+                                    transport = transport,
+                                    peer = replyPeer,
+                                    senderFingerprint = plain.senderFingerprint,
+                                    messageId = plain.messageId,
+                                    failureState = "回执发送失败"
+                                )
                             }
                             .onFailure { error ->
                                 if (error is DuplicateMessageException) {
                                     trustState = "重复消息已忽略"
                                     val replyPeer = activePeer ?: event.peer
-                                    runCatching {
-                                        sendPacket(
-                                            transport,
-                                            replyPeer,
-                                            engine.ackPacket(error.messageId)
-                                        )
-                                    }.onFailure {
-                                        trustState = "重复回执发送失败"
-                                    }
+                                    sendEncryptedAck(
+                                        transport = transport,
+                                        peer = replyPeer,
+                                        senderFingerprint = error.senderFingerprint,
+                                        messageId = error.messageId,
+                                        failureState = "重复回执发送失败"
+                                    )
                                 } else {
                                     messages +=
                                         ChatBubble(
@@ -607,10 +639,24 @@ internal fun SpotChatApp() {
                             }
                     }
 
+                    PacketKind.ENCRYPTED_ACK -> {
+                        val encryptedAck = packet.encryptedMessage ?: return
+                        if (trustedPeer(encryptedAck.senderFingerprint) == null) {
+                            trustState = "拦截未认证回执"
+                            return
+                        }
+                        runCatching { engine.decryptAck(encryptedAck) }
+                            .onSuccess { ack ->
+                                updateMessageState(ack.messageId, DeliveryState.Delivered)
+                                trustState = "对方已收到"
+                            }
+                            .onFailure {
+                                trustState = "回执验证失败"
+                            }
+                    }
+
                     PacketKind.ACK -> {
-                        val ack = packet.ack ?: return
-                        updateMessageState(ack.messageId, DeliveryState.Delivered)
-                        trustState = "对方已收到"
+                        trustState = "忽略未认证回执"
                     }
                 }
             }
@@ -631,7 +677,7 @@ internal fun SpotChatApp() {
     fun confirmPairing() {
         val peer = pendingPeer ?: return
         val storedPeer = trustedPeerStore.trust(peer)
-        trustedPeers.removeAll { existing -> existing.fingerprint == storedPeer.fingerprint }
+        removeTrustedPeer(storedPeer)
         trustedPeers.add(0, storedPeer)
         pendingPeer = null
         activePeerFingerprint = storedPeer.fingerprint
@@ -645,8 +691,10 @@ internal fun SpotChatApp() {
 
     fun rejectPairing() {
         val peer = pendingPeer ?: return
-        trustedPeerStore.forget(peer.fingerprint)
-        trustedPeers.removeAll { storedPeer -> storedPeer.fingerprint == peer.fingerprint }
+        trustedPeerStore.forget(peer.fingerprint, peer.publicKey)
+        trustedPeers.removeAll { storedPeer ->
+            storedPeer.fingerprint == peer.fingerprint || storedPeer.publicKey == peer.publicKey
+        }
         pendingPeer = null
         activePeerFingerprint = null
         pairingCode = null
@@ -1565,6 +1613,7 @@ private fun FingerprintPill(
     surfaceSpec: WatchSurfaceSpec
 ) {
     val compact = surfaceSpec.compact
+    val displayFingerprint = SpotChatCrypto.displayFingerprint(fingerprint)
     Row(
         modifier =
             Modifier
@@ -1584,7 +1633,9 @@ private fun FingerprintPill(
         )
         Spacer(modifier = Modifier.width(if (compact) 4.dp else 5.dp))
         Text(
-            text = pairingCode?.let { "校验 $it" } ?: "本机 $fingerprint · 已信任 $trustedPeerCount",
+            text =
+                pairingCode?.let { "校验 $it" }
+                    ?: "本机 $displayFingerprint · 已信任 $trustedPeerCount",
             color = MaterialTheme.colorScheme.onBackground,
             fontSize = if (compact) 9.sp else 10.sp,
             maxLines = 1,
