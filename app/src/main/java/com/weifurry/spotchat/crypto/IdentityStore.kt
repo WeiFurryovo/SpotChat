@@ -11,10 +11,14 @@ class IdentityStore(context: Context) {
         val publicKey = prefs.getString(KEY_PUBLIC, null)
         val privateKey = prefs.getString(KEY_PRIVATE, null)
         if (!publicKey.isNullOrBlank() && !privateKey.isNullOrBlank()) {
-            return KeyPair(
-                SpotChatCrypto.decodePublicKey(publicKey),
-                SpotChatCrypto.decodePrivateKey(privateKey)
-            )
+            runCatching {
+                KeyPair(
+                    SpotChatCrypto.decodePublicKey(publicKey),
+                    SpotChatCrypto.decodePrivateKey(privateKey)
+                )
+            }.onSuccess { identity ->
+                return identity
+            }
         }
 
         val identity = SpotChatCrypto.generateIdentity()

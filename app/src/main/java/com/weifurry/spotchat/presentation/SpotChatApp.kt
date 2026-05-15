@@ -3,6 +3,9 @@ package com.weifurry.spotchat.presentation
 import android.Manifest
 import android.app.Activity
 import android.app.RemoteInput
+import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.view.inputmethod.EditorInfo
 import androidx.activity.compose.BackHandler
@@ -50,6 +53,7 @@ import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -357,8 +361,8 @@ internal fun SpotChatApp() {
             SpotChatCrypto.fingerprint(identity.public)
         }
     val lanTransport =
-        remember(deviceName) {
-            LanChatTransport(deviceName)
+        remember(context, deviceName) {
+            LanChatTransport(deviceName, context)
         }
     val bluetoothTransport =
         remember(context) {
@@ -398,11 +402,29 @@ internal fun SpotChatApp() {
     var pairingCode by remember { mutableStateOf<String?>(null) }
     var appSurface by remember { mutableStateOf(AppSurface.Chat) }
     val greetedPeers = remember { mutableSetOf<String>() }
+    val knownPeersByFingerprint = remember { mutableStateMapOf<String, TransportPeer>() }
+
+    fun hasBluetoothRuntimePermissions(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            (
+                context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
+                    PackageManager.PERMISSION_GRANTED &&
+                    context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) ==
+                    PackageManager.PERMISSION_GRANTED
+            )
+
     val permissionLauncher =
         rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
-        ) {
-            trustState = "蓝牙权限已更新"
+        ) { permissions ->
+            val granted =
+                permissions.values.all { granted -> granted } && hasBluetoothRuntimePermissions()
+            if (granted) {
+                trustState = "蓝牙待连接"
+                transportMode = TransportMode.Bluetooth
+            } else {
+                trustState = "蓝牙权限被拒绝"
+            }
         }
 
     fun currentTransport(): SpotChatTransport =
@@ -483,6 +505,25 @@ internal fun SpotChatApp() {
         }
     }
 
+    fun rememberPeerRoute(
+        fingerprint: String,
+        peer: TransportPeer
+    ) {
+        knownPeersByFingerprint[fingerprint] = peer
+    }
+
+    fun routeForPeer(fingerprint: String): TransportPeer? =
+        knownPeersByFingerprint[fingerprint]
+
+    fun hasLanConnection(): Boolean {
+        val connectivityManager =
+            context.getSystemService(ConnectivityManager::class.java) ?: return false
+        val network = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+    }
+
     suspend fun sendEncryptedAck(
         transport: SpotChatTransport,
         peer: TransportPeer,
@@ -561,6 +602,7 @@ internal fun SpotChatApp() {
                         val openedPeer = engine.openSession(hello)
                         val mergedPeer = mergePeerWithHello(event.peer, hello)
                         activePeer = mergedPeer
+                        rememberPeerRoute(openedPeer.fingerprint, mergedPeer)
                         pairingCode = openedPeer.pairingCode
                         val storedPeer = trustedPeer(openedPeer)
                         if (storedPeer != null && storedPeer.publicKey == openedPeer.publicKey) {
@@ -606,7 +648,8 @@ internal fun SpotChatApp() {
                                         deliveryState = DeliveryState.Received
                                     )
                                 trustState = "收到加密消息"
-                                val replyPeer = activePeer ?: event.peer
+                                rememberPeerRoute(plain.senderFingerprint, event.peer)
+                                val replyPeer = routeForPeer(plain.senderFingerprint) ?: event.peer
                                 sendEncryptedAck(
                                     transport = transport,
                                     peer = replyPeer,
@@ -618,7 +661,8 @@ internal fun SpotChatApp() {
                             .onFailure { error ->
                                 if (error is DuplicateMessageException) {
                                     trustState = "重复消息已忽略"
-                                    val replyPeer = activePeer ?: event.peer
+                                    rememberPeerRoute(error.senderFingerprint, event.peer)
+                                    val replyPeer = routeForPeer(error.senderFingerprint) ?: event.peer
                                     sendEncryptedAck(
                                         transport = transport,
                                         peer = replyPeer,
@@ -645,6 +689,7 @@ internal fun SpotChatApp() {
                             trustState = "拦截未认证回执"
                             return
                         }
+                        rememberPeerRoute(encryptedAck.senderFingerprint, event.peer)
                         runCatching { engine.decryptAck(encryptedAck) }
                             .onSuccess { ack ->
                                 updateMessageState(ack.messageId, DeliveryState.Delivered)
@@ -706,16 +751,20 @@ internal fun SpotChatApp() {
     }
 
     fun selectMode(mode: TransportMode) {
-        transportMode = mode
-        trustState = if (mode == TransportMode.Lan) "局域网发现中" else "蓝牙待授权"
-        if (mode == TransportMode.Bluetooth && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.BLUETOOTH_CONNECT,
-                    Manifest.permission.BLUETOOTH_SCAN
+        if (mode == TransportMode.Bluetooth && !hasBluetoothRuntimePermissions()) {
+            trustState = "蓝牙需要授权"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                permissionLauncher.launch(
+                    arrayOf(
+                        Manifest.permission.BLUETOOTH_CONNECT,
+                        Manifest.permission.BLUETOOTH_SCAN
+                    )
                 )
-            )
+            }
+            return
         }
+        transportMode = mode
+        trustState = if (mode == TransportMode.Lan) "局域网发现中" else "蓝牙待连接"
     }
 
     fun updateProfile(updated: ProfileSettings) {
@@ -723,8 +772,8 @@ internal fun SpotChatApp() {
     }
 
     fun sendQuickReply(text: String) {
-        val peer = activePeer
         val peerFingerprint = activePeerFingerprint
+        val peer = peerFingerprint?.let(::routeForPeer) ?: activePeer
         if (peer == null || peerFingerprint == null) {
             trustState = if (pendingPeer == null) "等待配对" else "请先确认校验码"
             messages +=
@@ -742,6 +791,19 @@ internal fun SpotChatApp() {
             activePeerFingerprint = null
             trustState = "请重新确认配对"
             appendSystemMessage("当前设备还没有被信任，消息不会发送")
+            return
+        }
+
+        if (transportMode == TransportMode.Lan && !hasLanConnection()) {
+            trustState = "局域网未连接"
+            messages +=
+                ChatBubble(
+                    text = "当前没有可用的局域网连接，消息未发送",
+                    mine = false,
+                    encrypted = false,
+                    timestamp = nowTime(),
+                    deliveryState = DeliveryState.Failed
+                )
             return
         }
 
@@ -847,6 +909,7 @@ internal fun SpotChatApp() {
         pendingPeer = null
         pairingCode = null
         greetedPeers.clear()
+        knownPeersByFingerprint.clear()
 
         runCatching { transport.start() }
             .onFailure { error ->

@@ -151,11 +151,6 @@ class SpotChatEngine(
 
     fun decryptText(message: EncryptedChatMessage): PlainChatMessage {
         val replayKey = replayKey(message)
-        synchronized(seenMessagesLock) {
-            if (seenMessages.containsKey(replayKey)) {
-                throw DuplicateMessageException(message.messageId, message.senderFingerprint)
-            }
-        }
         val sessionKey =
             sessions[message.senderFingerprint]
                 ?: error("No trusted session for sender ${message.senderFingerprint}")

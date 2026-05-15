@@ -46,8 +46,7 @@ class BluetoothChatTransport(
         }
         val adapter = bluetoothAdapter
         if (adapter == null || !adapter.isEnabled) {
-            mutableEvents.emit(TransportEvent.Failure("蓝牙不可用或尚未开启"))
-            return
+            throw IllegalStateException("蓝牙不可用或尚未开启")
         }
 
         val job = SupervisorJob()
@@ -108,11 +107,17 @@ class BluetoothChatTransport(
     }
 
     private suspend fun handleSocket(socket: BluetoothSocket) {
-        socket.use {
-            val peer = socket.remoteDevice.toTransportPeer()
-            while (supervisor?.isActive == true) {
-                val frame = FrameIo.readFrame(socket.inputStream) ?: break
-                mutableEvents.emit(TransportEvent.FrameReceived(peer, frame))
+        try {
+            socket.use {
+                val peer = socket.remoteDevice.toTransportPeer()
+                while (supervisor?.isActive == true) {
+                    val frame = FrameIo.readFrame(socket.inputStream) ?: break
+                    mutableEvents.emit(TransportEvent.FrameReceived(peer, frame))
+                }
+            }
+        } catch (error: Throwable) {
+            if (supervisor?.isActive == true) {
+                mutableEvents.emit(TransportEvent.Failure("蓝牙帧接收失败", error))
             }
         }
     }

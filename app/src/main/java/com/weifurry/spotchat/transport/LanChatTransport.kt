@@ -1,5 +1,7 @@
 package com.weifurry.spotchat.transport
 
+import android.content.Context
+import android.net.wifi.WifiManager
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -21,14 +23,20 @@ import kotlinx.coroutines.withContext
 
 class LanChatTransport(
     private val deviceName: String,
+    context: Context? = null,
     private val servicePort: Int = DEFAULT_SERVICE_PORT,
     private val discoveryPort: Int = DEFAULT_DISCOVERY_PORT
 ) : SpotChatTransport {
+    private val wifiManager =
+        context
+            ?.applicationContext
+            ?.getSystemService(WifiManager::class.java)
     private val mutableEvents = MutableSharedFlow<TransportEvent>(extraBufferCapacity = 64)
     private val instanceId = UUID.randomUUID().toString()
     private var supervisor: Job? = null
     private var serverSocket: ServerSocket? = null
     private var discoverySocket: DatagramSocket? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     override val events: Flow<TransportEvent> = mutableEvents
 
@@ -91,6 +99,7 @@ class LanChatTransport(
     }
 
     private fun startDiscovery(scope: CoroutineScope) {
+        acquireMulticastLock()
         discoverySocket =
             DatagramSocket(null).apply {
                 reuseAddress = true
@@ -102,18 +111,26 @@ class LanChatTransport(
     }
 
     private suspend fun handleIncomingSocket(socket: Socket) {
-        socket.use {
-            val peer =
-                TransportPeer(
-                    id = "lan:${socket.inetAddress.hostAddress}",
-                    name = socket.inetAddress.hostAddress ?: "局域网设备",
-                    address = socket.inetAddress.hostAddress.orEmpty(),
-                    port = socket.port,
-                    kind = TransportKind.LAN
+        try {
+            socket.use {
+                val peer =
+                    TransportPeer(
+                        id = "lan:${socket.inetAddress.hostAddress}",
+                        name = socket.inetAddress.hostAddress ?: "局域网设备",
+                        address = socket.inetAddress.hostAddress.orEmpty(),
+                        port = servicePort,
+                        kind = TransportKind.LAN
+                    )
+                while (supervisor?.isActive == true) {
+                    val frame = FrameIo.readFrame(socket.getInputStream()) ?: break
+                    mutableEvents.emit(TransportEvent.FrameReceived(peer, frame))
+                }
+            }
+        } catch (error: Throwable) {
+            if (supervisor?.isActive == true) {
+                mutableEvents.emit(
+                    TransportEvent.Failure("局域网帧接收失败", error)
                 )
-            while (supervisor?.isActive == true) {
-                val frame = FrameIo.readFrame(socket.getInputStream()) ?: break
-                mutableEvents.emit(TransportEvent.FrameReceived(peer, frame))
             }
         }
     }
@@ -188,9 +205,36 @@ class LanChatTransport(
         return "$BEACON_PREFIX|$instanceId|$encodedName|$servicePort"
     }
 
+    private fun acquireMulticastLock() {
+        if (multicastLock?.isHeld == true) {
+            return
+        }
+        val lock = wifiManager?.createMulticastLock(MULTICAST_LOCK_TAG) ?: return
+        lock.setReferenceCounted(false)
+        runCatching {
+            lock.acquire()
+            multicastLock = lock
+        }.onFailure { error ->
+            mutableEvents.tryEmit(
+                TransportEvent.Failure("局域网多播锁获取失败", error)
+            )
+        }
+    }
+
+    private fun releaseMulticastLock() {
+        val lock = multicastLock ?: return
+        runCatching {
+            if (lock.isHeld) {
+                lock.release()
+            }
+        }
+        multicastLock = null
+    }
+
     private fun closeSockets() {
         serverSocket.closeQuietly()
         discoverySocket.closeQuietly()
+        releaseMulticastLock()
         serverSocket = null
         discoverySocket = null
     }
@@ -210,5 +254,6 @@ class LanChatTransport(
         private const val BEACON_PARTS = 4
         private const val CONNECT_TIMEOUT_MS = 2_500
         private const val DISCOVERY_INTERVAL_MS = 3_000L
+        private const val MULTICAST_LOCK_TAG = "SpotChatLanDiscovery"
     }
 }

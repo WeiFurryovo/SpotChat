@@ -3,6 +3,8 @@ package com.weifurry.spotchat.protocol
 import com.weifurry.spotchat.crypto.SpotChatCrypto
 import com.weifurry.spotchat.domain.DuplicateMessageException
 import com.weifurry.spotchat.domain.SpotChatEngine
+import java.util.Base64
+import javax.crypto.AEADBadTagException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.fail
@@ -59,6 +61,41 @@ class SpotChatEngineTest {
             fail("duplicate encrypted messages must be rejected")
         } catch (expected: DuplicateMessageException) {
             assertEquals(message.messageId, expected.messageId)
+        }
+    }
+
+    @Test
+    fun repeatedMessageHeadersStillAuthenticateCiphertext() {
+        val watch = SpotChatEngine("手表", SpotChatCrypto.generateIdentity())
+        val phone = SpotChatEngine("手机", SpotChatCrypto.generateIdentity())
+
+        val trustedPhone =
+            watch.openSession(phone.helloPacket().hello ?: error("missing phone hello"))
+        phone.openSession(watch.helloPacket().hello ?: error("missing watch hello"))
+        val message =
+            ChatCodec
+                .decode(
+                    ChatCodec.encode(
+                        watch.encryptTextForPeer(trustedPhone.fingerprint, "认证优先")
+                    )
+                )
+                .encryptedMessage
+                ?: error("missing encrypted message")
+
+        assertEquals("认证优先", phone.decryptText(message).text)
+
+        val tamperedCiphertext = Base64.getDecoder().decode(message.ciphertext)
+        tamperedCiphertext[0] = (tamperedCiphertext[0].toInt() xor 0x01).toByte()
+        val tamperedMessage =
+            message.copy(
+                ciphertext = Base64.getEncoder().encodeToString(tamperedCiphertext)
+            )
+
+        try {
+            phone.decryptText(tamperedMessage)
+            fail("tampered duplicate headers must not bypass ciphertext authentication")
+        } catch (expected: AEADBadTagException) {
+            // Expected authentication failure before duplicate detection.
         }
     }
 
