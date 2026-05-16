@@ -1477,10 +1477,8 @@ private fun WatchConversationListSurface(
     ) {
         val compact = maxWidth < 260.dp || maxHeight < 260.dp
         val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
-        val listState =
-            rememberScalingLazyListState(
-                initialCenterItemIndex = 0
-            )
+        val listScrollState = rememberScrollState()
+        val listGap = if (compact) 5.dp else 6.dp
 
         Box(
             modifier =
@@ -1500,80 +1498,68 @@ private fun WatchConversationListSurface(
                     .padding(horizontal = surfaceSpec.chatHorizontalPadding)
         ) {
             ScreenScaffold(
-                scrollState = listState,
+                scrollState = listScrollState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding =
-                    PaddingValues(
-                        top = surfaceSpec.chatTopPadding,
-                        bottom = surfaceSpec.conversationBottomPadding
-                    ),
-                scrollIndicator = {
-                    ScrollIndicator(
-                        state = listState,
-                        modifier = Modifier.padding(end = surfaceSpec.scrollIndicatorEndPadding)
-                    )
-                }
+                contentPadding = PaddingValues(),
+                scrollIndicator = {}
             ) { scaffoldPadding ->
-                ScalingLazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    state = listState,
-                    contentPadding = scaffoldPadding,
-                    verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    anchorType = ScalingLazyListAnchorType.ItemCenter
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(listScrollState)
+                            .padding(scaffoldPadding)
+                            .padding(
+                                top = surfaceSpec.chatTopPadding,
+                                bottom = surfaceSpec.conversationBottomPadding
+                            ),
+                    verticalArrangement = Arrangement.spacedBy(listGap),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    item {
-                        StatusHeader(
-                            avatar = avatarFor(profile.avatarId),
-                            displayName = profile.displayName,
-                            title = "SpotChat",
-                            subtitle = "${transportMode.label} · $trustState",
-                            surfaceSpec = surfaceSpec,
-                            onOpenProfile = if (profileNavigationEnabled) onOpenProfile else null,
-                            onNavigateBack = null
+                    StatusHeader(
+                        avatar = avatarFor(profile.avatarId),
+                        displayName = profile.displayName,
+                        title = "SpotChat",
+                        subtitle = "${transportMode.label} · $trustState",
+                        surfaceSpec = surfaceSpec,
+                        onOpenProfile = if (profileNavigationEnabled) onOpenProfile else null,
+                        onNavigateBack = null
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(surfaceSpec.chatToggleWidth),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TransportToggle(
+                            mode = TransportMode.Lan,
+                            selected = transportMode == TransportMode.Lan,
+                            compact = compact,
+                            onClick = { onSelectMode(TransportMode.Lan) }
+                        )
+                        Spacer(modifier = Modifier.width(if (compact) 6.dp else 8.dp))
+                        TransportToggle(
+                            mode = TransportMode.Bluetooth,
+                            selected = transportMode == TransportMode.Bluetooth,
+                            compact = compact,
+                            onClick = { onSelectMode(TransportMode.Bluetooth) }
                         )
                     }
 
-                    item {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(surfaceSpec.chatToggleWidth),
-                            horizontalArrangement = Arrangement.Center,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            TransportToggle(
-                                mode = TransportMode.Lan,
-                                selected = transportMode == TransportMode.Lan,
-                                compact = compact,
-                                onClick = { onSelectMode(TransportMode.Lan) }
-                            )
-                            Spacer(modifier = Modifier.width(if (compact) 6.dp else 8.dp))
-                            TransportToggle(
-                                mode = TransportMode.Bluetooth,
-                                selected = transportMode == TransportMode.Bluetooth,
-                                compact = compact,
-                                onClick = { onSelectMode(TransportMode.Bluetooth) }
-                            )
-                        }
-                    }
-
-                    item {
-                        FingerprintPill(
-                            fingerprint = fingerprint,
-                            pairingCode = pairingCode,
-                            trustedPeerCount = trustedPeerCount,
-                            surfaceSpec = surfaceSpec
-                        )
-                    }
+                    FingerprintPill(
+                        fingerprint = fingerprint,
+                        pairingCode = pairingCode,
+                        trustedPeerCount = trustedPeerCount,
+                        surfaceSpec = surfaceSpec
+                    )
 
                     if (pendingPeer != null) {
-                        item {
-                            PairingActionRow(
-                                peer = pendingPeer,
-                                surfaceSpec = surfaceSpec,
-                                onConfirmPairing = onConfirmPairing,
-                                onRejectPairing = onRejectPairing
-                            )
-                        }
+                        PairingActionRow(
+                            peer = pendingPeer,
+                            surfaceSpec = surfaceSpec,
+                            onConfirmPairing = onConfirmPairing,
+                            onRejectPairing = onRejectPairing
+                        )
                     }
 
                     conversations.forEach { conversation ->
@@ -1581,17 +1567,15 @@ private fun WatchConversationListSurface(
                             messagesByConversation[conversation.id]
                                 .orEmpty()
                                 .lastOrNull { message -> message.deliveryState != DeliveryState.System }
-                        item {
-                            ConversationRow(
-                                conversation = conversation,
-                                lastMessage = lastMessage,
-                                unreadCount = unreadCounts[conversation.id] ?: 0,
-                                surfaceSpec = surfaceSpec,
-                                onClick = {
-                                    onOpenConversation(conversation)
-                                }
-                            )
-                        }
+                        ConversationRow(
+                            conversation = conversation,
+                            lastMessage = lastMessage,
+                            unreadCount = unreadCounts[conversation.id] ?: 0,
+                            surfaceSpec = surfaceSpec,
+                            onClick = {
+                                onOpenConversation(conversation)
+                            }
+                        )
                     }
                 }
             }
