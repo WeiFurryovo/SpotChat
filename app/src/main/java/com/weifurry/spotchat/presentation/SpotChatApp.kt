@@ -12,13 +12,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
-import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -309,7 +307,7 @@ private data class WatchSurfaceSpec(
         get() = if (isRound) 0.88f else 0.94f
 
     val scrollIndicatorEndPadding: Dp
-        get() = if (isRound) 12.dp else 6.dp
+        get() = if (isRound) 4.dp else 6.dp
 
     fun visibleMessageCount(hasPendingPeer: Boolean): Int =
         when {
@@ -962,107 +960,94 @@ internal fun SpotChatApp() {
                         .padding(WatchSurfaceSpec(isRound = isRoundScreen, compact = false).appPadding),
                 contentAlignment = Alignment.Center
             ) {
-                AnimatedContent(
-                    targetState = appSurface,
-                    modifier = Modifier.fillMaxSize(),
-                    transitionSpec = {
-                        val opensProfile = targetState == AppSurface.Profile
-                        val enter =
-                            slideInHorizontally(animationSpec = tween(durationMillis = 220)) { fullWidth ->
-                                if (opensProfile) fullWidth else -fullWidth
-                            } + fadeIn(animationSpec = tween(durationMillis = 160))
-                        val exit =
-                            slideOutHorizontally(animationSpec = tween(durationMillis = 220)) { fullWidth ->
-                                if (opensProfile) -fullWidth else fullWidth
-                            } + fadeOut(animationSpec = tween(durationMillis = 140))
-
-                        enter togetherWith exit
+                SwipeToDismissBox(
+                    onDismissed = {
+                        activity?.finish()
                     },
-                    contentAlignment = Alignment.Center,
-                    label = "SpotChatSurfaceTransition"
-                ) { targetSurface ->
-                    when (targetSurface) {
-                        AppSurface.Chat ->
-                            SwipeToDismissBox(
-                                onDismissed = {
-                                    activity?.finish()
-                                },
-                                modifier = Modifier.fillMaxSize(),
-                                state = rootDismissState,
-                                backgroundKey = "SpotChatRootDismissBackground",
-                                contentKey = AppSurface.Chat
-                            ) { isBackground ->
-                                if (isBackground) {
-                                    Box(
-                                        modifier =
-                                            Modifier
-                                                .fillMaxSize()
-                                                .background(Color.Black)
-                                    )
-                                } else {
-                                    WatchChatSurface(
-                                        isRoundScreen = isRoundScreen,
-                                        profile = profile,
-                                        transportMode = transportMode,
-                                        trustState = trustState,
-                                        fingerprint = localFingerprint,
-                                        pairingCode = pairingCode,
-                                        pendingPeer = pendingPeer,
-                                        trustedPeerCount = trustedPeers.size,
-                                        messages = messages,
-                                        onSelectMode = ::selectMode,
-                                        onConfirmPairing = ::confirmPairing,
-                                        onRejectPairing = ::rejectPairing,
-                                        onSendQuickReply = ::sendQuickReply,
-                                        onOpenCustomMessageInput = ::openCustomMessageInput,
-                                        onOpenProfile = {
-                                            appSurface = AppSurface.Profile
-                                        }
-                                    )
-                                }
+                    modifier = Modifier.fillMaxSize(),
+                    state = rootDismissState,
+                    backgroundKey = "SpotChatRootDismissBackground",
+                    contentKey = AppSurface.Chat
+                ) { isBackground ->
+                    if (isBackground) {
+                        Box(
+                            modifier =
+                                Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black)
+                        )
+                    } else {
+                        WatchChatSurface(
+                            isRoundScreen = isRoundScreen,
+                            profile = profile,
+                            transportMode = transportMode,
+                            trustState = trustState,
+                            fingerprint = localFingerprint,
+                            pairingCode = pairingCode,
+                            pendingPeer = pendingPeer,
+                            trustedPeerCount = trustedPeers.size,
+                            messages = messages,
+                            onSelectMode = ::selectMode,
+                            onConfirmPairing = ::confirmPairing,
+                            onRejectPairing = ::rejectPairing,
+                            onSendQuickReply = ::sendQuickReply,
+                            onOpenCustomMessageInput = ::openCustomMessageInput,
+                            onOpenProfile = {
+                                appSurface = AppSurface.Profile
                             }
+                        )
+                    }
+                }
 
-                        AppSurface.Profile ->
-                            SwipeToDismissBox(
-                                onDismissed = {
+                AnimatedVisibility(
+                    visible = appSurface == AppSurface.Profile,
+                    modifier = Modifier.fillMaxSize(),
+                    enter =
+                        slideInHorizontally(animationSpec = tween(durationMillis = 220)) { fullWidth ->
+                            fullWidth
+                        } + fadeIn(animationSpec = tween(durationMillis = 160)),
+                    exit = fadeOut(animationSpec = tween(durationMillis = 0)),
+                    label = "SpotChatProfileOverlay"
+                ) {
+                    SwipeToDismissBox(
+                        onDismissed = {
+                            appSurface = AppSurface.Chat
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                        state = dismissState,
+                        backgroundKey = AppSurface.Chat,
+                        contentKey = AppSurface.Profile
+                    ) { isBackground ->
+                        if (isBackground) {
+                            WatchChatSurface(
+                                isRoundScreen = isRoundScreen,
+                                profile = profile,
+                                transportMode = transportMode,
+                                trustState = trustState,
+                                fingerprint = localFingerprint,
+                                pairingCode = pairingCode,
+                                pendingPeer = pendingPeer,
+                                trustedPeerCount = trustedPeers.size,
+                                messages = messages,
+                                onSelectMode = ::selectMode,
+                                onConfirmPairing = ::confirmPairing,
+                                onRejectPairing = ::rejectPairing,
+                                onSendQuickReply = ::sendQuickReply,
+                                onOpenCustomMessageInput = ::openCustomMessageInput,
+                                onOpenProfile = {},
+                                profileNavigationEnabled = false
+                            )
+                        } else {
+                            WatchProfileSurface(
+                                isRoundScreen = isRoundScreen,
+                                profile = profile,
+                                avatars = defaultAvatars,
+                                onNavigateBack = {
                                     appSurface = AppSurface.Chat
                                 },
-                                modifier = Modifier.fillMaxSize(),
-                                state = dismissState,
-                                backgroundKey = AppSurface.Chat,
-                                contentKey = AppSurface.Profile
-                            ) { isBackground ->
-                                if (isBackground) {
-                                    WatchChatSurface(
-                                        isRoundScreen = isRoundScreen,
-                                        profile = profile,
-                                        transportMode = transportMode,
-                                        trustState = trustState,
-                                        fingerprint = localFingerprint,
-                                        pairingCode = pairingCode,
-                                        pendingPeer = pendingPeer,
-                                        trustedPeerCount = trustedPeers.size,
-                                        messages = messages,
-                                        onSelectMode = ::selectMode,
-                                        onConfirmPairing = ::confirmPairing,
-                                        onRejectPairing = ::rejectPairing,
-                                        onSendQuickReply = ::sendQuickReply,
-                                        onOpenCustomMessageInput = ::openCustomMessageInput,
-                                        onOpenProfile = {},
-                                        profileNavigationEnabled = false
-                                    )
-                                } else {
-                                    WatchProfileSurface(
-                                        isRoundScreen = isRoundScreen,
-                                        profile = profile,
-                                        avatars = defaultAvatars,
-                                        onNavigateBack = {
-                                            appSurface = AppSurface.Chat
-                                        },
-                                        onProfileChange = ::updateProfile
-                                    )
-                                }
-                            }
+                                onProfileChange = ::updateProfile
+                            )
+                        }
                     }
                 }
             }
