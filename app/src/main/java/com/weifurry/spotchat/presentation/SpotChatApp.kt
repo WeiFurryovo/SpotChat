@@ -115,10 +115,14 @@ import com.weifurry.spotchat.transport.TransportPeer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 private enum class TransportMode(
     val label: String,
@@ -141,8 +145,16 @@ private enum class DeliveryState(
 }
 
 private enum class AppSurface {
+    ConversationList,
     Chat,
     Profile
+}
+
+private enum class ConversationKind(
+    val label: String
+) {
+    Direct("私聊"),
+    Group("群聊")
 }
 
 private data class DefaultAvatar(
@@ -157,8 +169,33 @@ private data class ChatBubble(
     val mine: Boolean,
     val encrypted: Boolean,
     val timestamp: String,
+    val senderName: String? = null,
     val messageId: String? = null,
     val deliveryState: DeliveryState = DeliveryState.Received
+)
+
+private data class ChatConversation(
+    val id: String,
+    val kind: ConversationKind,
+    val title: String,
+    val subtitle: String,
+    val peerFingerprint: String? = null,
+    val memberFingerprints: List<String> = emptyList()
+)
+
+private data class OutgoingMessageRef(
+    val conversationId: String,
+    val displayMessageId: String,
+    val expectedDeliveries: Int
+)
+
+@Serializable
+private data class ChatPayload(
+    val version: Int = 1,
+    val kind: String = CHAT_PAYLOAD_KIND_DIRECT,
+    val text: String,
+    val groupId: String? = null,
+    val groupName: String? = null
 )
 
 private val defaultAvatars =
@@ -173,7 +210,16 @@ private val defaultAvatars =
 private const val PROFILE_AVATARS_PER_ROW = 3
 private const val CUSTOM_MESSAGE_REMOTE_INPUT_KEY = "spotchat_custom_message"
 private const val MAX_CUSTOM_MESSAGE_CHARS = 280
+private const val NEARBY_GROUP_CONVERSATION_ID = "group:nearby"
+private const val NEARBY_GROUP_TITLE = "附近群聊"
+private const val CHAT_PAYLOAD_KIND_DIRECT = "direct"
+private const val CHAT_PAYLOAD_KIND_GROUP = "group"
 private val customMessageQuickChoices = arrayOf("收到", "马上到", "稍后联系")
+private val chatPayloadJson =
+    Json {
+        encodeDefaults = true
+        ignoreUnknownKeys = true
+    }
 
 private data class WatchSurfaceSpec(
     val isRound: Boolean,
@@ -270,6 +316,13 @@ private data class WatchSurfaceSpec(
     val chatBottomPadding: Dp
         get() = if (isRound) 28.dp else 12.dp
 
+    val conversationBottomPadding: Dp
+        get() = if (isRound) {
+            if (compact) 34.dp else 42.dp
+        } else {
+            14.dp
+        }
+
     val chatHeaderWidth: Float
         get() = if (isRound) {
             if (compact) 0.78f else 0.82f
@@ -307,6 +360,13 @@ private data class WatchSurfaceSpec(
 
     val pairingWidth: Float
         get() = if (isRound) 0.88f else 0.94f
+
+    val conversationRowWidth: Float
+        get() = if (isRound) {
+            if (compact) 0.82f else 0.84f
+        } else {
+            0.94f
+        }
 
     val scrollIndicatorEndPadding: Dp
         get() = if (isRound) 4.dp else 6.dp
@@ -369,38 +429,64 @@ internal fun SpotChatApp() {
             BluetoothChatTransport(context)
         }
     val coroutineScope = rememberCoroutineScope()
-    val messages =
-        remember {
-            mutableStateListOf(
-                ChatBubble(
-                    text = "等待附近设备配对",
-                    mine = false,
-                    encrypted = true,
-                    timestamp = nowTime(),
-                    deliveryState = DeliveryState.System
-                ),
-                ChatBubble(
-                    text = "所有聊天内容都会先加密再发送",
-                    mine = false,
-                    encrypted = true,
-                    timestamp = nowTime(),
-                    deliveryState = DeliveryState.System
-                )
-            )
-        }
     val trustedPeers =
         remember {
             mutableStateListOf<StoredTrustedPeer>().apply {
                 addAll(trustedPeerStore.all())
             }
         }
+    val conversationMessages =
+        remember(trustedPeerStore) {
+            mutableStateMapOf<String, List<ChatBubble>>().apply {
+                put(
+                    NEARBY_GROUP_CONVERSATION_ID,
+                    listOf(
+                        ChatBubble(
+                            text = "等待附近设备配对",
+                            mine = false,
+                            encrypted = true,
+                            timestamp = nowTime(),
+                            deliveryState = DeliveryState.System
+                        ),
+                        ChatBubble(
+                            text = "所有聊天内容都会先加密再发送",
+                            mine = false,
+                            encrypted = true,
+                            timestamp = nowTime(),
+                            deliveryState = DeliveryState.System
+                        )
+                    )
+                )
+                trustedPeers.forEach { peer ->
+                    put(
+                        directConversationId(peer.fingerprint),
+                        listOf(
+                            ChatBubble(
+                                text = "与 ${peer.deviceName} 的私聊已准备好",
+                                mine = false,
+                                encrypted = true,
+                                timestamp = nowTime(),
+                                deliveryState = DeliveryState.System
+                            )
+                        )
+                    )
+                }
+            }
+        }
+    val unreadCounts = remember { mutableStateMapOf<String, Int>() }
+    val outgoingMessages = remember { mutableStateMapOf<String, OutgoingMessageRef>() }
+    val deliveredCounts = remember { mutableStateMapOf<String, Int>() }
+    var activeConversationId by remember { mutableStateOf(NEARBY_GROUP_CONVERSATION_ID) }
+    if (conversationMessages[activeConversationId] == null) {
+        activeConversationId = NEARBY_GROUP_CONVERSATION_ID
+    }
     var transportMode by remember { mutableStateOf(TransportMode.Lan) }
     var trustState by remember { mutableStateOf("未配对") }
     var activePeer by remember { mutableStateOf<TransportPeer?>(null) }
     var activePeerFingerprint by remember { mutableStateOf<String?>(null) }
     var pendingPeer by remember { mutableStateOf<TrustedPeer?>(null) }
     var pairingCode by remember { mutableStateOf<String?>(null) }
-    var appSurface by remember { mutableStateOf(AppSurface.Chat) }
+    var appSurface by remember { mutableStateOf(AppSurface.ConversationList) }
     val greetedPeers = remember { mutableSetOf<String>() }
     val knownPeersByFingerprint = remember { mutableStateMapOf<String, TransportPeer>() }
 
@@ -449,6 +535,23 @@ internal fun SpotChatApp() {
         transport.send(peer, ChatCodec.encode(packet))
     }
 
+    fun messagesForConversation(conversationId: String): List<ChatBubble> =
+        conversationMessages[conversationId].orEmpty()
+
+    fun appendMessage(
+        conversationId: String,
+        message: ChatBubble
+    ) {
+        conversationMessages[conversationId] = messagesForConversation(conversationId) + message
+        if (
+            !message.mine &&
+            message.deliveryState != DeliveryState.System &&
+            (appSurface != AppSurface.Chat || activeConversationId != conversationId)
+        ) {
+            unreadCounts[conversationId] = (unreadCounts[conversationId] ?: 0) + 1
+        }
+    }
+
     suspend fun sendHello(
         transport: SpotChatTransport,
         peer: TransportPeer
@@ -457,21 +560,25 @@ internal fun SpotChatApp() {
             sendPacket(transport, peer, engine.helloPacket(transportHints()))
         }.onFailure { error ->
             trustState = "握手失败"
-            messages +=
+            appendMessage(
+                NEARBY_GROUP_CONVERSATION_ID,
                 ChatBubble(
                     text = error.readableMessage("无法发送配对信息"),
                     mine = false,
                     encrypted = false,
                     timestamp = nowTime()
                 )
+            )
         }
     }
 
     fun appendSystemMessage(
         text: String,
-        encrypted: Boolean = true
+        encrypted: Boolean = true,
+        conversationId: String = activeConversationId
     ) {
-        messages +=
+        appendMessage(
+            conversationId,
             ChatBubble(
                 text = text,
                 mine = false,
@@ -479,15 +586,59 @@ internal fun SpotChatApp() {
                 timestamp = nowTime(),
                 deliveryState = DeliveryState.System
             )
+        )
+    }
+
+    fun ensureDirectConversation(storedPeer: StoredTrustedPeer): String {
+        val conversationId = directConversationId(storedPeer.fingerprint)
+        if (conversationMessages[conversationId] == null) {
+            conversationMessages[conversationId] =
+                listOf(
+                    ChatBubble(
+                        text = "与 ${storedPeer.deviceName} 的私聊已准备好",
+                        mine = false,
+                        encrypted = true,
+                        timestamp = nowTime(),
+                        deliveryState = DeliveryState.System
+                    )
+                )
+        }
+        return conversationId
     }
 
     fun updateMessageState(
         messageId: String,
         deliveryState: DeliveryState
     ) {
-        val index = messages.indexOfFirst { message -> message.messageId == messageId }
-        if (index >= 0) {
-            messages[index] = messages[index].copy(deliveryState = deliveryState)
+        val outboundMessage = outgoingMessages[messageId]
+        if (
+            deliveryState == DeliveryState.Delivered &&
+            outboundMessage != null &&
+            outboundMessage.expectedDeliveries > 1
+        ) {
+            val deliveredCount = (deliveredCounts[outboundMessage.displayMessageId] ?: 0) + 1
+            deliveredCounts[outboundMessage.displayMessageId] = deliveredCount
+            if (deliveredCount < outboundMessage.expectedDeliveries) {
+                return
+            }
+        }
+        val conversationIds =
+            if (outboundMessage == null) {
+                conversationMessages.keys.toList()
+            } else {
+                listOf(outboundMessage.conversationId)
+            }
+        val displayMessageId = outboundMessage?.displayMessageId ?: messageId
+        conversationIds.forEach { conversationId ->
+            val messages = messagesForConversation(conversationId)
+            val index = messages.indexOfFirst { message -> message.messageId == displayMessageId }
+            if (index >= 0) {
+                conversationMessages[conversationId] =
+                    messages.toMutableList().also { updatedMessages ->
+                        updatedMessages[index] = updatedMessages[index].copy(deliveryState = deliveryState)
+                    }
+                return
+            }
         }
     }
 
@@ -522,6 +673,51 @@ internal fun SpotChatApp() {
         val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
         return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
             capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+    }
+
+    fun conversations(): List<ChatConversation> =
+        buildList {
+            add(
+                ChatConversation(
+                    id = NEARBY_GROUP_CONVERSATION_ID,
+                    kind = ConversationKind.Group,
+                    title = NEARBY_GROUP_TITLE,
+                    subtitle =
+                        if (trustedPeers.isEmpty()) {
+                            "群聊 · 等待成员"
+                        } else {
+                            "群聊 · ${trustedPeers.size} 位成员"
+                        },
+                    memberFingerprints = trustedPeers.map { peer -> peer.fingerprint }
+                )
+            )
+            trustedPeers.forEach { peer ->
+                add(
+                    ChatConversation(
+                        id = directConversationId(peer.fingerprint),
+                        kind = ConversationKind.Direct,
+                        title = peer.deviceName,
+                        subtitle =
+                            if (routeForPeer(peer.fingerprint) == null) {
+                                "私聊 · 待发现"
+                            } else {
+                                "私聊 · 可发送"
+                            },
+                        peerFingerprint = peer.fingerprint,
+                        memberFingerprints = listOf(peer.fingerprint)
+                    )
+                )
+            }
+        }
+
+    fun activeConversation(): ChatConversation =
+        conversations().firstOrNull { conversation -> conversation.id == activeConversationId }
+            ?: conversations().first()
+
+    fun openConversation(conversation: ChatConversation) {
+        activeConversationId = conversation.id
+        unreadCounts[conversation.id] = 0
+        appSurface = AppSurface.Chat
     }
 
     suspend fun sendEncryptedAck(
@@ -587,13 +783,15 @@ internal fun SpotChatApp() {
                 val packet =
                     runCatching { ChatCodec.decode(event.frame) }
                         .getOrElse { error ->
-                            messages +=
+                            appendMessage(
+                                activeConversationId,
                                 ChatBubble(
                                     text = error.readableMessage("收到无法解析的数据"),
                                     mine = false,
                                     encrypted = false,
                                     timestamp = nowTime()
                                 )
+                            )
                             return
                         }
                 when (packet.kind) {
@@ -609,6 +807,7 @@ internal fun SpotChatApp() {
                             val refreshedPeer = trustedPeerStore.trust(openedPeer)
                             removeTrustedPeer(refreshedPeer)
                             trustedPeers.add(0, refreshedPeer)
+                            ensureDirectConversation(refreshedPeer)
                             pendingPeer = null
                             activePeerFingerprint = openedPeer.fingerprint
                             trustState = "已信任 ${refreshedPeer.deviceName}"
@@ -628,7 +827,8 @@ internal fun SpotChatApp() {
 
                     PacketKind.ENCRYPTED_MESSAGE -> {
                         val encryptedMessage = packet.encryptedMessage ?: return
-                        if (trustedPeer(encryptedMessage.senderFingerprint) == null) {
+                        val storedSender = trustedPeer(encryptedMessage.senderFingerprint)
+                        if (storedSender == null) {
                             trustState = "拦截未确认消息"
                             appendSystemMessage(
                                 text = "未确认设备发来的消息已拦截",
@@ -638,15 +838,30 @@ internal fun SpotChatApp() {
                         }
                         runCatching { engine.decryptText(encryptedMessage) }
                             .onSuccess { plain ->
-                                messages +=
+                                val payload = decodeChatPayload(plain.text)
+                                val conversationId =
+                                    if (payload.kind == CHAT_PAYLOAD_KIND_GROUP) {
+                                        NEARBY_GROUP_CONVERSATION_ID
+                                    } else {
+                                        directConversationId(plain.senderFingerprint)
+                                    }
+                                appendMessage(
+                                    conversationId,
                                     ChatBubble(
-                                        text = plain.text,
+                                        text = payload.text,
                                         mine = false,
                                         encrypted = true,
                                         timestamp = nowTime(),
+                                        senderName =
+                                            if (payload.kind == CHAT_PAYLOAD_KIND_GROUP) {
+                                                storedSender.deviceName
+                                            } else {
+                                                null
+                                            },
                                         messageId = plain.messageId,
                                         deliveryState = DeliveryState.Received
                                     )
+                                )
                                 trustState = "收到加密消息"
                                 rememberPeerRoute(plain.senderFingerprint, event.peer)
                                 val replyPeer = routeForPeer(plain.senderFingerprint) ?: event.peer
@@ -671,13 +886,15 @@ internal fun SpotChatApp() {
                                         failureState = "重复回执发送失败"
                                     )
                                 } else {
-                                    messages +=
+                                    appendMessage(
+                                        activeConversationId,
                                         ChatBubble(
                                             text = error.readableMessage("无法解密消息"),
                                             mine = false,
                                             encrypted = false,
                                             timestamp = nowTime()
                                         )
+                                    )
                                     trustState = "解密失败"
                                 }
                             }
@@ -708,13 +925,15 @@ internal fun SpotChatApp() {
 
             is TransportEvent.Failure -> {
                 trustState = event.message
-                messages +=
+                appendMessage(
+                    activeConversationId,
                     ChatBubble(
                         text = event.cause.readableMessage(event.message),
                         mine = false,
                         encrypted = false,
                         timestamp = nowTime()
                     )
+                )
             }
         }
     }
@@ -728,9 +947,11 @@ internal fun SpotChatApp() {
         activePeerFingerprint = storedPeer.fingerprint
         pairingCode = storedPeer.pairingCode
         trustState = "已信任 ${storedPeer.deviceName}"
+        val directConversationKey = ensureDirectConversation(storedPeer)
         appendSystemMessage(
             text = "已信任 ${storedPeer.deviceName}，可以开始加密聊天",
-            encrypted = true
+            encrypted = true,
+            conversationId = directConversationKey
         )
     }
 
@@ -772,31 +993,11 @@ internal fun SpotChatApp() {
     }
 
     fun sendQuickReply(text: String) {
-        val peerFingerprint = activePeerFingerprint
-        val peer = peerFingerprint?.let(::routeForPeer) ?: activePeer
-        if (peer == null || peerFingerprint == null) {
-            trustState = if (pendingPeer == null) "等待配对" else "请先确认校验码"
-            messages +=
-                ChatBubble(
-                    text = if (pendingPeer == null) "还没有完成配对" else "请先确认配对校验码",
-                    mine = false,
-                    encrypted = true,
-                    timestamp = nowTime(),
-                    deliveryState = DeliveryState.Waiting
-                )
-            return
-        }
-
-        if (trustedPeer(peerFingerprint) == null) {
-            activePeerFingerprint = null
-            trustState = "请重新确认配对"
-            appendSystemMessage("当前设备还没有被信任，消息不会发送")
-            return
-        }
-
+        val conversation = activeConversation()
         if (transportMode == TransportMode.Lan && !hasLanConnection()) {
             trustState = "局域网未连接"
-            messages +=
+            appendMessage(
+                conversation.id,
                 ChatBubble(
                     text = "当前没有可用的局域网连接，消息未发送",
                     mine = false,
@@ -804,50 +1005,140 @@ internal fun SpotChatApp() {
                     timestamp = nowTime(),
                     deliveryState = DeliveryState.Failed
                 )
+            )
             return
         }
 
-        trustState = "正在加密发送"
-        coroutineScope.launch {
-            val packet =
-                runCatching { engine.encryptTextForPeer(peerFingerprint, text) }
-                    .getOrElse { error ->
-                        trustState = "加密失败"
-                        messages +=
-                            ChatBubble(
-                                text = error.readableMessage("无法加密消息"),
-                                mine = false,
-                                encrypted = false,
-                                timestamp = nowTime()
-                            )
-                        return@launch
-                    }
-            val messageId = packet.encryptedMessage?.messageId ?: return@launch
-            messages +=
+        val targets =
+            conversation.memberFingerprints.mapNotNull { fingerprint ->
+                val peer = routeForPeer(fingerprint)
+                val storedPeer = trustedPeer(fingerprint)
+                if (peer == null || storedPeer == null) {
+                    null
+                } else {
+                    fingerprint to peer
+                }
+            }
+
+        if (conversation.memberFingerprints.isEmpty()) {
+            trustState = if (pendingPeer == null) "等待配对" else "请先确认校验码"
+            appendMessage(
+                conversation.id,
                 ChatBubble(
-                    text = text,
-                    mine = true,
+                    text = if (pendingPeer == null) "群聊还没有成员，请先完成配对" else "请先确认配对校验码",
+                    mine = false,
                     encrypted = true,
                     timestamp = nowTime(),
-                    messageId = messageId,
-                    deliveryState = DeliveryState.Sending
+                    deliveryState = DeliveryState.Waiting
                 )
+            )
+            return
+        }
 
-            runCatching {
-                sendPacket(currentTransport(), peer, packet)
-            }.onSuccess {
-                updateMessageState(messageId, DeliveryState.Sent)
-                trustState = "已加密发送"
-            }.onFailure { error ->
-                updateMessageState(messageId, DeliveryState.Failed)
-                trustState = "发送失败"
-                messages +=
-                    ChatBubble(
-                        text = error.readableMessage("无法发送消息"),
-                        mine = false,
-                        encrypted = false,
-                        timestamp = nowTime()
+        if (targets.isEmpty()) {
+            trustState = "成员未在线"
+            appendMessage(
+                conversation.id,
+                ChatBubble(
+                    text =
+                        if (conversation.kind == ConversationKind.Direct) {
+                            "对方暂时未在线，消息未发送"
+                        } else {
+                            "群成员暂时未在线，消息未发送"
+                        },
+                    mine = false,
+                    encrypted = true,
+                    timestamp = nowTime(),
+                    deliveryState = DeliveryState.Waiting
+                )
+            )
+            return
+        }
+
+        val displayMessageId = UUID.randomUUID().toString()
+        appendMessage(
+            conversation.id,
+            ChatBubble(
+                text = text,
+                mine = true,
+                encrypted = true,
+                timestamp = nowTime(),
+                messageId = displayMessageId,
+                deliveryState = DeliveryState.Sending
+            )
+        )
+
+        trustState = "正在加密发送"
+        coroutineScope.launch {
+            var sentCount = 0
+            var failedCount = 0
+            targets.forEach { (peerFingerprint, peer) ->
+                val payload =
+                    encodeChatPayload(
+                        conversation = conversation,
+                        text = text
                     )
+                val packetResult = runCatching { engine.encryptTextForPeer(peerFingerprint, payload) }
+                if (packetResult.isFailure) {
+                    failedCount += 1
+                    appendMessage(
+                        conversation.id,
+                        ChatBubble(
+                            text = packetResult.exceptionOrNull().readableMessage("无法加密消息"),
+                            mine = false,
+                            encrypted = false,
+                            timestamp = nowTime()
+                        )
+                    )
+                    return@forEach
+                }
+                val packet = packetResult.getOrNull() ?: return@forEach
+                val packetMessageId = packet.encryptedMessage?.messageId ?: return@forEach
+                outgoingMessages[packetMessageId] =
+                    OutgoingMessageRef(
+                        conversationId = conversation.id,
+                        displayMessageId = displayMessageId,
+                        expectedDeliveries = targets.size
+                    )
+
+                runCatching {
+                    sendPacket(currentTransport(), peer, packet)
+                }.onSuccess {
+                    sentCount += 1
+                }.onFailure { error ->
+                    failedCount += 1
+                    appendMessage(
+                        conversation.id,
+                        ChatBubble(
+                            text = error.readableMessage("无法发送消息"),
+                            mine = false,
+                            encrypted = false,
+                            timestamp = nowTime()
+                        )
+                    )
+                }
+            }
+
+            when {
+                sentCount > 0 && failedCount == 0 -> {
+                    updateMessageState(displayMessageId, DeliveryState.Sent)
+                    trustState =
+                        if (conversation.kind == ConversationKind.Group) {
+                            "群聊已加密发送"
+                        } else {
+                            "已加密发送"
+                        }
+                }
+
+                sentCount > 0 -> {
+                    updateMessageState(displayMessageId, DeliveryState.Sent)
+                    trustState = "部分成员已发送"
+                }
+
+                else -> {
+                    updateMessageState(displayMessageId, DeliveryState.Failed)
+                    trustState = "发送失败"
+                }
             }
         }
     }
@@ -885,13 +1176,13 @@ internal fun SpotChatApp() {
             .setInputActionType(EditorInfo.IME_ACTION_SEND)
 
         val inputIntent = RemoteInputIntentHelper.createActionRemoteInputIntent()
-        RemoteInputIntentHelper.putTitleExtra(inputIntent, "SpotChat")
+        RemoteInputIntentHelper.putTitleExtra(inputIntent, activeConversation().title)
         RemoteInputIntentHelper.putConfirmLabelExtra(inputIntent, "发送")
         RemoteInputIntentHelper.putCancelLabelExtra(inputIntent, "取消")
         RemoteInputIntentHelper.putRemoteInputsExtra(inputIntent, listOf(remoteInputBuilder.build()))
 
         val replyContext =
-            messages
+            messagesForConversation(activeConversationId)
                 .filter { message -> !message.mine && message.deliveryState != DeliveryState.System }
                 .takeLast(3)
                 .map { message -> message.text }
@@ -942,7 +1233,7 @@ internal fun SpotChatApp() {
         val isRoundScreen = LocalConfiguration.current.isScreenRound
         val rootDismissState = rememberSwipeToDismissBoxState()
         LaunchedEffect(appSurface) {
-            if (appSurface == AppSurface.Chat) {
+            if (appSurface == AppSurface.ConversationList) {
                 rootDismissState.snapTo(SwipeToDismissValue.Default)
             }
         }
@@ -955,22 +1246,27 @@ internal fun SpotChatApp() {
                         .padding(WatchSurfaceSpec(isRound = isRoundScreen, compact = false).appPadding),
                 contentAlignment = Alignment.Center
             ) {
-                val chatSurface: @Composable (Boolean) -> Unit = { profileNavigationEnabled ->
-                    WatchChatSurface(
+                val currentConversations = conversations()
+                val selectedConversation =
+                    currentConversations.firstOrNull { conversation -> conversation.id == activeConversationId }
+                        ?: currentConversations.first()
+                val conversationListSurface: @Composable (Boolean) -> Unit = { profileNavigationEnabled ->
+                    WatchConversationListSurface(
                         isRoundScreen = isRoundScreen,
                         profile = profile,
+                        conversations = currentConversations,
+                        unreadCounts = unreadCounts,
+                        messagesByConversation = conversationMessages,
                         transportMode = transportMode,
                         trustState = trustState,
                         fingerprint = localFingerprint,
                         pairingCode = pairingCode,
                         pendingPeer = pendingPeer,
                         trustedPeerCount = trustedPeers.size,
-                        messages = messages,
                         onSelectMode = ::selectMode,
                         onConfirmPairing = ::confirmPairing,
                         onRejectPairing = ::rejectPairing,
-                        onSendQuickReply = ::sendQuickReply,
-                        onOpenCustomMessageInput = ::openCustomMessageInput,
+                        onOpenConversation = ::openConversation,
                         onOpenProfile = {
                             appSurface = AppSurface.Profile
                         },
@@ -978,7 +1274,7 @@ internal fun SpotChatApp() {
                     )
                 }
 
-                if (appSurface == AppSurface.Chat) {
+                if (appSurface == AppSurface.ConversationList) {
                     SwipeToDismissBox(
                         onDismissed = {
                             activity?.finish()
@@ -986,7 +1282,7 @@ internal fun SpotChatApp() {
                         modifier = Modifier.fillMaxSize(),
                         state = rootDismissState,
                         backgroundKey = "SpotChatRootDismissBackground",
-                        contentKey = AppSurface.Chat
+                        contentKey = AppSurface.ConversationList
                     ) { isBackground ->
                         if (isBackground) {
                             Box(
@@ -996,23 +1292,56 @@ internal fun SpotChatApp() {
                                         .background(Color.Black)
                             )
                         } else {
-                            chatSurface(true)
+                            conversationListSurface(true)
                         }
                     }
                 } else {
-                    chatSurface(false)
+                    conversationListSurface(false)
+                }
+
+                if (appSurface == AppSurface.Chat) {
+                    SlideInOverlay(
+                        onDismissed = {
+                            appSurface = AppSurface.ConversationList
+                        }
+                    ) { dismissOverlay ->
+                        WatchChatSurface(
+                            isRoundScreen = isRoundScreen,
+                            profile = profile,
+                            conversation = selectedConversation,
+                            transportMode = transportMode,
+                            trustState = trustState,
+                            fingerprint = localFingerprint,
+                            pairingCode = pairingCode,
+                            pendingPeer = pendingPeer,
+                            trustedPeerCount = trustedPeers.size,
+                            messages = messagesForConversation(selectedConversation.id),
+                            onSelectMode = ::selectMode,
+                            onConfirmPairing = ::confirmPairing,
+                            onRejectPairing = ::rejectPairing,
+                            onSendQuickReply = ::sendQuickReply,
+                            onOpenCustomMessageInput = ::openCustomMessageInput,
+                            onOpenProfile = {},
+                            onNavigateBack = dismissOverlay,
+                            profileNavigationEnabled = false
+                        )
+                    }
                 }
 
                 if (appSurface == AppSurface.Profile) {
-                    ProfileSlideOverlay(
-                        isRoundScreen = isRoundScreen,
-                        profile = profile,
-                        avatars = defaultAvatars,
+                    SlideInOverlay(
                         onDismissed = {
-                            appSurface = AppSurface.Chat
-                        },
-                        onProfileChange = ::updateProfile
-                    )
+                            appSurface = AppSurface.ConversationList
+                        }
+                    ) { dismissOverlay ->
+                        WatchProfileSurface(
+                            isRoundScreen = isRoundScreen,
+                            profile = profile,
+                            avatars = defaultAvatars,
+                            onNavigateBack = dismissOverlay,
+                            onProfileChange = ::updateProfile
+                        )
+                    }
                 }
             }
         }
@@ -1020,12 +1349,9 @@ internal fun SpotChatApp() {
 }
 
 @Composable
-private fun ProfileSlideOverlay(
-    isRoundScreen: Boolean,
-    profile: ProfileSettings,
-    avatars: List<DefaultAvatar>,
+private fun SlideInOverlay(
     onDismissed: () -> Unit,
-    onProfileChange: (ProfileSettings) -> Unit
+    content: @Composable (dismissOverlay: () -> Unit) -> Unit
 ) {
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize()
@@ -1092,15 +1418,288 @@ private fun ProfileSlideOverlay(
                         )
                     }
         ) {
-            WatchProfileSurface(
-                isRoundScreen = isRoundScreen,
-                profile = profile,
-                avatars = avatars,
-                onNavigateBack = {
-                    animateProfileTo(widthPx, onDismissed)
-                },
-                onProfileChange = onProfileChange
+            content {
+                animateProfileTo(widthPx, onDismissed)
+            }
+        }
+    }
+}
+
+@Composable
+private fun WatchConversationListSurface(
+    isRoundScreen: Boolean,
+    profile: ProfileSettings,
+    conversations: List<ChatConversation>,
+    unreadCounts: Map<String, Int>,
+    messagesByConversation: Map<String, List<ChatBubble>>,
+    transportMode: TransportMode,
+    trustState: String,
+    fingerprint: String,
+    pairingCode: String?,
+    pendingPeer: TrustedPeer?,
+    trustedPeerCount: Int,
+    onSelectMode: (TransportMode) -> Unit,
+    onConfirmPairing: () -> Unit,
+    onRejectPairing: () -> Unit,
+    onOpenConversation: (ChatConversation) -> Unit,
+    onOpenProfile: () -> Unit,
+    profileNavigationEnabled: Boolean = true
+) {
+    val swipeThreshold = with(LocalDensity.current) { 48.dp.toPx() }
+    val profileSwipeModifier =
+        if (profileNavigationEnabled) {
+            Modifier.pointerInput(swipeThreshold) {
+                var dragAmount = 0f
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { _, delta ->
+                        dragAmount += delta
+                    },
+                    onDragEnd = {
+                        if (dragAmount < -swipeThreshold) {
+                            onOpenProfile()
+                        }
+                        dragAmount = 0f
+                    },
+                    onDragCancel = {
+                        dragAmount = 0f
+                    }
+                )
+            }
+        } else {
+            Modifier
+        }
+
+    BoxWithConstraints(
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .then(profileSwipeModifier)
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
+        val listState =
+            rememberScalingLazyListState(
+                initialCenterItemIndex = 0
             )
+
+        Box(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .clip(surfaceSpec.screenShape)
+                    .background(
+                        Brush.radialGradient(
+                            colors =
+                                listOf(
+                                    Color(0xFF173032),
+                                    Color(0xFF081719),
+                                    Color(0xFF020506)
+                                )
+                        )
+                    )
+                    .padding(horizontal = surfaceSpec.chatHorizontalPadding)
+        ) {
+            ScreenScaffold(
+                scrollState = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding =
+                    PaddingValues(
+                        top = surfaceSpec.chatTopPadding,
+                        bottom = surfaceSpec.conversationBottomPadding
+                    ),
+                scrollIndicator = {
+                    ScrollIndicator(
+                        state = listState,
+                        modifier = Modifier.padding(end = surfaceSpec.scrollIndicatorEndPadding)
+                    )
+                }
+            ) { scaffoldPadding ->
+                ScalingLazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    state = listState,
+                    contentPadding = scaffoldPadding,
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    anchorType = ScalingLazyListAnchorType.ItemCenter
+                ) {
+                    item {
+                        StatusHeader(
+                            avatar = avatarFor(profile.avatarId),
+                            displayName = profile.displayName,
+                            title = "SpotChat",
+                            subtitle = "${transportMode.label} · $trustState",
+                            surfaceSpec = surfaceSpec,
+                            onOpenProfile = if (profileNavigationEnabled) onOpenProfile else null,
+                            onNavigateBack = null
+                        )
+                    }
+
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(surfaceSpec.chatToggleWidth),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TransportToggle(
+                                mode = TransportMode.Lan,
+                                selected = transportMode == TransportMode.Lan,
+                                compact = compact,
+                                onClick = { onSelectMode(TransportMode.Lan) }
+                            )
+                            Spacer(modifier = Modifier.width(if (compact) 6.dp else 8.dp))
+                            TransportToggle(
+                                mode = TransportMode.Bluetooth,
+                                selected = transportMode == TransportMode.Bluetooth,
+                                compact = compact,
+                                onClick = { onSelectMode(TransportMode.Bluetooth) }
+                            )
+                        }
+                    }
+
+                    item {
+                        FingerprintPill(
+                            fingerprint = fingerprint,
+                            pairingCode = pairingCode,
+                            trustedPeerCount = trustedPeerCount,
+                            surfaceSpec = surfaceSpec
+                        )
+                    }
+
+                    if (pendingPeer != null) {
+                        item {
+                            PairingActionRow(
+                                peer = pendingPeer,
+                                surfaceSpec = surfaceSpec,
+                                onConfirmPairing = onConfirmPairing,
+                                onRejectPairing = onRejectPairing
+                            )
+                        }
+                    }
+
+                    conversations.forEach { conversation ->
+                        val lastMessage =
+                            messagesByConversation[conversation.id]
+                                .orEmpty()
+                                .lastOrNull { message -> message.deliveryState != DeliveryState.System }
+                        item {
+                            ConversationRow(
+                                conversation = conversation,
+                                lastMessage = lastMessage,
+                                unreadCount = unreadCounts[conversation.id] ?: 0,
+                                surfaceSpec = surfaceSpec,
+                                onClick = {
+                                    onOpenConversation(conversation)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConversationRow(
+    conversation: ChatConversation,
+    lastMessage: ChatBubble?,
+    unreadCount: Int,
+    surfaceSpec: WatchSurfaceSpec,
+    onClick: () -> Unit
+) {
+    val compact = surfaceSpec.compact
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(surfaceSpec.conversationRowWidth)
+                .height(if (compact) 46.dp else 52.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainer)
+                .clickable(onClick = onClick)
+                .padding(horizontal = if (compact) 8.dp else 9.dp, vertical = if (compact) 6.dp else 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .size(if (compact) 28.dp else 32.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (conversation.kind == ConversationKind.Group) {
+                            Color(0xFF3F6D66)
+                        } else {
+                            Color(0xFF5B6078)
+                        }
+                    ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector =
+                    if (conversation.kind == ConversationKind.Group) {
+                        Icons.Filled.Lan
+                    } else {
+                        Icons.Filled.VerifiedUser
+                    },
+                contentDescription = conversation.kind.label,
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(if (compact) 14.dp else 15.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(if (compact) 7.dp else 8.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = conversation.title,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = if (compact) 12.sp else 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = conversation.kind.label,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = if (compact) 8.sp else 9.sp,
+                    maxLines = 1
+                )
+            }
+            Text(
+                text =
+                    lastMessage?.let { message ->
+                        if (message.mine) {
+                            "我：${message.text}"
+                        } else {
+                            message.senderName?.let { senderName -> "$senderName：${message.text}" } ?: message.text
+                        }
+                    } ?: conversation.subtitle,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = if (compact) 9.sp else 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (unreadCount > 0) {
+            Spacer(modifier = Modifier.width(6.dp))
+            Box(
+                modifier =
+                    Modifier
+                        .size(if (compact) 18.dp else 20.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = unreadCount.coerceAtMost(9).toString(),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    fontSize = if (compact) 9.sp else 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+            }
         }
     }
 }
@@ -1317,6 +1916,7 @@ private fun ProfileAvatarRow(
 @Composable
 private fun ProfileBackButton(
     compact: Boolean,
+    contentDescription: String = "返回主界面",
     onClick: () -> Unit
 ) {
     Box(
@@ -1330,7 +1930,7 @@ private fun ProfileBackButton(
     ) {
         Icon(
             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-            contentDescription = "返回主界面",
+            contentDescription = contentDescription,
             tint = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.size(if (compact) 15.dp else 16.dp)
         )
@@ -1432,6 +2032,7 @@ private fun AvatarBubble(
 private fun WatchChatSurface(
     isRoundScreen: Boolean,
     profile: ProfileSettings,
+    conversation: ChatConversation,
     transportMode: TransportMode,
     trustState: String,
     fingerprint: String,
@@ -1445,6 +2046,7 @@ private fun WatchChatSurface(
     onSendQuickReply: (String) -> Unit,
     onOpenCustomMessageInput: () -> Unit,
     onOpenProfile: () -> Unit,
+    onNavigateBack: () -> Unit,
     profileNavigationEnabled: Boolean = true
 ) {
     val swipeThreshold = with(LocalDensity.current) { 48.dp.toPx() }
@@ -1521,10 +2123,11 @@ private fun WatchChatSurface(
                     StatusHeader(
                         avatar = avatarFor(profile.avatarId),
                         displayName = profile.displayName,
-                        trustState = trustState,
-                        transportMode = transportMode,
+                        title = conversation.title,
+                        subtitle = "${conversation.kind.label} · ${transportMode.label} · $trustState",
                         surfaceSpec = surfaceSpec,
-                        onOpenProfile = if (profileNavigationEnabled) onOpenProfile else null
+                        onOpenProfile = if (profileNavigationEnabled) onOpenProfile else null,
+                        onNavigateBack = onNavigateBack
                     )
 
                     Spacer(modifier = Modifier.height(if (compact) 4.dp else 6.dp))
@@ -1616,10 +2219,11 @@ private fun WatchChatSurface(
 private fun StatusHeader(
     avatar: DefaultAvatar,
     displayName: String,
-    trustState: String,
-    transportMode: TransportMode,
+    title: String,
+    subtitle: String,
     surfaceSpec: WatchSurfaceSpec,
-    onOpenProfile: (() -> Unit)?
+    onOpenProfile: (() -> Unit)?,
+    onNavigateBack: (() -> Unit)?
 ) {
     val compact = surfaceSpec.compact
     Row(
@@ -1627,6 +2231,14 @@ private fun StatusHeader(
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (onNavigateBack != null) {
+            ProfileBackButton(
+                compact = compact,
+                contentDescription = "返回会话列表",
+                onClick = onNavigateBack
+            )
+            Spacer(modifier = Modifier.width(if (compact) 5.dp else 6.dp))
+        }
         AvatarBubble(
             avatar = avatar,
             displayName = displayName,
@@ -1638,14 +2250,14 @@ private fun StatusHeader(
         Spacer(modifier = Modifier.width(if (compact) 6.dp else 7.dp))
         Column(horizontalAlignment = Alignment.Start) {
             Text(
-                text = "SpotChat",
+                text = title,
                 color = MaterialTheme.colorScheme.onBackground,
                 fontSize = if (compact) 15.sp else 18.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1
             )
             Text(
-                text = "${transportMode.label} · $trustState",
+                text = subtitle,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = if (compact) 9.sp else 11.sp,
                 maxLines = 1,
@@ -1893,6 +2505,15 @@ private fun MessageBubble(
                     )
                 }
             }
+            if (!message.mine && message.senderName != null) {
+                Text(
+                    text = message.senderName,
+                    color = foreground.copy(alpha = 0.72f),
+                    fontSize = 9.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             Text(
                 text = message.text,
                 color = foreground,
@@ -1962,6 +2583,46 @@ private fun nowTime(): String =
 
 private fun avatarFor(avatarId: String): DefaultAvatar =
     defaultAvatars.firstOrNull { avatar -> avatar.id == avatarId } ?: defaultAvatars.first()
+
+private fun directConversationId(peerFingerprint: String): String =
+    "direct:$peerFingerprint"
+
+private fun encodeChatPayload(
+    conversation: ChatConversation,
+    text: String
+): String =
+    chatPayloadJson.encodeToString(
+        ChatPayload(
+            kind =
+                if (conversation.kind == ConversationKind.Group) {
+                    CHAT_PAYLOAD_KIND_GROUP
+                } else {
+                    CHAT_PAYLOAD_KIND_DIRECT
+                },
+            text = text,
+            groupId =
+                if (conversation.kind == ConversationKind.Group) {
+                    conversation.id
+                } else {
+                    null
+                },
+            groupName =
+                if (conversation.kind == ConversationKind.Group) {
+                    conversation.title
+                } else {
+                    null
+                }
+        )
+    )
+
+private fun decodeChatPayload(text: String): ChatPayload =
+    runCatching { chatPayloadJson.decodeFromString<ChatPayload>(text) }
+        .getOrNull()
+        ?.takeIf { payload -> payload.version == 1 && payload.text.isNotBlank() }
+        ?: ChatPayload(
+            kind = CHAT_PAYLOAD_KIND_DIRECT,
+            text = text
+        )
 
 private fun profileInitial(displayName: String): String {
     val trimmedName = displayName.trim()
