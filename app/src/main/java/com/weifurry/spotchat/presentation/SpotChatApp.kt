@@ -12,11 +12,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -33,6 +31,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -74,6 +73,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -115,6 +115,8 @@ import com.weifurry.spotchat.transport.TransportPeer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
@@ -938,18 +940,11 @@ internal fun SpotChatApp() {
 
     SpotChatTheme {
         val isRoundScreen = LocalConfiguration.current.isScreenRound
-        val dismissState = rememberSwipeToDismissBoxState()
         val rootDismissState = rememberSwipeToDismissBoxState()
         LaunchedEffect(appSurface) {
-            if (appSurface == AppSurface.Profile) {
-                dismissState.snapTo(SwipeToDismissValue.Default)
-            }
             if (appSurface == AppSurface.Chat) {
                 rootDismissState.snapTo(SwipeToDismissValue.Default)
             }
-        }
-        BackHandler(enabled = appSurface == AppSurface.Profile) {
-            appSurface = AppSurface.Chat
         }
         AppScaffold {
             Box(
@@ -960,97 +955,152 @@ internal fun SpotChatApp() {
                         .padding(WatchSurfaceSpec(isRound = isRoundScreen, compact = false).appPadding),
                 contentAlignment = Alignment.Center
             ) {
-                SwipeToDismissBox(
-                    onDismissed = {
-                        activity?.finish()
-                    },
-                    modifier = Modifier.fillMaxSize(),
-                    state = rootDismissState,
-                    backgroundKey = "SpotChatRootDismissBackground",
-                    contentKey = AppSurface.Chat
-                ) { isBackground ->
-                    if (isBackground) {
-                        Box(
-                            modifier =
-                                Modifier
-                                    .fillMaxSize()
-                                    .background(Color.Black)
-                        )
-                    } else {
-                        WatchChatSurface(
-                            isRoundScreen = isRoundScreen,
-                            profile = profile,
-                            transportMode = transportMode,
-                            trustState = trustState,
-                            fingerprint = localFingerprint,
-                            pairingCode = pairingCode,
-                            pendingPeer = pendingPeer,
-                            trustedPeerCount = trustedPeers.size,
-                            messages = messages,
-                            onSelectMode = ::selectMode,
-                            onConfirmPairing = ::confirmPairing,
-                            onRejectPairing = ::rejectPairing,
-                            onSendQuickReply = ::sendQuickReply,
-                            onOpenCustomMessageInput = ::openCustomMessageInput,
-                            onOpenProfile = {
-                                appSurface = AppSurface.Profile
-                            }
-                        )
-                    }
+                val chatSurface: @Composable (Boolean) -> Unit = { profileNavigationEnabled ->
+                    WatchChatSurface(
+                        isRoundScreen = isRoundScreen,
+                        profile = profile,
+                        transportMode = transportMode,
+                        trustState = trustState,
+                        fingerprint = localFingerprint,
+                        pairingCode = pairingCode,
+                        pendingPeer = pendingPeer,
+                        trustedPeerCount = trustedPeers.size,
+                        messages = messages,
+                        onSelectMode = ::selectMode,
+                        onConfirmPairing = ::confirmPairing,
+                        onRejectPairing = ::rejectPairing,
+                        onSendQuickReply = ::sendQuickReply,
+                        onOpenCustomMessageInput = ::openCustomMessageInput,
+                        onOpenProfile = {
+                            appSurface = AppSurface.Profile
+                        },
+                        profileNavigationEnabled = profileNavigationEnabled
+                    )
                 }
 
-                AnimatedVisibility(
-                    visible = appSurface == AppSurface.Profile,
-                    modifier = Modifier.fillMaxSize(),
-                    enter =
-                        slideInHorizontally(animationSpec = tween(durationMillis = 220)) { fullWidth ->
-                            fullWidth
-                        } + fadeIn(animationSpec = tween(durationMillis = 160)),
-                    exit = fadeOut(animationSpec = tween(durationMillis = 0)),
-                    label = "SpotChatProfileOverlay"
-                ) {
+                if (appSurface == AppSurface.Chat) {
                     SwipeToDismissBox(
+                        onDismissed = {
+                            activity?.finish()
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                        state = rootDismissState,
+                        backgroundKey = "SpotChatRootDismissBackground",
+                        contentKey = AppSurface.Chat
+                    ) { isBackground ->
+                        if (isBackground) {
+                            Box(
+                                modifier =
+                                    Modifier
+                                        .fillMaxSize()
+                                        .background(Color.Black)
+                            )
+                        } else {
+                            chatSurface(true)
+                        }
+                    }
+                } else {
+                    chatSurface(false)
+                }
+
+                if (appSurface == AppSurface.Profile) {
+                    ProfileSlideOverlay(
+                        isRoundScreen = isRoundScreen,
+                        profile = profile,
+                        avatars = defaultAvatars,
                         onDismissed = {
                             appSurface = AppSurface.Chat
                         },
-                        modifier = Modifier.fillMaxSize(),
-                        state = dismissState,
-                        backgroundKey = AppSurface.Chat,
-                        contentKey = AppSurface.Profile
-                    ) { isBackground ->
-                        if (isBackground) {
-                            WatchChatSurface(
-                                isRoundScreen = isRoundScreen,
-                                profile = profile,
-                                transportMode = transportMode,
-                                trustState = trustState,
-                                fingerprint = localFingerprint,
-                                pairingCode = pairingCode,
-                                pendingPeer = pendingPeer,
-                                trustedPeerCount = trustedPeers.size,
-                                messages = messages,
-                                onSelectMode = ::selectMode,
-                                onConfirmPairing = ::confirmPairing,
-                                onRejectPairing = ::rejectPairing,
-                                onSendQuickReply = ::sendQuickReply,
-                                onOpenCustomMessageInput = ::openCustomMessageInput,
-                                onOpenProfile = {},
-                                profileNavigationEnabled = false
-                            )
-                        } else {
-                            WatchProfileSurface(
-                                isRoundScreen = isRoundScreen,
-                                profile = profile,
-                                avatars = defaultAvatars,
-                                onNavigateBack = {
-                                    appSurface = AppSurface.Chat
-                                },
-                                onProfileChange = ::updateProfile
-                            )
-                        }
-                    }
+                        onProfileChange = ::updateProfile
+                    )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ProfileSlideOverlay(
+    isRoundScreen: Boolean,
+    profile: ProfileSettings,
+    avatars: List<DefaultAvatar>,
+    onDismissed: () -> Unit,
+    onProfileChange: (ProfileSettings) -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val widthPx = with(LocalDensity.current) { maxWidth.toPx().coerceAtLeast(1f) }
+        val scope = rememberCoroutineScope()
+        var offsetX by remember(widthPx) { mutableStateOf(widthPx) }
+        var slideJob by remember { mutableStateOf<Job?>(null) }
+
+        fun animateProfileTo(targetOffset: Float, onFinished: (() -> Unit)? = null) {
+            slideJob?.cancel()
+            val target = targetOffset.coerceIn(0f, widthPx)
+            val start = offsetX.coerceIn(0f, widthPx)
+            slideJob =
+                scope.launch {
+                    animate(
+                        initialValue = start,
+                        targetValue = target,
+                        animationSpec =
+                            tween(
+                                durationMillis = if (target == 0f) 220 else 180,
+                                easing = FastOutSlowInEasing
+                            )
+                    ) { value, _ ->
+                        offsetX = value
+                    }
+                    onFinished?.invoke()
+                }
+        }
+
+        LaunchedEffect(widthPx) {
+            offsetX = widthPx
+            animateProfileTo(0f)
+        }
+
+        BackHandler {
+            animateProfileTo(widthPx, onDismissed)
+        }
+
+        Box(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .offset { IntOffset(offsetX.roundToInt(), 0) }
+                    .pointerInput(widthPx) {
+                        detectHorizontalDragGestures(
+                            onDragStart = {
+                                slideJob?.cancel()
+                            },
+                            onHorizontalDrag = { _, dragAmount ->
+                                offsetX = (offsetX + dragAmount).coerceIn(0f, widthPx)
+                            },
+                            onDragEnd = {
+                                val shouldDismiss = offsetX > widthPx * 0.28f
+                                if (shouldDismiss) {
+                                    animateProfileTo(widthPx, onDismissed)
+                                } else {
+                                    animateProfileTo(0f)
+                                }
+                            },
+                            onDragCancel = {
+                                animateProfileTo(0f)
+                            }
+                        )
+                    }
+        ) {
+            WatchProfileSurface(
+                isRoundScreen = isRoundScreen,
+                profile = profile,
+                avatars = avatars,
+                onNavigateBack = {
+                    animateProfileTo(widthPx, onDismissed)
+                },
+                onProfileChange = onProfileChange
+            )
         }
     }
 }
