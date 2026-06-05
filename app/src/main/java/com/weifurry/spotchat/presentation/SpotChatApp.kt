@@ -42,10 +42,14 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Lan
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -116,6 +120,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
@@ -220,6 +225,12 @@ private val chatPayloadJson =
         encodeDefaults = true
         ignoreUnknownKeys = true
     }
+private val chatGreen = Color(0xFF00A884)
+private val chatGreenDark = Color(0xFF005C4B)
+private val chatBlue = Color(0xFF53BDEB)
+private val chatWallpaper = Color(0xFF050B0C)
+private val chatIncoming = Color(0xFF111B21)
+private val chatRowMuted = Color(0xFF8696A0)
 
 private data class WatchSurfaceSpec(
     val isRound: Boolean,
@@ -308,24 +319,32 @@ private data class WatchSurfaceSpec(
             }
 
     val chatHorizontalPadding: Dp
-        get() = if (isRound) 20.dp else 12.dp
+        get() = if (isRound) 18.dp else 12.dp
 
     val chatTopPadding: Dp
-        get() = if (isRound) 22.dp else 12.dp
+        get() = if (isRound) {
+            if (compact) 18.dp else 24.dp
+        } else {
+            12.dp
+        }
 
     val chatBottomPadding: Dp
-        get() = if (isRound) 28.dp else 12.dp
+        get() = if (isRound) {
+            if (compact) 24.dp else 30.dp
+        } else {
+            12.dp
+        }
 
     val conversationBottomPadding: Dp
         get() = if (isRound) {
-            if (compact) 34.dp else 42.dp
+            if (compact) 30.dp else 38.dp
         } else {
             14.dp
         }
 
     val chatHeaderWidth: Float
         get() = if (isRound) {
-            if (compact) 0.78f else 0.82f
+            if (compact) 0.86f else 0.88f
         } else {
             0.94f
         }
@@ -346,14 +365,14 @@ private data class WatchSurfaceSpec(
 
     val chatMessageWidth: Float
         get() = if (isRound) {
-            if (compact) 0.84f else 0.78f
+            if (compact) 0.86f else 0.88f
         } else {
             0.94f
         }
 
     val quickReplyWidth: Float
         get() = if (isRound) {
-            if (compact) 0.78f else 0.72f
+            if (compact) 0.84f else 0.86f
         } else {
             0.94f
         }
@@ -363,7 +382,7 @@ private data class WatchSurfaceSpec(
 
     val conversationRowWidth: Float
         get() = if (isRound) {
-            if (compact) 0.82f else 0.84f
+            if (compact) 0.9f else 0.92f
         } else {
             0.94f
         }
@@ -1307,7 +1326,6 @@ internal fun SpotChatApp() {
                     ) { dismissOverlay ->
                         WatchChatSurface(
                             isRoundScreen = isRoundScreen,
-                            profile = profile,
                             conversation = selectedConversation,
                             transportMode = transportMode,
                             trustState = trustState,
@@ -1321,9 +1339,7 @@ internal fun SpotChatApp() {
                             onRejectPairing = ::rejectPairing,
                             onSendQuickReply = ::sendQuickReply,
                             onOpenCustomMessageInput = ::openCustomMessageInput,
-                            onOpenProfile = {},
-                            onNavigateBack = dismissOverlay,
-                            profileNavigationEnabled = false
+                            onNavigateBack = dismissOverlay
                         )
                     }
                 }
@@ -1478,7 +1494,7 @@ private fun WatchConversationListSurface(
         val compact = maxWidth < 260.dp || maxHeight < 260.dp
         val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
         val listScrollState = rememberScrollState()
-        val listGap = if (compact) 5.dp else 6.dp
+        val listGap = if (compact) 3.dp else 4.dp
 
         Box(
             modifier =
@@ -1489,14 +1505,15 @@ private fun WatchConversationListSurface(
                         Brush.radialGradient(
                             colors =
                                 listOf(
-                                    Color(0xFF173032),
-                                    Color(0xFF081719),
-                                    Color(0xFF020506)
+                                    Color(0xFF102321),
+                                    chatWallpaper,
+                                    Color.Black
                                 )
                         )
                     )
                     .padding(horizontal = surfaceSpec.chatHorizontalPadding)
         ) {
+            ChatWallpaperGlyphs(compact = compact)
             ScreenScaffold(
                 scrollState = listScrollState,
                 modifier = Modifier.fillMaxSize(),
@@ -1516,37 +1533,22 @@ private fun WatchConversationListSurface(
                     verticalArrangement = Arrangement.spacedBy(listGap),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    StatusHeader(
-                        avatar = avatarFor(profile.avatarId),
-                        displayName = profile.displayName,
-                        title = "SpotChat",
-                        subtitle = "${transportMode.label} · $trustState",
+                    InboxHeader(
+                        profile = profile,
+                        transportMode = transportMode,
+                        trustState = trustState,
                         surfaceSpec = surfaceSpec,
                         onOpenProfile = if (profileNavigationEnabled) onOpenProfile else null,
-                        onNavigateBack = null
                     )
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(surfaceSpec.chatToggleWidth),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        TransportToggle(
-                            mode = TransportMode.Lan,
-                            selected = transportMode == TransportMode.Lan,
-                            compact = compact,
-                            onClick = { onSelectMode(TransportMode.Lan) }
-                        )
-                        Spacer(modifier = Modifier.width(if (compact) 6.dp else 8.dp))
-                        TransportToggle(
-                            mode = TransportMode.Bluetooth,
-                            selected = transportMode == TransportMode.Bluetooth,
-                            compact = compact,
-                            onClick = { onSelectMode(TransportMode.Bluetooth) }
-                        )
-                    }
+                    InboxTransportBar(
+                        transportMode = transportMode,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec,
+                        onSelectMode = onSelectMode
+                    )
 
-                    FingerprintPill(
+                    EncryptionStatusPill(
                         fingerprint = fingerprint,
                         pairingCode = pairingCode,
                         trustedPeerCount = trustedPeerCount,
@@ -1592,44 +1594,31 @@ private fun ConversationRow(
     onClick: () -> Unit
 ) {
     val compact = surfaceSpec.compact
+    val accent = conversationAccentColor(conversation)
+    val lastTime = lastMessage?.timestamp ?: "现在"
     Row(
         modifier =
             Modifier
                 .fillMaxWidth(surfaceSpec.conversationRowWidth)
-                .height(if (compact) 46.dp else 52.dp)
+                .height(if (compact) 56.dp else 64.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.surfaceContainer)
+                .background(
+                    if (unreadCount > 0) {
+                        chatGreen.copy(alpha = 0.12f)
+                    } else {
+                        Color.Transparent
+                    }
+                )
                 .clickable(onClick = onClick)
-                .padding(horizontal = if (compact) 8.dp else 9.dp, vertical = if (compact) 6.dp else 7.dp),
+                .padding(horizontal = if (compact) 5.dp else 6.dp, vertical = if (compact) 5.dp else 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier =
-                Modifier
-                    .size(if (compact) 28.dp else 32.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (conversation.kind == ConversationKind.Group) {
-                            Color(0xFF3F6D66)
-                        } else {
-                            Color(0xFF5B6078)
-                        }
-                    ),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector =
-                    if (conversation.kind == ConversationKind.Group) {
-                        Icons.Filled.Lan
-                    } else {
-                        Icons.Filled.VerifiedUser
-                    },
-                contentDescription = conversation.kind.label,
-                tint = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.size(if (compact) 14.dp else 15.dp)
-            )
-        }
-        Spacer(modifier = Modifier.width(if (compact) 7.dp else 8.dp))
+        ConversationAvatar(
+            conversation = conversation,
+            size = if (compact) 42.dp else 48.dp,
+            accent = accent
+        )
+        Spacer(modifier = Modifier.width(if (compact) 8.dp else 10.dp))
         Column(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.Center
@@ -1638,53 +1627,312 @@ private fun ConversationRow(
                 Text(
                     text = conversation.title,
                     color = MaterialTheme.colorScheme.onSurface,
-                    fontSize = if (compact) 12.sp else 13.sp,
+                    fontSize = if (compact) 16.sp else 19.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector =
+                        if (lastMessage?.mine == true) {
+                            Icons.Filled.DoneAll
+                        } else {
+                            Icons.AutoMirrored.Filled.Chat
+                        },
+                    contentDescription = "消息摘要",
+                    tint = if (lastMessage?.mine == true) chatBlue else chatRowMuted,
+                    modifier = Modifier.size(if (compact) 12.dp else 14.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = conversation.kind.label,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = if (compact) 8.sp else 9.sp,
-                    maxLines = 1
+                    text = conversationPreview(conversation, lastMessage),
+                    color = if (unreadCount > 0) MaterialTheme.colorScheme.onSurface else chatRowMuted,
+                    fontSize = if (compact) 11.sp else 13.sp,
+                    fontWeight = if (unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
-            Text(
-                text =
-                    lastMessage?.let { message ->
-                        if (message.mine) {
-                            "我：${message.text}"
-                        } else {
-                            message.senderName?.let { senderName -> "$senderName：${message.text}" } ?: message.text
-                        }
-                    } ?: conversation.subtitle,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = if (compact) 9.sp else 10.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
         }
-        if (unreadCount > 0) {
-            Spacer(modifier = Modifier.width(6.dp))
+        Spacer(modifier = Modifier.width(if (compact) 4.dp else 6.dp))
+        Column(
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = lastTime,
+                color = if (unreadCount > 0) chatGreen else chatRowMuted,
+                fontSize = if (compact) 10.sp else 12.sp,
+                fontWeight = if (unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1
+            )
             Box(
                 modifier =
                     Modifier
-                        .size(if (compact) 18.dp else 20.dp)
+                        .padding(top = 6.dp)
+                        .size(if (compact) 10.dp else 12.dp)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary),
+                        .background(if (unreadCount > 0) chatGreen else Color.Transparent),
                 contentAlignment = Alignment.Center
             ) {
+                if (unreadCount > 1) {
+                    Text(
+                        text = unreadCount.coerceAtMost(9).toString(),
+                        color = Color.White,
+                        fontSize = 7.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatWallpaperGlyphs(compact: Boolean) {
+    Box(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Lock,
+            contentDescription = null,
+            tint = chatGreen.copy(alpha = 0.06f),
+            modifier =
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = (-18).dp, y = if (compact) 20.dp else 26.dp)
+                    .size(if (compact) 34.dp else 42.dp)
+        )
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.Chat,
+            contentDescription = null,
+            tint = Color.White.copy(alpha = 0.045f),
+            modifier =
+                Modifier
+                    .align(Alignment.CenterStart)
+                    .offset(x = if (compact) 2.dp else 6.dp, y = if (compact) (-6).dp else (-12).dp)
+                    .size(if (compact) 44.dp else 54.dp)
+        )
+        Icon(
+            imageVector = Icons.Filled.Mic,
+            contentDescription = null,
+            tint = chatBlue.copy(alpha = 0.055f),
+            modifier =
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .offset(x = (-24).dp, y = if (compact) (-34).dp else (-46).dp)
+                    .size(if (compact) 34.dp else 42.dp)
+        )
+    }
+}
+
+@Composable
+private fun InboxHeader(
+    profile: ProfileSettings,
+    transportMode: TransportMode,
+    trustState: String,
+    surfaceSpec: WatchSurfaceSpec,
+    onOpenProfile: (() -> Unit)?
+) {
+    val compact = surfaceSpec.compact
+    Row(
+        modifier = Modifier.fillMaxWidth(surfaceSpec.chatHeaderWidth),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AvatarBubble(
+            avatar = avatarFor(profile.avatarId),
+            displayName = profile.displayName,
+            size = if (compact) 34.dp else 38.dp,
+            textSize = if (compact) 15.sp else 17.sp,
+            selected = false,
+            onClick = onOpenProfile
+        )
+        Spacer(modifier = Modifier.width(if (compact) 8.dp else 10.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "SpotChat",
+                color = MaterialTheme.colorScheme.onBackground,
+                fontSize = if (compact) 19.sp else 22.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier =
+                        Modifier
+                            .size(if (compact) 6.dp else 7.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (trustState.contains("失败") || trustState.contains("拒绝")) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    chatGreen
+                                }
+                            )
+                )
+                Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = unreadCount.coerceAtMost(9).toString(),
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    fontSize = if (compact) 9.sp else 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1
+                    text = "${transportMode.label} · $trustState",
+                    color = chatRowMuted,
+                    fontSize = if (compact) 10.sp else 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun InboxTransportBar(
+    transportMode: TransportMode,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    onSelectMode: (TransportMode) -> Unit
+) {
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(surfaceSpec.chatToggleWidth)
+                .height(if (compact) 30.dp else 34.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatIncoming.copy(alpha = 0.72f))
+                .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TransportMode.entries.forEach { mode ->
+            InboxTransportSegment(
+                mode = mode,
+                selected = transportMode == mode,
+                compact = compact,
+                modifier = Modifier.weight(1f),
+                onClick = { onSelectMode(mode) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun InboxTransportSegment(
+    mode: TransportMode,
+    selected: Boolean,
+    compact: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val background = if (selected) chatGreenDark else Color.Transparent
+    val foreground = if (selected) Color.White else chatRowMuted
+    Row(
+        modifier =
+            modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(7.dp))
+                .background(background)
+                .clickable(onClick = onClick)
+                .padding(horizontal = if (compact) 5.dp else 7.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = mode.icon,
+            contentDescription = mode.label,
+            tint = foreground,
+            modifier = Modifier.size(if (compact) 12.dp else 14.dp)
+        )
+        Spacer(modifier = Modifier.width(if (compact) 3.dp else 4.dp))
+        Text(
+            text = mode.label,
+            color = foreground,
+            fontSize = if (compact) 10.sp else 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun EncryptionStatusPill(
+    fingerprint: String,
+    pairingCode: String?,
+    trustedPeerCount: Int,
+    surfaceSpec: WatchSurfaceSpec
+) {
+    val compact = surfaceSpec.compact
+    val displayFingerprint = SpotChatCrypto.displayFingerprint(fingerprint)
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(surfaceSpec.fingerprintWidth)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatGreen.copy(alpha = 0.14f))
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 5.dp else 6.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Lock,
+            contentDescription = "端到端加密",
+            tint = chatGreen,
+            modifier = Modifier.size(if (compact) 11.dp else 13.dp)
+        )
+        Spacer(modifier = Modifier.width(if (compact) 4.dp else 5.dp))
+        Text(
+            text =
+                pairingCode?.let { "校验 $it" }
+                    ?: "$displayFingerprint · $trustedPeerCount 位可信",
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = if (compact) 9.sp else 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun ConversationAvatar(
+    conversation: ChatConversation,
+    size: Dp,
+    accent: Color
+) {
+    Box(
+        modifier =
+            Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(
+                    Brush.linearGradient(
+                        colors =
+                            listOf(
+                                accent.copy(alpha = 0.95f),
+                                accent.copy(alpha = 0.58f)
+                            )
+                    )
+                ),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector =
+                if (conversation.kind == ConversationKind.Group) {
+                    Icons.Filled.Group
+                } else {
+                    Icons.Filled.VerifiedUser
+                },
+            contentDescription = conversation.kind.label,
+            tint = Color.White,
+            modifier = Modifier.size(size * 0.48f)
+        )
     }
 }
 
@@ -2015,7 +2263,6 @@ private fun AvatarBubble(
 @Composable
 private fun WatchChatSurface(
     isRoundScreen: Boolean,
-    profile: ProfileSettings,
     conversation: ChatConversation,
     transportMode: TransportMode,
     trustState: String,
@@ -2029,39 +2276,10 @@ private fun WatchChatSurface(
     onRejectPairing: () -> Unit,
     onSendQuickReply: (String) -> Unit,
     onOpenCustomMessageInput: () -> Unit,
-    onOpenProfile: () -> Unit,
-    onNavigateBack: () -> Unit,
-    profileNavigationEnabled: Boolean = true
+    onNavigateBack: () -> Unit
 ) {
-    val swipeThreshold = with(LocalDensity.current) { 48.dp.toPx() }
-    val profileSwipeModifier =
-        if (profileNavigationEnabled) {
-            Modifier.pointerInput(swipeThreshold) {
-                var dragAmount = 0f
-                detectHorizontalDragGestures(
-                    onHorizontalDrag = { _, delta ->
-                        dragAmount += delta
-                    },
-                    onDragEnd = {
-                        if (dragAmount < -swipeThreshold) {
-                            onOpenProfile()
-                        }
-                        dragAmount = 0f
-                    },
-                    onDragCancel = {
-                        dragAmount = 0f
-                    }
-                )
-            }
-        } else {
-            Modifier
-        }
-
     BoxWithConstraints(
-        modifier =
-            Modifier
-                .fillMaxSize()
-                .then(profileSwipeModifier)
+        modifier = Modifier.fillMaxSize()
     ) {
         val compact = maxWidth < 260.dp || maxHeight < 260.dp
         val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
@@ -2078,9 +2296,9 @@ private fun WatchChatSurface(
                         Brush.radialGradient(
                             colors =
                                 listOf(
-                                    Color(0xFF173032),
-                                    Color(0xFF081719),
-                                    Color(0xFF020506)
+                                    Color(0xFF102321),
+                                    chatWallpaper,
+                                    Color.Black
                                 )
                         )
                     )
@@ -2089,8 +2307,9 @@ private fun WatchChatSurface(
                         top = surfaceSpec.chatTopPadding,
                         end = surfaceSpec.chatHorizontalPadding,
                         bottom = surfaceSpec.chatBottomPadding
-                    ),
+                    )
         ) {
+            ChatWallpaperGlyphs(compact = compact)
             ScreenScaffold(
                 scrollState = messageScrollState,
                 modifier = Modifier.fillMaxSize(),
@@ -2104,39 +2323,24 @@ private fun WatchChatSurface(
                             .padding(scaffoldPadding),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    StatusHeader(
-                        avatar = avatarFor(profile.avatarId),
-                        displayName = profile.displayName,
-                        title = conversation.title,
-                        subtitle = "${conversation.kind.label} · ${transportMode.label} · $trustState",
+                    ChatTopBar(
+                        conversation = conversation,
+                        transportMode = transportMode,
+                        trustState = trustState,
                         surfaceSpec = surfaceSpec,
-                        onOpenProfile = if (profileNavigationEnabled) onOpenProfile else null,
                         onNavigateBack = onNavigateBack
                     )
 
-                    Spacer(modifier = Modifier.height(if (compact) 4.dp else 6.dp))
+                    Spacer(modifier = Modifier.height(if (compact) 3.dp else 4.dp))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(surfaceSpec.chatToggleWidth),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        TransportToggle(
-                            mode = TransportMode.Lan,
-                            selected = transportMode == TransportMode.Lan,
-                            compact = compact,
-                            onClick = { onSelectMode(TransportMode.Lan) }
-                        )
-                        Spacer(modifier = Modifier.width(if (compact) 6.dp else 8.dp))
-                        TransportToggle(
-                            mode = TransportMode.Bluetooth,
-                            selected = transportMode == TransportMode.Bluetooth,
-                            compact = compact,
-                            onClick = { onSelectMode(TransportMode.Bluetooth) }
-                        )
-                    }
+                    InboxTransportBar(
+                        transportMode = transportMode,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec,
+                        onSelectMode = onSelectMode
+                    )
 
-                    FingerprintPill(
+                    EncryptionStatusPill(
                         fingerprint = fingerprint,
                         pairingCode = pairingCode,
                         trustedPeerCount = trustedPeerCount,
@@ -2157,9 +2361,9 @@ private fun WatchChatSurface(
                             Modifier
                                 .weight(1f)
                                 .fillMaxWidth(surfaceSpec.chatMessageWidth)
-                                .heightIn(min = if (compact) 42.dp else 56.dp)
+                                .heightIn(min = if (compact) 54.dp else 72.dp)
                                 .verticalScroll(messageScrollState),
-                        verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp)
+                        verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 7.dp)
                     ) {
                         messages.takeLast(visibleMessageCount).forEach { message ->
                             MessageBubble(
@@ -2171,28 +2375,12 @@ private fun WatchChatSurface(
 
                     Spacer(modifier = Modifier.height(if (compact) 5.dp else 6.dp))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(surfaceSpec.quickReplyWidth),
-                        horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        QuickReplyChip(
-                            text = "收到",
-                            height = quickReplyHeight,
-                            modifier = Modifier.weight(1f),
-                            onClick = { onSendQuickReply("收到") }
-                        )
-                        QuickReplyChip(
-                            text = "马上到",
-                            height = quickReplyHeight,
-                            modifier = Modifier.weight(1f),
-                            onClick = { onSendQuickReply("马上到") }
-                        )
-                        SendButton(
-                            height = quickReplyHeight,
-                            onClick = onOpenCustomMessageInput
-                        )
-                    }
+                    ChatComposerBar(
+                        quickReplyHeight = quickReplyHeight,
+                        surfaceSpec = surfaceSpec,
+                        onSendQuickReply = onSendQuickReply,
+                        onOpenCustomMessageInput = onOpenCustomMessageInput
+                    )
                 }
             }
         }
@@ -2200,141 +2388,68 @@ private fun WatchChatSurface(
 }
 
 @Composable
-private fun StatusHeader(
-    avatar: DefaultAvatar,
-    displayName: String,
-    title: String,
-    subtitle: String,
+private fun ChatTopBar(
+    conversation: ChatConversation,
+    transportMode: TransportMode,
+    trustState: String,
     surfaceSpec: WatchSurfaceSpec,
-    onOpenProfile: (() -> Unit)?,
-    onNavigateBack: (() -> Unit)?
+    onNavigateBack: () -> Unit
 ) {
     val compact = surfaceSpec.compact
+    val accent = conversationAccentColor(conversation)
     Row(
         modifier = Modifier.fillMaxWidth(surfaceSpec.chatHeaderWidth),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (onNavigateBack != null) {
-            ProfileBackButton(
-                compact = compact,
-                contentDescription = "返回会话列表",
-                onClick = onNavigateBack
-            )
-            Spacer(modifier = Modifier.width(if (compact) 5.dp else 6.dp))
-        }
-        AvatarBubble(
-            avatar = avatar,
-            displayName = displayName,
-            size = if (compact) 26.dp else 30.dp,
-            textSize = if (compact) 13.sp else 15.sp,
-            selected = false,
-            onClick = onOpenProfile
+        ProfileBackButton(
+            compact = compact,
+            contentDescription = "返回会话列表",
+            onClick = onNavigateBack
+        )
+        Spacer(modifier = Modifier.width(if (compact) 5.dp else 6.dp))
+        ConversationAvatar(
+            conversation = conversation,
+            size = if (compact) 30.dp else 34.dp,
+            accent = accent
         )
         Spacer(modifier = Modifier.width(if (compact) 6.dp else 7.dp))
-        Column(horizontalAlignment = Alignment.Start) {
+        Column(
+            modifier = Modifier.weight(1f),
+            horizontalAlignment = Alignment.Start
+        ) {
             Text(
-                text = title,
+                text = conversation.title,
                 color = MaterialTheme.colorScheme.onBackground,
-                fontSize = if (compact) 15.sp else 18.sp,
+                fontSize = if (compact) 16.sp else 18.sp,
                 fontWeight = FontWeight.Bold,
-                maxLines = 1
-            )
-            Text(
-                text = subtitle,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = if (compact) 9.sp else 11.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier =
+                        Modifier
+                            .size(if (compact) 6.dp else 7.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (trustState.contains("失败") || trustState.contains("拒绝")) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    chatGreen
+                                }
+                            )
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = "${conversation.kind.label} · ${transportMode.label} · $trustState",
+                    color = chatRowMuted,
+                    fontSize = if (compact) 9.sp else 10.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
-    }
-}
-
-@Composable
-private fun TransportToggle(
-    mode: TransportMode,
-    selected: Boolean,
-    compact: Boolean,
-    onClick: () -> Unit
-) {
-    val background =
-        if (selected) {
-            MaterialTheme.colorScheme.primaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceContainer
-        }
-    val foreground =
-        if (selected) {
-            MaterialTheme.colorScheme.onPrimaryContainer
-        } else {
-            MaterialTheme.colorScheme.onSurfaceVariant
-        }
-
-    Row(
-        modifier =
-            Modifier
-                .height(if (compact) 26.dp else 28.dp)
-                .clip(RoundedCornerShape(if (compact) 13.dp else 14.dp))
-                .background(background)
-                .clickable(onClick = onClick)
-                .padding(horizontal = if (compact) 8.dp else 10.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = mode.icon,
-            contentDescription = mode.label,
-            tint = foreground,
-            modifier = Modifier.size(if (compact) 13.dp else 14.dp)
-        )
-        Spacer(modifier = Modifier.width(if (compact) 3.dp else 4.dp))
-        Text(
-            text = mode.label,
-            color = foreground,
-            fontSize = if (compact) 10.sp else 11.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1
-        )
-    }
-}
-
-@Composable
-private fun FingerprintPill(
-    fingerprint: String,
-    pairingCode: String?,
-    trustedPeerCount: Int,
-    surfaceSpec: WatchSurfaceSpec
-) {
-    val compact = surfaceSpec.compact
-    val displayFingerprint = SpotChatCrypto.displayFingerprint(fingerprint)
-    Row(
-        modifier =
-            Modifier
-                .padding(top = if (compact) 5.dp else 7.dp, bottom = if (compact) 5.dp else 6.dp)
-                .fillMaxWidth(surfaceSpec.fingerprintWidth)
-                .clip(RoundedCornerShape(if (compact) 12.dp else 13.dp))
-                .background(Color(0x332DE6D1))
-                .padding(horizontal = if (compact) 8.dp else 9.dp, vertical = if (compact) 4.dp else 5.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = Icons.Filled.Key,
-            contentDescription = "本机密钥指纹",
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(if (compact) 10.dp else 12.dp)
-        )
-        Spacer(modifier = Modifier.width(if (compact) 4.dp else 5.dp))
-        Text(
-            text =
-                pairingCode?.let { "校验 $it" }
-                    ?: "本机 $displayFingerprint · 已信任 $trustedPeerCount",
-            color = MaterialTheme.colorScheme.onBackground,
-            fontSize = if (compact) 9.sp else 10.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
     }
 }
 
@@ -2511,6 +2626,44 @@ private fun MessageBubble(
 }
 
 @Composable
+private fun ChatComposerBar(
+    quickReplyHeight: Dp,
+    surfaceSpec: WatchSurfaceSpec,
+    onSendQuickReply: (String) -> Unit,
+    onOpenCustomMessageInput: () -> Unit
+) {
+    val compact = surfaceSpec.compact
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(surfaceSpec.quickReplyWidth)
+                .height(quickReplyHeight)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatIncoming.copy(alpha = 0.9f))
+                .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        QuickReplyChip(
+            text = "收到",
+            height = quickReplyHeight - 6.dp,
+            modifier = Modifier.weight(1f),
+            onClick = { onSendQuickReply("收到") }
+        )
+        QuickReplyChip(
+            text = "马上到",
+            height = quickReplyHeight - 6.dp,
+            modifier = Modifier.weight(1f),
+            onClick = { onSendQuickReply("马上到") }
+        )
+        InputButton(
+            height = quickReplyHeight - 6.dp,
+            onClick = onOpenCustomMessageInput
+        )
+    }
+}
+
+@Composable
 private fun QuickReplyChip(
     text: String,
     height: Dp,
@@ -2522,14 +2675,14 @@ private fun QuickReplyChip(
             modifier
                 .height(height)
                 .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.surfaceContainer)
+                .background(chatGreenDark.copy(alpha = 0.66f))
                 .clickable(onClick = onClick)
                 .padding(horizontal = 6.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = text,
-            color = MaterialTheme.colorScheme.onSurface,
+            color = Color.White,
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
@@ -2540,7 +2693,7 @@ private fun QuickReplyChip(
 }
 
 @Composable
-private fun SendButton(
+private fun InputButton(
     height: Dp,
     onClick: () -> Unit
 ) {
@@ -2554,8 +2707,8 @@ private fun SendButton(
         contentAlignment = Alignment.Center
     ) {
         Icon(
-            imageVector = Icons.AutoMirrored.Filled.Send,
-            contentDescription = "发送",
+            imageVector = Icons.Filled.Keyboard,
+            contentDescription = "输入消息",
             tint = MaterialTheme.colorScheme.onSecondary,
             modifier = Modifier.size(16.dp)
         )
@@ -2567,6 +2720,35 @@ private fun nowTime(): String =
 
 private fun avatarFor(avatarId: String): DefaultAvatar =
     defaultAvatars.firstOrNull { avatar -> avatar.id == avatarId } ?: defaultAvatars.first()
+
+private fun conversationAccentColor(conversation: ChatConversation): Color {
+    if (conversation.kind == ConversationKind.Group) {
+        return chatGreen
+    }
+
+    val palette =
+        listOf(
+            Color(0xFF53BDEB),
+            Color(0xFFFFB4C8),
+            Color(0xFFFFCC66),
+            Color(0xFFB6E3F4),
+            Color(0xFFC0AEDE)
+        )
+    val seed = conversation.peerFingerprint ?: conversation.id
+    return palette[abs(seed.hashCode()) % palette.size]
+}
+
+private fun conversationPreview(
+    conversation: ChatConversation,
+    lastMessage: ChatBubble?
+): String =
+    lastMessage?.let { message ->
+        when {
+            message.mine -> "我：${message.text}"
+            message.senderName != null -> "${message.senderName}：${message.text}"
+            else -> message.text
+        }
+    } ?: conversation.subtitle
 
 private fun directConversationId(peerFingerprint: String): String =
     "direct:$peerFingerprint"
