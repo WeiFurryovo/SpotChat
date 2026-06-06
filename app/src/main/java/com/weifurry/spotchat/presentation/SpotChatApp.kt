@@ -1375,6 +1375,10 @@ internal fun SpotChatApp() {
                             isRoundScreen = isRoundScreen,
                             profile = profile,
                             avatars = defaultAvatars,
+                            fingerprint = localFingerprint,
+                            transportMode = transportMode,
+                            trustState = trustState,
+                            trustedPeers = trustedPeers,
                             onNavigateBack = dismissOverlay,
                             onProfileChange = ::updateProfile
                         )
@@ -2551,6 +2555,10 @@ private fun WatchProfileSurface(
     isRoundScreen: Boolean,
     profile: ProfileSettings,
     avatars: List<DefaultAvatar>,
+    fingerprint: String,
+    transportMode: TransportMode,
+    trustState: String,
+    trustedPeers: List<StoredTrustedPeer>,
     onNavigateBack: () -> Unit,
     onProfileChange: (ProfileSettings) -> Unit
 ) {
@@ -2625,6 +2633,57 @@ private fun WatchProfileSurface(
 
                     item {
                         ProfileSectionLabel(
+                            text = "身份",
+                            compact = compact
+                        )
+                    }
+
+                    item {
+                        ProfileSecurityPanel(
+                            fingerprint = fingerprint,
+                            transportMode = transportMode,
+                            trustState = trustState,
+                            trustedPeerCount = trustedPeers.size,
+                            surfaceSpec = surfaceSpec
+                        )
+                    }
+
+                    item {
+                        ProfileSectionLabel(
+                            text = "可信设备",
+                            compact = compact
+                        )
+                    }
+
+                    if (trustedPeers.isEmpty()) {
+                        item {
+                            ProfileEmptyTrustedPeer(
+                                compact = compact,
+                                surfaceSpec = surfaceSpec
+                            )
+                        }
+                    } else {
+                        val visibleTrustedPeers = if (compact) 2 else 3
+                        trustedPeers.take(visibleTrustedPeers).forEach { peer ->
+                            item {
+                                ProfileTrustedPeerRow(
+                                    peer = peer,
+                                    surfaceSpec = surfaceSpec
+                                )
+                            }
+                        }
+                        if (trustedPeers.size > visibleTrustedPeers) {
+                            item {
+                                ProfileTrustedPeerMoreRow(
+                                    hiddenPeerCount = trustedPeers.size - visibleTrustedPeers,
+                                    surfaceSpec = surfaceSpec
+                                )
+                            }
+                        }
+                    }
+
+                    item {
+                        ProfileSectionLabel(
                             text = "头像",
                             compact = compact
                         )
@@ -2647,6 +2706,7 @@ private fun WatchProfileSurface(
                     item {
                         ProfileIdentityPill(
                             displayName = profile.displayName.ifBlank { "SpotChat Watch" },
+                            trustedPeerCount = trustedPeers.size,
                             modifier = Modifier.fillMaxWidth(surfaceSpec.profileSummaryWidth),
                             compact = compact
                         )
@@ -2699,7 +2759,7 @@ private fun ProfileHeader(
                 textAlign = TextAlign.Center
             )
             Text(
-                text = "显示名与头像",
+                text = "身份与可信设备",
                 color = chatRowMuted,
                 fontSize = if (compact) 10.sp else 11.sp,
                 maxLines = 1,
@@ -2829,6 +2889,7 @@ private fun ProfileSectionLabel(
 @Composable
 private fun ProfileIdentityPill(
     displayName: String,
+    trustedPeerCount: Int,
     modifier: Modifier,
     compact: Boolean
 ) {
@@ -2841,13 +2902,204 @@ private fun ProfileIdentityPill(
         contentAlignment = Alignment.Center
     ) {
         Text(
-            text = displayName,
+            text = "$displayName · 可信 $trustedPeerCount",
             color = MaterialTheme.colorScheme.onBackground,
             fontSize = if (compact) 10.sp else 11.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+private fun ProfileSecurityPanel(
+    fingerprint: String,
+    transportMode: TransportMode,
+    trustState: String,
+    trustedPeerCount: Int,
+    surfaceSpec: WatchSurfaceSpec
+) {
+    val compact = surfaceSpec.compact
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth(surfaceSpec.profileSummaryWidth)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatGreen.copy(alpha = 0.12f))
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 9.dp),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
+    ) {
+        ProfileInfoRow(
+            icon = Icons.Filled.Lock,
+            label = "我的指纹",
+            value = SpotChatCrypto.displayFingerprint(fingerprint),
+            accent = chatGreen,
+            compact = compact
+        )
+        ProfileInfoRow(
+            icon = transportMode.icon,
+            label = "当前传输",
+            value = transportMode.label,
+            accent = chatBlue,
+            compact = compact
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.VerifiedUser,
+            label = "信任状态",
+            value = "$trustState · $trustedPeerCount 台",
+            accent = chatAmber,
+            compact = compact
+        )
+    }
+}
+
+@Composable
+private fun ProfileTrustedPeerRow(
+    peer: StoredTrustedPeer,
+    surfaceSpec: WatchSurfaceSpec
+) {
+    val compact = surfaceSpec.compact
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(surfaceSpec.profileSummaryWidth)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.White.copy(alpha = 0.08f))
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .size(if (compact) 26.dp else 30.dp)
+                    .clip(CircleShape)
+                    .background(chatGreen.copy(alpha = 0.18f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.VerifiedUser,
+                contentDescription = "可信设备",
+                tint = chatGreen,
+                modifier = Modifier.size(if (compact) 14.dp else 16.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(if (compact) 7.dp else 9.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = peer.deviceName,
+                color = MaterialTheme.colorScheme.onBackground,
+                fontSize = if (compact) 11.sp else 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = trustedPeerSubtitle(peer),
+                color = chatRowMuted,
+                fontSize = if (compact) 9.sp else 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProfileEmptyTrustedPeer(
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec
+) {
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(surfaceSpec.profileSummaryWidth)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatAmber.copy(alpha = 0.12f))
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Lock,
+            contentDescription = "等待配对",
+            tint = chatAmber,
+            modifier = Modifier.size(if (compact) 14.dp else 16.dp)
+        )
+        Spacer(modifier = Modifier.width(if (compact) 7.dp else 9.dp))
+        Text(
+            text = "暂无可信设备",
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = if (compact) 11.sp else 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun ProfileTrustedPeerMoreRow(
+    hiddenPeerCount: Int,
+    surfaceSpec: WatchSurfaceSpec
+) {
+    val compact = surfaceSpec.compact
+    Box(
+        modifier =
+            Modifier
+                .fillMaxWidth(surfaceSpec.profileSummaryWidth)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.White.copy(alpha = 0.06f))
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 6.dp else 7.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "还有 $hiddenPeerCount 台可信设备",
+            color = chatRowMuted,
+            fontSize = if (compact) 10.sp else 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+private fun ProfileInfoRow(
+    icon: ImageVector,
+    label: String,
+    value: String,
+    accent: Color,
+    compact: Boolean
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = accent,
+            modifier = Modifier.size(if (compact) 13.dp else 15.dp)
+        )
+        Spacer(modifier = Modifier.width(if (compact) 6.dp else 7.dp))
+        Text(
+            text = label,
+            color = chatRowMuted,
+            fontSize = if (compact) 9.sp else 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(0.72f)
+        )
+        Text(
+            text = value,
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = if (compact) 10.sp else 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f)
         )
     }
 }
@@ -3344,6 +3596,17 @@ private fun InputButton(
 
 private fun nowTime(): String =
     SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+
+private fun trustedPeerSubtitle(peer: StoredTrustedPeer): String {
+    val trustedAt =
+        if (peer.trustedAtEpochMillis <= 0L) {
+            "未知时间"
+        } else {
+            SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
+                .format(Date(peer.trustedAtEpochMillis))
+        }
+    return "${SpotChatCrypto.displayFingerprint(peer.fingerprint)} · $trustedAt"
+}
 
 private fun avatarFor(avatarId: String): DefaultAvatar =
     defaultAvatars.firstOrNull { avatar -> avatar.id == avatarId } ?: defaultAvatars.first()
