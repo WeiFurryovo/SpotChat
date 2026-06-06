@@ -1639,16 +1639,6 @@ private fun AmbientDial(
 ) {
     val compact = surfaceSpec.compact
     Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier =
-                Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = if (surfaceSpec.isRound) if (compact) 9.dp else 12.dp else 4.dp)
-                    .fillMaxWidth(if (surfaceSpec.isRound) if (compact) 0.3f else 0.34f else 0.48f)
-                    .height(2.dp)
-                    .clip(RoundedCornerShape(1.dp))
-                    .background(accent.copy(alpha = 0.68f))
-        )
         Icon(
             imageVector = Icons.Filled.Lock,
             contentDescription = null,
