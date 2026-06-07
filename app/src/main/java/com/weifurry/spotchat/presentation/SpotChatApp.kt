@@ -44,6 +44,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.AutoDelete
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Delete
@@ -175,6 +176,7 @@ private enum class DeliveryState(
 
 private enum class AppSurface {
     ConversationList,
+    ArchivedChats,
     Chat,
     ChatInfo,
     MessageActions,
@@ -606,6 +608,7 @@ internal fun SpotChatApp(
     val unreadCounts = remember { mutableStateMapOf<String, Int>() }
     val pinnedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val mutedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
+    val archivedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val starredMessageIdsByConversation = remember { mutableStateMapOf<String, Set<String>>() }
     val disappearingModesByConversation = remember { mutableStateMapOf<String, DisappearingMessageMode>() }
     val outgoingMessages = remember { mutableStateMapOf<String, OutgoingMessageRef>() }
@@ -1087,6 +1090,7 @@ internal fun SpotChatApp(
         conversationUpdateOrder.remove(conversation.id)
         pinnedConversationIds.remove(conversation.id)
         mutedConversationIds.remove(conversation.id)
+        archivedConversationIds.remove(conversation.id)
         disappearingModesByConversation.remove(conversation.id)
         selectedActionMessage = null
         pendingQuotedMessage = null
@@ -1167,13 +1171,16 @@ internal fun SpotChatApp(
             }
         }.let(::sortConversations)
 
+    fun visibleConversations(): List<ChatConversation> =
+        conversations().filterNot { conversation -> archivedConversationIds[conversation.id] == true }
+
     fun activeConversation(): ChatConversation =
         conversations().firstOrNull { conversation -> conversation.id == activeConversationId }
             ?: conversations().first()
 
     fun updateWearStateSnapshot() {
         val summaries =
-            conversations().map { conversation ->
+            visibleConversations().map { conversation ->
                 val lastMessage =
                     messagesForConversation(conversation.id)
                         .lastOrNull { message -> message.deliveryState != DeliveryState.System }
@@ -1200,6 +1207,7 @@ internal fun SpotChatApp(
         unreadCounts.toMap(),
         pinnedConversationIds.toMap(),
         mutedConversationIds.toMap(),
+        archivedConversationIds.toMap(),
         disappearingModesByConversation.toMap(),
         trustedPeers.size,
         knownPeersByFingerprint.toMap(),
@@ -1294,6 +1302,22 @@ internal fun SpotChatApp(
         }
         appendSystemMessage(
             text = if (isMuted) "已恢复通知" else "已静音聊天",
+            encrypted = true,
+            conversationId = conversation.id
+        )
+    }
+
+    fun toggleConversationArchived(conversation: ChatConversation) {
+        val isArchived = archivedConversationIds[conversation.id] == true
+        if (isArchived) {
+            archivedConversationIds.remove(conversation.id)
+            trustState = "已取消归档"
+        } else {
+            archivedConversationIds[conversation.id] = true
+            trustState = "已归档聊天"
+        }
+        appendSystemMessage(
+            text = if (isArchived) "已取消归档" else "已归档聊天",
             encrypted = true,
             conversationId = conversation.id
         )
@@ -2693,6 +2717,14 @@ internal fun SpotChatApp(
                 contentAlignment = Alignment.Center
             ) {
                 val currentConversations = conversations()
+                val visibleConversationList =
+                    currentConversations.filterNot { conversation ->
+                        archivedConversationIds[conversation.id] == true
+                    }
+                val archivedConversationList =
+                    currentConversations.filter { conversation ->
+                        archivedConversationIds[conversation.id] == true
+                    }
                 val selectedConversation =
                     currentConversations.firstOrNull { conversation -> conversation.id == activeConversationId }
                         ?: currentConversations.first()
@@ -2700,7 +2732,8 @@ internal fun SpotChatApp(
                     WatchConversationListSurface(
                         isRoundScreen = isRoundScreen,
                         profile = profile,
-                        conversations = currentConversations,
+                        conversations = visibleConversationList,
+                        archivedCount = archivedConversationList.size,
                         unreadCounts = unreadCounts,
                         pinnedConversationIds = pinnedConversationIds,
                         mutedConversationIds = mutedConversationIds,
@@ -2715,6 +2748,9 @@ internal fun SpotChatApp(
                         onConfirmPairing = ::confirmPairing,
                         onRejectPairing = ::rejectPairing,
                         onOpenConversation = ::openConversation,
+                        onOpenArchivedChats = {
+                            appSurface = AppSurface.ArchivedChats
+                        },
                         onOpenProfile = {
                             appSurface = AppSurface.Profile
                         },
@@ -2745,6 +2781,25 @@ internal fun SpotChatApp(
                     }
                 } else {
                     conversationListSurface(false)
+                }
+
+                if (appSurface == AppSurface.ArchivedChats) {
+                    SlideInOverlay(
+                        onDismissed = {
+                            appSurface = AppSurface.ConversationList
+                        }
+                    ) { dismissOverlay ->
+                        WatchArchivedChatsSurface(
+                            isRoundScreen = isRoundScreen,
+                            conversations = archivedConversationList,
+                            messagesByConversation = conversationMessages,
+                            unreadCounts = unreadCounts,
+                            pinnedConversationIds = pinnedConversationIds,
+                            mutedConversationIds = mutedConversationIds,
+                            onNavigateBack = dismissOverlay,
+                            onOpenConversation = ::openConversation
+                        )
+                    }
                 }
 
                 if (
@@ -2812,6 +2867,7 @@ internal fun SpotChatApp(
                             messages = messagesForConversation(selectedConversation.id),
                             isPinned = pinnedConversationIds[selectedConversation.id] == true,
                             isMuted = mutedConversationIds[selectedConversation.id] == true,
+                            isArchived = archivedConversationIds[selectedConversation.id] == true,
                             unreadCount = unreadCounts[selectedConversation.id] ?: 0,
                             starredCount = starredMessageIds(selectedConversation.id).size,
                             disappearingMode =
@@ -2833,6 +2889,13 @@ internal fun SpotChatApp(
                             },
                             onToggleMuted = {
                                 toggleConversationMuted(selectedConversation)
+                            },
+                            onToggleArchived = {
+                                val wasArchived = archivedConversationIds[selectedConversation.id] == true
+                                toggleConversationArchived(selectedConversation)
+                                if (!wasArchived) {
+                                    appSurface = AppSurface.ConversationList
+                                }
                             },
                             onToggleUnread = {
                                 toggleConversationUnread(selectedConversation)
@@ -3096,6 +3159,7 @@ private fun WatchConversationListSurface(
     isRoundScreen: Boolean,
     profile: ProfileSettings,
     conversations: List<ChatConversation>,
+    archivedCount: Int,
     unreadCounts: Map<String, Int>,
     pinnedConversationIds: Map<String, Boolean>,
     mutedConversationIds: Map<String, Boolean>,
@@ -3110,6 +3174,7 @@ private fun WatchConversationListSurface(
     onConfirmPairing: () -> Unit,
     onRejectPairing: () -> Unit,
     onOpenConversation: (ChatConversation) -> Unit,
+    onOpenArchivedChats: () -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
 ) {
@@ -3202,6 +3267,15 @@ private fun WatchConversationListSurface(
                             surfaceSpec = surfaceSpec,
                             onConfirmPairing = onConfirmPairing,
                             onRejectPairing = onRejectPairing
+                        )
+                    }
+
+                    if (archivedCount > 0) {
+                        ArchivedChatsCapsule(
+                            archivedCount = archivedCount,
+                            compact = compact,
+                            surfaceSpec = surfaceSpec,
+                            onClick = onOpenArchivedChats
                         )
                     }
 
@@ -3590,6 +3664,64 @@ private fun ActionPill(
 }
 
 @Composable
+private fun ArchivedChatsCapsule(
+    archivedCount: Int,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                .height(if (compact) 42.dp else 46.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.72f))
+                .border(1.dp, chatDivider.copy(alpha = 0.52f), RoundedCornerShape(8.dp))
+                .clickable(onClick = onClick)
+                .padding(horizontal = if (compact) 9.dp else 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .size(if (compact) 24.dp else 28.dp)
+                    .clip(CircleShape)
+                    .background(chatAmber.copy(alpha = 0.18f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Archive,
+                contentDescription = "已归档",
+                tint = chatAmber,
+                modifier = Modifier.size(if (compact) 13.dp else 15.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(if (compact) 8.dp else 10.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "已归档",
+                color = MaterialTheme.colorScheme.onBackground,
+                fontSize = if (compact) 12.sp else 13.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = "$archivedCount 个聊天",
+                color = chatRowMuted,
+                fontSize = if (compact) 9.sp else 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
 private fun ConversationCapsule(
     conversation: ChatConversation,
     lastMessage: ChatBubble?,
@@ -3799,6 +3931,100 @@ private fun WatchForwardMessageSurface(
 }
 
 @Composable
+private fun WatchArchivedChatsSurface(
+    isRoundScreen: Boolean,
+    conversations: List<ChatConversation>,
+    messagesByConversation: Map<String, List<ChatBubble>>,
+    unreadCounts: Map<String, Int>,
+    pinnedConversationIds: Map<String, Boolean>,
+    mutedConversationIds: Map<String, Boolean>,
+    onNavigateBack: () -> Unit,
+    onOpenConversation: (ChatConversation) -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
+        val scrollState = rememberScrollState()
+        val headerConversation =
+            conversations.firstOrNull()
+                ?: ChatConversation(
+                    id = NEARBY_GROUP_CONVERSATION_ID,
+                    kind = ConversationKind.Group,
+                    title = NEARBY_GROUP_TITLE,
+                    subtitle = "没有已归档聊天"
+                )
+
+        WatchFrame(
+            surfaceSpec = surfaceSpec,
+            accent = chatAmber,
+            modifier = Modifier.padding(horizontal = surfaceSpec.chatHorizontalPadding)
+        ) {
+            ScreenScaffold(
+                scrollState = scrollState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(),
+                scrollIndicator = {}
+            ) { scaffoldPadding ->
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .padding(scaffoldPadding)
+                            .padding(
+                                top = surfaceSpec.chatTopPadding,
+                                bottom = surfaceSpec.chatBottomPadding
+                            ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp)
+                ) {
+                    ChatInfoHeader(
+                        conversation = headerConversation,
+                        accent = chatAmber,
+                        title = "已归档聊天",
+                        subtitle =
+                            if (conversations.isEmpty()) {
+                                "没有隐藏的聊天"
+                            } else {
+                                "${conversations.size} 个聊天"
+                            },
+                        surfaceSpec = surfaceSpec,
+                        onNavigateBack = onNavigateBack
+                    )
+
+                    if (conversations.isEmpty()) {
+                        SearchEmptyState(
+                            text = "还没有归档聊天",
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
+                        )
+                    } else {
+                        conversations.forEach { conversation ->
+                            val lastMessage =
+                                messagesByConversation[conversation.id]
+                                    .orEmpty()
+                                    .lastOrNull { message -> message.deliveryState != DeliveryState.System }
+                            ConversationCapsule(
+                                conversation = conversation,
+                                lastMessage = lastMessage,
+                                unreadCount = unreadCounts[conversation.id] ?: 0,
+                                isPinned = pinnedConversationIds[conversation.id] == true,
+                                isMuted = mutedConversationIds[conversation.id] == true,
+                                featured = false,
+                                surfaceSpec = surfaceSpec,
+                                onClick = { onOpenConversation(conversation) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun UnreadBadge(count: Int) {
     Box(
         modifier =
@@ -3865,6 +4091,7 @@ private fun WatchChatInfoSurface(
     messages: List<ChatBubble>,
     isPinned: Boolean,
     isMuted: Boolean,
+    isArchived: Boolean,
     unreadCount: Int,
     starredCount: Int,
     disappearingMode: DisappearingMessageMode,
@@ -3874,6 +4101,7 @@ private fun WatchChatInfoSurface(
     onSearchMessages: () -> Unit,
     onTogglePinned: () -> Unit,
     onToggleMuted: () -> Unit,
+    onToggleArchived: () -> Unit,
     onToggleUnread: () -> Unit,
     onToggleDisappearingMessages: () -> Unit,
     onClearConversation: () -> Unit,
@@ -4003,8 +4231,8 @@ private fun WatchChatInfoSurface(
                             modifier = Modifier.weight(1f)
                         )
                         InfoMetricPill(
-                            label = "可达",
-                            value = reachability.shortReachabilityLabel(),
+                            label = "归档",
+                            value = if (isArchived) "是" else "否",
                             compact = compact,
                             modifier = Modifier.weight(1f)
                         )
@@ -4090,6 +4318,13 @@ private fun WatchChatInfoSurface(
                             selected = isMuted,
                             compact = compact,
                             onClick = onToggleMuted
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.Archive,
+                            text = if (isArchived) "取消归档" else "归档聊天",
+                            selected = isArchived,
+                            compact = compact,
+                            onClick = onToggleArchived
                         )
                         MessageActionButton(
                             icon = Icons.Filled.MarkChatUnread,
