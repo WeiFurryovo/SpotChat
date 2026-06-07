@@ -3,6 +3,9 @@ package com.weifurry.spotchat.presentation
 import android.Manifest
 import android.app.Activity
 import android.app.RemoteInput
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
@@ -1571,6 +1574,24 @@ internal fun SpotChatApp(
             pinnedMessageIdsByConversation[conversation.id] = pinId
             trustState = "已置顶消息"
         }
+    }
+
+    fun copyMessageText(message: ChatBubble) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val copyText = message.copyText()
+        if (copyText.isBlank()) {
+            trustState = "没有可复制内容"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat message", copyText)
+        )
+        trustState = "已复制消息"
     }
 
     fun applyMessageReaction(
@@ -3282,6 +3303,9 @@ internal fun SpotChatApp(
                                 onTogglePinned = {
                                     toggleMessagePinned(selectedConversation, actionMessage)
                                 },
+                                onCopyMessage = {
+                                    copyMessageText(actionMessage)
+                                },
                                 onDeleteMessage = {
                                     deleteMessageForMe(selectedConversation, actionMessage)
                                 },
@@ -4900,6 +4924,7 @@ private fun WatchMessageActionsSurface(
     onCycleVoicePlaybackSpeed: () -> Unit,
     onToggleStarred: () -> Unit,
     onTogglePinned: () -> Unit,
+    onCopyMessage: () -> Unit,
     onDeleteMessage: () -> Unit,
     onReactToMessage: (String) -> Unit,
     onOpenCustomMessageInput: () -> Unit,
@@ -5003,6 +5028,13 @@ private fun WatchMessageActionsSurface(
                             selected = isPinned,
                             compact = compact,
                             onClick = onTogglePinned
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.Keyboard,
+                            text = "复制内容",
+                            selected = false,
+                            compact = compact,
+                            onClick = onCopyMessage
                         )
                         reactionChoices.forEach { reaction ->
                             MessageActionButton(
@@ -7246,6 +7278,19 @@ private fun ChatBubble.previewText(): String =
 
 private fun ChatBubble.forwardPreviewText(): String =
     "转发预览：${previewText()}"
+
+private fun ChatBubble.copyText(): String =
+    when (kind) {
+        ChatMessageKind.Text -> {
+            val quotePrefix =
+                quotedMessage?.let { quote ->
+                    "回复 ${quote.senderName}：${quote.text}\n"
+                }.orEmpty()
+            "$quotePrefix$text"
+        }
+
+        ChatMessageKind.Voice -> "语音消息 · ${formatDuration(voiceDurationMs ?: 0L)}"
+    }.trim()
 
 private fun ChatBubble.forwardText(): String {
     val baseText =
