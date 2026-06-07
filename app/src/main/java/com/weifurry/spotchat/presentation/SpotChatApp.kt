@@ -236,6 +236,18 @@ private enum class ChatMessageKind {
     Voice
 }
 
+private enum class VoicePlaybackSpeed(
+    val label: String,
+    val speed: Float
+) {
+    Normal("1x", 1f),
+    Fast("1.5x", 1.5f),
+    Faster("2x", 2f);
+
+    fun next(): VoicePlaybackSpeed =
+        entries[(ordinal + 1) % entries.size]
+}
+
 private enum class DisappearingMessageMode(
     val label: String,
     val durationMs: Long?
@@ -675,6 +687,7 @@ internal fun SpotChatApp(
     var pendingForwardMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var chatListFilter by remember { mutableStateOf(ChatListFilter.All) }
+    var voicePlaybackSpeed by remember { mutableStateOf(VoicePlaybackSpeed.Normal) }
     var isRecordingVoice by remember { mutableStateOf(false) }
     var activePlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     val greetedPeers = remember { mutableSetOf<String>() }
@@ -2596,10 +2609,11 @@ internal fun SpotChatApp(
                     true
                 }
                 prepare()
+                playbackParams = playbackParams.setSpeed(voicePlaybackSpeed.speed)
                 start()
                 activePlayer = this
             }
-            trustState = "正在播放语音"
+            trustState = "正在播放语音 ${voicePlaybackSpeed.label}"
         }.onFailure { error ->
             trustState = error.readableMessage("语音播放失败")
         }
@@ -2951,6 +2965,7 @@ internal fun SpotChatApp(
                             onOpenCustomMessageInput = ::openCustomMessageInput,
                             onToggleVoiceRecording = ::toggleVoiceRecording,
                             isRecordingVoice = isRecordingVoice,
+                            voicePlaybackSpeed = voicePlaybackSpeed,
                             onOpenChatInfo = {
                                 appSurface = AppSurface.ChatInfo
                             },
@@ -3107,7 +3122,16 @@ internal fun SpotChatApp(
                                 conversation = selectedConversation,
                                 message = actionMessage,
                                 isStarred = isMessageStarred(selectedConversation.id, actionMessage),
+                                voicePlaybackSpeed = voicePlaybackSpeed,
                                 onNavigateBack = dismissOverlay,
+                                onPlayVoiceMessage = {
+                                    playVoiceMessage(actionMessage)
+                                },
+                                onCycleVoicePlaybackSpeed = {
+                                    val nextSpeed = voicePlaybackSpeed.next()
+                                    voicePlaybackSpeed = nextSpeed
+                                    trustState = "语音倍速 ${nextSpeed.label}"
+                                },
                                 onToggleStarred = {
                                     toggleMessageStarred(selectedConversation, actionMessage)
                                 },
@@ -4655,7 +4679,10 @@ private fun WatchMessageActionsSurface(
     conversation: ChatConversation,
     message: ChatBubble,
     isStarred: Boolean,
+    voicePlaybackSpeed: VoicePlaybackSpeed,
     onNavigateBack: () -> Unit,
+    onPlayVoiceMessage: () -> Unit,
+    onCycleVoicePlaybackSpeed: () -> Unit,
     onToggleStarred: () -> Unit,
     onDeleteMessage: () -> Unit,
     onReactToMessage: (String) -> Unit,
@@ -4729,6 +4756,22 @@ private fun WatchMessageActionsSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onRetryMessage
+                            )
+                        }
+                        if (message.kind == ChatMessageKind.Voice && !message.canRetry()) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Mic,
+                                text = "播放语音 ${voicePlaybackSpeed.label}",
+                                selected = true,
+                                compact = compact,
+                                onClick = onPlayVoiceMessage
+                            )
+                            MessageActionButton(
+                                icon = Icons.Filled.Schedule,
+                                text = "倍速 ${voicePlaybackSpeed.next().label}",
+                                selected = voicePlaybackSpeed != VoicePlaybackSpeed.Normal,
+                                compact = compact,
+                                onClick = onCycleVoicePlaybackSpeed
                             )
                         }
                         MessageActionButton(
@@ -6140,6 +6183,7 @@ private fun WatchChatSurface(
     onOpenCustomMessageInput: () -> Unit,
     onToggleVoiceRecording: () -> Unit,
     isRecordingVoice: Boolean,
+    voicePlaybackSpeed: VoicePlaybackSpeed,
     onOpenChatInfo: () -> Unit,
     onOpenMessageActions: (ChatBubble) -> Unit,
     onNavigateBack: () -> Unit
@@ -6209,6 +6253,7 @@ private fun WatchChatSurface(
                                 compact = compact,
                                 accent = accent,
                                 isStarred = message.stableStarId() in starredMessageIds,
+                                voicePlaybackSpeed = voicePlaybackSpeed,
                                 onClick =
                                     if (message.deliveryState == DeliveryState.System) {
                                         null
@@ -6316,6 +6361,7 @@ private fun MessageCapsule(
     compact: Boolean,
     accent: Color,
     isStarred: Boolean = false,
+    voicePlaybackSpeed: VoicePlaybackSpeed = VoicePlaybackSpeed.Normal,
     onClick: (() -> Unit)? = null
 ) {
     val alignment = if (message.mine) Alignment.CenterEnd else Alignment.CenterStart
@@ -6415,7 +6461,9 @@ private fun MessageCapsule(
                     Spacer(modifier = Modifier.width(if (compact) 3.dp else 4.dp))
                     Text(
                         text =
-                            if (message.mine) {
+                            if (message.kind == ChatMessageKind.Voice) {
+                                "语音 · ${voicePlaybackSpeed.label}"
+                            } else if (message.mine) {
                                 "${if (message.encrypted) "E2EE" else "明文"} · ${message.deliveryState.label}"
                             } else {
                                 if (message.encrypted) "E2EE" else "明文"
