@@ -171,6 +171,7 @@ private enum class AppSurface {
     ChatInfo,
     MessageActions,
     MessageSearch,
+    SecurityCheck,
     Profile
 }
 
@@ -2346,7 +2347,8 @@ internal fun SpotChatApp(
                     appSurface == AppSurface.Chat ||
                     appSurface == AppSurface.ChatInfo ||
                     appSurface == AppSurface.MessageActions ||
-                    appSurface == AppSurface.MessageSearch
+                    appSurface == AppSurface.MessageSearch ||
+                    appSurface == AppSurface.SecurityCheck
                 ) {
                     SlideInOverlay(
                         onDismissed = {
@@ -2402,6 +2404,9 @@ internal fun SpotChatApp(
                                 },
                             messages = messagesForConversation(selectedConversation.id),
                             onNavigateBack = dismissOverlay,
+                            onOpenSecurityCheck = {
+                                appSurface = AppSurface.SecurityCheck
+                            },
                             onSearchMessages = {
                                 appSurface = AppSurface.MessageSearch
                                 openMessageSearchInput()
@@ -2413,6 +2418,22 @@ internal fun SpotChatApp(
                             onForgetPeer = {
                                 forgetConversationPeer(selectedConversation)
                             }
+                        )
+                    }
+                }
+
+                if (appSurface == AppSurface.SecurityCheck) {
+                    SlideInOverlay(
+                        onDismissed = {
+                            appSurface = AppSurface.ChatInfo
+                        }
+                    ) { dismissOverlay ->
+                        WatchSecurityCheckSurface(
+                            isRoundScreen = isRoundScreen,
+                            conversation = selectedConversation,
+                            trustedPeers = trustedPeers,
+                            localFingerprint = localFingerprint,
+                            onNavigateBack = dismissOverlay
                         )
                     }
                 }
@@ -3234,6 +3255,7 @@ private fun WatchChatInfoSurface(
     reachability: String,
     messages: List<ChatBubble>,
     onNavigateBack: () -> Unit,
+    onOpenSecurityCheck: () -> Unit,
     onSearchMessages: () -> Unit,
     onClearConversation: () -> Unit,
     onForgetPeer: () -> Unit
@@ -3387,9 +3409,16 @@ private fun WatchChatInfoSurface(
                         verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
                     ) {
                         MessageActionButton(
+                            icon = Icons.Filled.Lock,
+                            text = "安全校验",
+                            selected = true,
+                            compact = compact,
+                            onClick = onOpenSecurityCheck
+                        )
+                        MessageActionButton(
                             icon = Icons.AutoMirrored.Filled.Chat,
                             text = "查找消息",
-                            selected = true,
+                            selected = false,
                             compact = compact,
                             onClick = onSearchMessages
                         )
@@ -3633,6 +3662,151 @@ private fun WatchMessageSearchSurface(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun WatchSecurityCheckSurface(
+    isRoundScreen: Boolean,
+    conversation: ChatConversation,
+    trustedPeers: List<StoredTrustedPeer>,
+    localFingerprint: String,
+    onNavigateBack: () -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
+        val accent = conversationAccentColor(conversation)
+        val scrollState = rememberScrollState()
+        val trustedByFingerprint = trustedPeers.associateBy { peer -> peer.fingerprint }
+        val memberPeers =
+            conversation.memberFingerprints.mapNotNull { fingerprint ->
+                trustedByFingerprint[fingerprint]
+            }
+        val primaryPeer = memberPeers.firstOrNull()
+
+        WatchFrame(
+            surfaceSpec = surfaceSpec,
+            accent = accent,
+            modifier = Modifier.padding(horizontal = surfaceSpec.chatHorizontalPadding)
+        ) {
+            ScreenScaffold(
+                scrollState = scrollState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(),
+                scrollIndicator = {}
+            ) { scaffoldPadding ->
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .padding(scaffoldPadding)
+                            .padding(
+                                top = surfaceSpec.chatTopPadding,
+                                bottom = surfaceSpec.chatBottomPadding
+                            ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp)
+                ) {
+                    ChatInfoHeader(
+                        conversation = conversation,
+                        accent = accent,
+                        title = "安全校验",
+                        subtitle =
+                            if (conversation.kind == ConversationKind.Direct) {
+                                primaryPeer?.deviceName ?: conversation.title
+                            } else {
+                                "${memberPeers.size} 位成员"
+                            },
+                        surfaceSpec = surfaceSpec,
+                        onNavigateBack = onNavigateBack
+                    )
+
+                    primaryPeer?.let { peer ->
+                        SafetyCodeCard(
+                            peer = peer,
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
+                        )
+                    }
+
+                    ChatInfoLine(
+                        icon = Icons.Filled.Lock,
+                        label = "我的指纹",
+                        value = SpotChatCrypto.displayFingerprint(localFingerprint),
+                        accent = chatGreen,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec
+                    )
+
+                    if (memberPeers.isEmpty()) {
+                        SearchEmptyState(
+                            text = "还没有可信成员可校验",
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
+                        )
+                    } else {
+                        memberPeers.forEach { peer ->
+                            ChatInfoLine(
+                                icon = Icons.Filled.VerifiedUser,
+                                label = peer.deviceName,
+                                value = safetyPeerSummary(peer),
+                                accent = accent,
+                                compact = compact,
+                                surfaceSpec = surfaceSpec
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SafetyCodeCard(
+    peer: StoredTrustedPeer,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec
+) {
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatGreen.copy(alpha = 0.14f))
+                .border(1.dp, chatGreen.copy(alpha = 0.36f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 9.dp else 11.dp, vertical = if (compact) 8.dp else 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp)
+    ) {
+        Text(
+            text = "配对校验码",
+            color = chatRowMuted,
+            fontSize = if (compact) 9.sp else 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = peer.pairingCode,
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = if (compact) 18.sp else 21.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            text = "与 ${peer.deviceName} 当面核对",
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+            fontSize = if (compact) 9.sp else 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
@@ -5047,6 +5221,9 @@ private fun trustedPeerSubtitle(peer: StoredTrustedPeer): String {
         }
     return "${SpotChatCrypto.displayFingerprint(peer.fingerprint)} · $trustedAt"
 }
+
+private fun safetyPeerSummary(peer: StoredTrustedPeer): String =
+    "${SpotChatCrypto.displayFingerprint(peer.fingerprint)} · 校验 ${peer.pairingCode}"
 
 private fun avatarFor(avatarId: String): DefaultAvatar =
     defaultAvatars.firstOrNull { avatar -> avatar.id == avatarId } ?: defaultAvatars.first()
