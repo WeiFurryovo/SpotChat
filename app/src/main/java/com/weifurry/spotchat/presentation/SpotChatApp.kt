@@ -51,6 +51,7 @@ import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.runtime.Composable
@@ -224,6 +225,43 @@ private data class PendingOutboundMessage(
     val displayMessageId: String,
     val targetFingerprints: List<String>
 )
+
+private data class PendingOutboundVoiceMessage(
+    val conversationId: String,
+    val displayMessageId: String,
+    val targetFingerprints: List<String>,
+    val durationMs: Long,
+    val audioBytes: ByteArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is PendingOutboundVoiceMessage) return false
+
+        return conversationId == other.conversationId &&
+            displayMessageId == other.displayMessageId &&
+            targetFingerprints == other.targetFingerprints &&
+            durationMs == other.durationMs &&
+            audioBytes.contentEquals(other.audioBytes)
+    }
+
+    override fun hashCode(): Int {
+        var result = conversationId.hashCode()
+        result = 31 * result + displayMessageId.hashCode()
+        result = 31 * result + targetFingerprints.hashCode()
+        result = 31 * result + durationMs.hashCode()
+        result = 31 * result + audioBytes.contentHashCode()
+        return result
+    }
+}
+
+private fun ChatBubble.canRetry(): Boolean =
+    mine &&
+        messageId != null &&
+        (deliveryState == DeliveryState.Waiting || deliveryState == DeliveryState.Failed) &&
+        when (kind) {
+            ChatMessageKind.Text -> text.isNotBlank()
+            ChatMessageKind.Voice -> voiceDurationMs != null && voiceAudioBytes != null
+        }
 
 @Serializable
 private data class ChatPayload(
@@ -512,6 +550,7 @@ internal fun SpotChatApp(
     val readReceiptsByMessage = remember { mutableStateMapOf<String, Set<String>>() }
     val sentReadReceipts = remember { mutableSetOf<String>() }
     val pendingOutboundMessages = remember { mutableStateMapOf<String, PendingOutboundMessage>() }
+    val pendingOutboundVoiceMessages = remember { mutableStateMapOf<String, PendingOutboundVoiceMessage>() }
     val conversationUpdateOrder = remember { mutableStateMapOf<String, Long>() }
     var conversationUpdateSequence by remember { mutableStateOf(0L) }
     var activeConversationId by remember { mutableStateOf(NEARBY_GROUP_CONVERSATION_ID) }
@@ -711,7 +750,10 @@ internal fun SpotChatApp(
             val index = messages.indexOfFirst { message -> message.messageId == displayMessageId }
             if (index >= 0) {
                 val currentMessage = messages[index]
-                if (!currentMessage.deliveryState.canMoveTo(deliveryState)) {
+                if (
+                    !currentMessage.deliveryState.canMoveTo(deliveryState) &&
+                    deliveryState.isReceiptState()
+                ) {
                     return
                 }
                 conversationMessages[conversationId] =
@@ -1452,50 +1494,14 @@ internal fun SpotChatApp(
         )
     }
 
-    fun sendVoiceToConversation(
+    fun sendPreparedVoiceMessage(
         conversation: ChatConversation,
-        recordedVoice: RecordedVoiceMessage
+        displayMessageId: String,
+        durationMs: Long,
+        audioBytes: ByteArray,
+        targets: List<Pair<String, TransportPeer>>,
+        requeueOnFailure: Boolean
     ) {
-        if (conversation.memberFingerprints.isEmpty()) {
-            trustState = if (pendingPeer == null) "等待配对" else "请先确认校验码"
-            recordedVoice.file.delete()
-            appendMessage(
-                conversation.id,
-                ChatBubble(
-                    text = if (pendingPeer == null) "群聊还没有成员，请先完成配对" else "请先确认配对校验码",
-                    mine = false,
-                    encrypted = true,
-                    timestamp = nowTime(),
-                    deliveryState = DeliveryState.Waiting
-                )
-            )
-            return
-        }
-
-        val displayMessageId = UUID.randomUUID().toString()
-        appendMessage(
-            conversation.id,
-            ChatBubble(
-                text = "语音消息 · ${formatDuration(recordedVoice.durationMs)}",
-                mine = true,
-                encrypted = true,
-                timestamp = nowTime(),
-                messageId = displayMessageId,
-                deliveryState = DeliveryState.Sending,
-                kind = ChatMessageKind.Voice,
-                voiceDurationMs = recordedVoice.durationMs,
-                voiceAudioBytes = recordedVoice.audioBytes
-            )
-        )
-
-        val targets = targetsForConversation(conversation)
-        if (targets.isEmpty()) {
-            updateMessageState(displayMessageId, DeliveryState.Waiting)
-            trustState = "成员未在线"
-            recordedVoice.file.delete()
-            return
-        }
-
         trustState = "正在加密发送语音"
         coroutineScope.launch {
             var sentCount = 0
@@ -1505,8 +1511,8 @@ internal fun SpotChatApp(
                     runCatching {
                         engine.encryptVoiceForPeer(
                             peerFingerprint = peerFingerprint,
-                            audioBytes = recordedVoice.audioBytes,
-                            durationMs = recordedVoice.durationMs
+                            audioBytes = audioBytes,
+                            durationMs = durationMs
                         )
                     }
                 if (packetResult.isFailure) {
@@ -1551,13 +1557,28 @@ internal fun SpotChatApp(
 
             when {
                 sentCount > 0 && failedCount == 0 -> {
+                    pendingOutboundVoiceMessages.remove(displayMessageId)
                     updateMessageState(displayMessageId, DeliveryState.Sent)
                     trustState = "语音已加密发送"
                 }
 
                 sentCount > 0 -> {
+                    pendingOutboundVoiceMessages.remove(displayMessageId)
                     updateMessageState(displayMessageId, DeliveryState.Sent)
                     trustState = "语音部分发送"
+                }
+
+                requeueOnFailure -> {
+                    pendingOutboundVoiceMessages[displayMessageId] =
+                        PendingOutboundVoiceMessage(
+                            conversationId = conversation.id,
+                            displayMessageId = displayMessageId,
+                            targetFingerprints = conversation.memberFingerprints,
+                            durationMs = durationMs,
+                            audioBytes = audioBytes
+                        )
+                    updateMessageState(displayMessageId, DeliveryState.Waiting)
+                    trustState = "等待语音重发"
                 }
 
                 else -> {
@@ -1565,8 +1586,87 @@ internal fun SpotChatApp(
                     trustState = "语音发送失败"
                 }
             }
-            recordedVoice.file.delete()
         }
+    }
+
+    fun trySendPendingOutboundVoiceMessage(queuedVoice: PendingOutboundVoiceMessage) {
+        val conversation = conversationById(queuedVoice.conversationId) ?: return
+        val targets = targetsForConversation(conversation)
+        if (targets.isEmpty()) {
+            return
+        }
+        updateMessageState(queuedVoice.displayMessageId, DeliveryState.Sending)
+        sendPreparedVoiceMessage(
+            conversation = conversation,
+            displayMessageId = queuedVoice.displayMessageId,
+            durationMs = queuedVoice.durationMs,
+            audioBytes = queuedVoice.audioBytes,
+            targets = targets,
+            requeueOnFailure = true
+        )
+    }
+
+    fun sendVoiceToConversation(
+        conversation: ChatConversation,
+        recordedVoice: RecordedVoiceMessage
+    ) {
+        if (conversation.memberFingerprints.isEmpty()) {
+            trustState = if (pendingPeer == null) "等待配对" else "请先确认校验码"
+            recordedVoice.file.delete()
+            appendMessage(
+                conversation.id,
+                ChatBubble(
+                    text = if (pendingPeer == null) "群聊还没有成员，请先完成配对" else "请先确认配对校验码",
+                    mine = false,
+                    encrypted = true,
+                    timestamp = nowTime(),
+                    deliveryState = DeliveryState.Waiting
+                )
+            )
+            return
+        }
+
+        val displayMessageId = UUID.randomUUID().toString()
+        appendMessage(
+            conversation.id,
+            ChatBubble(
+                text = "语音消息 · ${formatDuration(recordedVoice.durationMs)}",
+                mine = true,
+                encrypted = true,
+                timestamp = nowTime(),
+                messageId = displayMessageId,
+                deliveryState = DeliveryState.Sending,
+                kind = ChatMessageKind.Voice,
+                voiceDurationMs = recordedVoice.durationMs,
+                voiceAudioBytes = recordedVoice.audioBytes
+            )
+        )
+
+        val targets = targetsForConversation(conversation)
+        if (targets.isEmpty()) {
+            pendingOutboundVoiceMessages[displayMessageId] =
+                PendingOutboundVoiceMessage(
+                    conversationId = conversation.id,
+                    displayMessageId = displayMessageId,
+                    targetFingerprints = conversation.memberFingerprints,
+                    durationMs = recordedVoice.durationMs,
+                    audioBytes = recordedVoice.audioBytes
+                )
+            updateMessageState(displayMessageId, DeliveryState.Waiting)
+            trustState = "成员未在线"
+            recordedVoice.file.delete()
+            return
+        }
+
+        sendPreparedVoiceMessage(
+            conversation = conversation,
+            displayMessageId = displayMessageId,
+            durationMs = recordedVoice.durationMs,
+            audioBytes = recordedVoice.audioBytes,
+            targets = targets,
+            requeueOnFailure = true
+        )
+        recordedVoice.file.delete()
     }
 
     fun sendMessageToConversation(
@@ -1677,6 +1777,65 @@ internal fun SpotChatApp(
         sendMessageToConversation(activeConversation(), text)
     }
 
+    fun retryMessage(
+        conversation: ChatConversation,
+        message: ChatBubble
+    ) {
+        val displayMessageId = message.messageId ?: return
+        if (!message.canRetry()) {
+            trustState = "这条消息不需要重发"
+            return
+        }
+        val targets = targetsForConversation(conversation)
+        if (targets.isEmpty()) {
+            updateMessageState(displayMessageId, DeliveryState.Waiting)
+            trustState = "等待对方上线"
+            when (message.kind) {
+                ChatMessageKind.Text ->
+                    pendingOutboundMessages[displayMessageId] =
+                        PendingOutboundMessage(
+                            conversationId = conversation.id,
+                            text = message.text,
+                            displayMessageId = displayMessageId,
+                            targetFingerprints = conversation.memberFingerprints
+                        )
+
+                ChatMessageKind.Voice ->
+                    pendingOutboundVoiceMessages[displayMessageId] =
+                        PendingOutboundVoiceMessage(
+                            conversationId = conversation.id,
+                            displayMessageId = displayMessageId,
+                            targetFingerprints = conversation.memberFingerprints,
+                            durationMs = message.voiceDurationMs ?: return,
+                            audioBytes = message.voiceAudioBytes ?: return
+                        )
+            }
+            return
+        }
+        updateMessageState(displayMessageId, DeliveryState.Sending)
+        when (message.kind) {
+            ChatMessageKind.Text ->
+                sendPreparedMessage(
+                    conversation = conversation,
+                    text = message.text,
+                    displayMessageId = displayMessageId,
+                    targets = targets,
+                    requeueOnFailure = true
+                )
+
+            ChatMessageKind.Voice ->
+                sendPreparedVoiceMessage(
+                    conversation = conversation,
+                    displayMessageId = displayMessageId,
+                    durationMs = message.voiceDurationMs ?: return,
+                    audioBytes = message.voiceAudioBytes ?: return,
+                    targets = targets,
+                    requeueOnFailure = true
+                )
+        }
+        trustState = "正在重发"
+    }
+
     fun toggleVoiceRecording() {
         if (
             context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
@@ -1717,7 +1876,7 @@ internal fun SpotChatApp(
 
     fun playVoiceMessage(message: ChatBubble) {
         val audioBytes = message.voiceAudioBytes
-        if (message.kind != ChatMessageKind.Voice || audioBytes == null) {
+        if (message.kind != ChatMessageKind.Voice || audioBytes == null || message.canRetry()) {
             selectedActionMessage = message
             appSurface = AppSurface.MessageActions
             return
@@ -1755,7 +1914,7 @@ internal fun SpotChatApp(
         }
     }
 
-    LaunchedEffect(pendingOutboundMessages.size, knownPeersByFingerprint.size) {
+    LaunchedEffect(pendingOutboundMessages.size, pendingOutboundVoiceMessages.size, knownPeersByFingerprint.size) {
         pendingOutboundMessages.values
             .toList()
             .filter { queuedReply ->
@@ -1764,6 +1923,14 @@ internal fun SpotChatApp(
                 }
             }
             .forEach { queuedReply -> trySendPendingOutboundMessage(queuedReply) }
+        pendingOutboundVoiceMessages.values
+            .toList()
+            .filter { queuedVoice ->
+                queuedVoice.targetFingerprints.any { fingerprint ->
+                    knownPeersByFingerprint[fingerprint] != null
+                }
+            }
+            .forEach { queuedVoice -> trySendPendingOutboundVoiceMessage(queuedVoice) }
     }
 
     fun handleNotificationIntent(intent: Intent) {
@@ -2052,6 +2219,10 @@ internal fun SpotChatApp(
                                 onSendQuickReply = { reply ->
                                     appSurface = AppSurface.Chat
                                     sendQuickReply(reply)
+                                },
+                                onRetryMessage = {
+                                    appSurface = AppSurface.Chat
+                                    retryMessage(selectedConversation, actionMessage)
                                 }
                             )
                         }
@@ -2961,7 +3132,8 @@ private fun WatchMessageActionsSurface(
     message: ChatBubble,
     onNavigateBack: () -> Unit,
     onOpenCustomMessageInput: () -> Unit,
-    onSendQuickReply: (String) -> Unit
+    onSendQuickReply: (String) -> Unit,
+    onRetryMessage: () -> Unit
 ) {
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize()
@@ -3019,10 +3191,19 @@ private fun WatchMessageActionsSurface(
                         modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
                         verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
                     ) {
+                        if (message.canRetry()) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Refresh,
+                                text = "重发",
+                                selected = true,
+                                compact = compact,
+                                onClick = onRetryMessage
+                            )
+                        }
                         MessageActionButton(
                             icon = Icons.Filled.Keyboard,
                             text = "输入回复",
-                            selected = true,
+                            selected = !message.canRetry(),
                             compact = compact,
                             onClick = onOpenCustomMessageInput
                         )
@@ -4453,6 +4634,9 @@ private fun deliveryStateRank(state: DeliveryState): Int =
         DeliveryState.Read -> 6
         DeliveryState.Received -> 6
     }
+
+private fun DeliveryState.isReceiptState(): Boolean =
+    this == DeliveryState.Sent || this == DeliveryState.Delivered || this == DeliveryState.Read
 
 private fun encodeChatPayload(
     conversation: ChatConversation,
