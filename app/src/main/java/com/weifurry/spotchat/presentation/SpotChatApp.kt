@@ -181,6 +181,7 @@ private enum class AppSurface {
     ChatInfo,
     MessageActions,
     MessageSearch,
+    GlobalSearch,
     StarredMessages,
     ForwardMessage,
     SecurityCheck,
@@ -303,6 +304,11 @@ private data class ChatConversation(
     val memberFingerprints: List<String> = emptyList()
 )
 
+private data class GlobalSearchResult(
+    val conversation: ChatConversation,
+    val message: ChatBubble
+)
+
 private data class OutgoingMessageRef(
     val conversationId: String,
     val displayMessageId: String,
@@ -386,6 +392,7 @@ private const val SEARCH_MESSAGE_REMOTE_INPUT_KEY = "spotchat_search_message"
 private const val MAX_CUSTOM_MESSAGE_CHARS = 280
 private const val MAX_SEARCH_QUERY_CHARS = 48
 private const val MAX_SEARCH_RESULTS = 12
+private const val MAX_GLOBAL_SEARCH_RESULTS = 20
 private const val MAX_STARRED_RESULTS = 24
 private const val MAX_QUOTED_MESSAGE_CHARS = 72
 private const val DISAPPEARING_SWEEP_INTERVAL_MS = 15_000L
@@ -686,6 +693,7 @@ internal fun SpotChatApp(
     var selectedActionMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var pendingForwardMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var searchQuery by remember { mutableStateOf("") }
+    var searchTargetSurface by remember { mutableStateOf(AppSurface.MessageSearch) }
     var chatListFilter by remember { mutableStateOf(ChatListFilter.All) }
     var voicePlaybackSpeed by remember { mutableStateOf(VoicePlaybackSpeed.Normal) }
     var isRecordingVoice by remember { mutableStateOf(false) }
@@ -791,6 +799,32 @@ internal fun SpotChatApp(
                     message.searchText().contains(cleanQuery, ignoreCase = true)
             }
             .take(MAX_SEARCH_RESULTS)
+    }
+
+    fun searchAllMessages(
+        conversations: List<ChatConversation>,
+        query: String
+    ): List<GlobalSearchResult> {
+        val cleanQuery = query.trim()
+        if (cleanQuery.isBlank()) {
+            return emptyList()
+        }
+        return conversations
+            .flatMap { conversation ->
+                messagesForConversation(conversation.id)
+                    .asReversed()
+                    .filter { message ->
+                        message.deliveryState != DeliveryState.System &&
+                            message.searchText().contains(cleanQuery, ignoreCase = true)
+                    }
+                    .map { message ->
+                        GlobalSearchResult(
+                            conversation = conversation,
+                            message = message
+                        )
+                    }
+            }
+            .take(MAX_GLOBAL_SEARCH_RESULTS)
     }
 
     fun starredMessageIds(conversationId: String): Set<String> =
@@ -2728,7 +2762,7 @@ internal fun SpotChatApp(
                     ?.trim()
                     ?.take(MAX_SEARCH_QUERY_CHARS)
                     .orEmpty()
-            appSurface = AppSurface.MessageSearch
+            appSurface = searchTargetSurface
         }
 
     fun openCustomMessageInput() {
@@ -2768,6 +2802,7 @@ internal fun SpotChatApp(
     }
 
     fun openMessageSearchInput() {
+        searchTargetSurface = AppSurface.MessageSearch
         val remoteInputBuilder =
             RemoteInput.Builder(SEARCH_MESSAGE_REMOTE_INPUT_KEY)
                 .setLabel("查找消息")
@@ -2779,6 +2814,25 @@ internal fun SpotChatApp(
         val inputIntent = RemoteInputIntentHelper.createActionRemoteInputIntent()
         RemoteInputIntentHelper.putTitleExtra(inputIntent, "查找 ${activeConversation().title}")
         RemoteInputIntentHelper.putConfirmLabelExtra(inputIntent, "查找")
+        RemoteInputIntentHelper.putCancelLabelExtra(inputIntent, "取消")
+        RemoteInputIntentHelper.putRemoteInputsExtra(inputIntent, listOf(remoteInputBuilder.build()))
+
+        messageSearchLauncher.launch(inputIntent)
+    }
+
+    fun openGlobalSearchInput() {
+        searchTargetSurface = AppSurface.GlobalSearch
+        val remoteInputBuilder =
+            RemoteInput.Builder(SEARCH_MESSAGE_REMOTE_INPUT_KEY)
+                .setLabel("搜索聊天")
+                .setAllowFreeFormInput(true)
+        WearableRemoteInputExtender(remoteInputBuilder)
+            .setEmojisAllowed(true)
+            .setInputActionType(EditorInfo.IME_ACTION_SEARCH)
+
+        val inputIntent = RemoteInputIntentHelper.createActionRemoteInputIntent()
+        RemoteInputIntentHelper.putTitleExtra(inputIntent, "搜索所有聊天")
+        RemoteInputIntentHelper.putConfirmLabelExtra(inputIntent, "搜索")
         RemoteInputIntentHelper.putCancelLabelExtra(inputIntent, "取消")
         RemoteInputIntentHelper.putRemoteInputsExtra(inputIntent, listOf(remoteInputBuilder.build()))
 
@@ -2879,6 +2933,9 @@ internal fun SpotChatApp(
                         onSelectFilter = { filter ->
                             chatListFilter = filter
                         },
+                        onOpenGlobalSearch = {
+                            openGlobalSearchInput()
+                        },
                         onOpenArchivedChats = {
                             appSurface = AppSurface.ArchivedChats
                         },
@@ -2929,6 +2986,32 @@ internal fun SpotChatApp(
                             isConversationMuted = ::isConversationMuted,
                             onNavigateBack = dismissOverlay,
                             onOpenConversation = ::openConversation
+                        )
+                    }
+                }
+
+                if (appSurface == AppSurface.GlobalSearch) {
+                    SlideInOverlay(
+                        onDismissed = {
+                            appSurface = AppSurface.ConversationList
+                        }
+                    ) { dismissOverlay ->
+                        WatchGlobalSearchSurface(
+                            isRoundScreen = isRoundScreen,
+                            query = searchQuery,
+                            results = searchAllMessages(currentConversations, searchQuery),
+                            starredMessageIds = { conversationId ->
+                                starredMessageIds(conversationId)
+                            },
+                            onNavigateBack = dismissOverlay,
+                            onSearchAgain = ::openGlobalSearchInput,
+                            onOpenResult = { result ->
+                                activeConversationId = result.conversation.id
+                                selectedActionMessage = result.message
+                                clearConversationAlerts(result.conversation.id)
+                                markConversationRead(result.conversation.id)
+                                appSurface = AppSurface.MessageActions
+                            }
                         )
                     }
                 }
@@ -3320,6 +3403,7 @@ private fun WatchConversationListSurface(
     onRejectPairing: () -> Unit,
     onOpenConversation: (ChatConversation) -> Unit,
     onSelectFilter: (ChatListFilter) -> Unit,
+    onOpenGlobalSearch: () -> Unit,
     onOpenArchivedChats: () -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
@@ -3424,6 +3508,12 @@ private fun WatchConversationListSurface(
                         compact = compact,
                         surfaceSpec = surfaceSpec,
                         onSelectFilter = onSelectFilter
+                    )
+
+                    GlobalSearchCapsule(
+                        compact = compact,
+                        surfaceSpec = surfaceSpec,
+                        onClick = onOpenGlobalSearch
                     )
 
                     if (pendingPeer != null) {
@@ -3784,6 +3874,49 @@ private fun FilterSegment(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+private fun GlobalSearchCapsule(
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                .height(if (compact) 34.dp else 38.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.72f))
+                .border(1.dp, chatDivider.copy(alpha = 0.52f), RoundedCornerShape(8.dp))
+                .clickable(onClick = onClick)
+                .padding(horizontal = if (compact) 9.dp else 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Keyboard,
+            contentDescription = "搜索聊天",
+            tint = chatBlue,
+            modifier = Modifier.size(if (compact) 13.dp else 15.dp)
+        )
+        Spacer(modifier = Modifier.width(if (compact) 7.dp else 9.dp))
+        Text(
+            text = "搜索聊天",
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = if (compact) 11.sp else 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = "全部",
+            color = chatRowMuted,
+            fontSize = if (compact) 9.sp else 10.sp,
+            maxLines = 1
         )
     }
 }
@@ -4947,6 +5080,154 @@ private fun WatchMessageSearchSurface(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun WatchGlobalSearchSurface(
+    isRoundScreen: Boolean,
+    query: String,
+    results: List<GlobalSearchResult>,
+    starredMessageIds: (String) -> Set<String>,
+    onNavigateBack: () -> Unit,
+    onSearchAgain: () -> Unit,
+    onOpenResult: (GlobalSearchResult) -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
+        val scrollState = rememberScrollState()
+        val cleanQuery = query.trim()
+        val headerConversation =
+            results.firstOrNull()?.conversation
+                ?: ChatConversation(
+                    id = NEARBY_GROUP_CONVERSATION_ID,
+                    kind = ConversationKind.Group,
+                    title = "搜索聊天",
+                    subtitle = "所有聊天"
+                )
+
+        WatchFrame(
+            surfaceSpec = surfaceSpec,
+            accent = chatBlue,
+            modifier = Modifier.padding(horizontal = surfaceSpec.chatHorizontalPadding)
+        ) {
+            ScreenScaffold(
+                scrollState = scrollState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(),
+                scrollIndicator = {}
+            ) { scaffoldPadding ->
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .padding(scaffoldPadding)
+                            .padding(
+                                top = surfaceSpec.chatTopPadding,
+                                bottom = surfaceSpec.chatBottomPadding
+                            ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp)
+                ) {
+                    ChatInfoHeader(
+                        conversation = headerConversation,
+                        accent = chatBlue,
+                        title = "搜索聊天",
+                        subtitle =
+                            if (cleanQuery.isBlank()) {
+                                "所有聊天"
+                            } else {
+                                "\"$cleanQuery\""
+                            },
+                        surfaceSpec = surfaceSpec,
+                        onNavigateBack = onNavigateBack
+                    )
+
+                    MessageActionButton(
+                        icon = Icons.Filled.Keyboard,
+                        text = "输入关键词",
+                        selected = true,
+                        compact = compact,
+                        onClick = onSearchAgain
+                    )
+
+                    if (cleanQuery.isBlank()) {
+                        SearchEmptyState(
+                            text = "输入关键词搜索所有聊天",
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
+                        )
+                    } else if (results.isEmpty()) {
+                        SearchEmptyState(
+                            text = "没有找到匹配消息",
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
+                        )
+                    } else {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.86f else 0.94f),
+                            verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 7.dp)
+                        ) {
+                            Text(
+                                text = "${results.size} 条结果",
+                                color = chatRowMuted,
+                                fontSize = if (compact) 9.sp else 10.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            results.forEach { result ->
+                                GlobalSearchResultCard(
+                                    result = result,
+                                    compact = compact,
+                                    accent = conversationAccentColor(result.conversation),
+                                    isStarred =
+                                        result.message.stableStarId() in
+                                            starredMessageIds(result.conversation.id),
+                                    onClick = { onOpenResult(result) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GlobalSearchResultCard(
+    result: GlobalSearchResult,
+    compact: Boolean,
+    accent: Color,
+    isStarred: Boolean,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Text(
+            text = result.conversation.title,
+            color = chatRowMuted,
+            fontSize = if (compact) 9.sp else 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth()
+        )
+        MessageCapsule(
+            message = result.message,
+            compact = compact,
+            accent = accent,
+            isStarred = isStarred,
+            onClick = onClick
+        )
     }
 }
 
