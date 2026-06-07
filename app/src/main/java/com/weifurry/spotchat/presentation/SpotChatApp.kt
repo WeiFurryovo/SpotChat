@@ -3306,6 +3306,13 @@ internal fun SpotChatApp(
                                 onCopyMessage = {
                                     copyMessageText(actionMessage)
                                 },
+                                onViewInChat = {
+                                    selectedActionMessage = null
+                                    activeConversationId = selectedConversation.id
+                                    clearConversationAlerts(selectedConversation.id)
+                                    markConversationRead(selectedConversation.id)
+                                    appSurface = AppSurface.Chat
+                                },
                                 onDeleteMessage = {
                                     deleteMessageForMe(selectedConversation, actionMessage)
                                 },
@@ -4925,6 +4932,7 @@ private fun WatchMessageActionsSurface(
     onToggleStarred: () -> Unit,
     onTogglePinned: () -> Unit,
     onCopyMessage: () -> Unit,
+    onViewInChat: () -> Unit,
     onDeleteMessage: () -> Unit,
     onReactToMessage: (String) -> Unit,
     onOpenCustomMessageInput: () -> Unit,
@@ -5035,6 +5043,13 @@ private fun WatchMessageActionsSurface(
                             selected = false,
                             compact = compact,
                             onClick = onCopyMessage
+                        )
+                        MessageActionButton(
+                            icon = Icons.AutoMirrored.Filled.Chat,
+                            text = "查看所在聊天",
+                            selected = false,
+                            compact = compact,
+                            onClick = onViewInChat
                         )
                         reactionChoices.forEach { reaction ->
                             MessageActionButton(
