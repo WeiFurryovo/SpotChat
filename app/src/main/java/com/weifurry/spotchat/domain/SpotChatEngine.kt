@@ -3,6 +3,7 @@ package com.weifurry.spotchat.domain
 import com.weifurry.spotchat.crypto.EncryptedFrame
 import com.weifurry.spotchat.crypto.SpotChatCrypto
 import com.weifurry.spotchat.protocol.DeliveryAck
+import com.weifurry.spotchat.protocol.DeliveryReceiptStatus
 import com.weifurry.spotchat.protocol.EncryptedChatMessage
 import com.weifurry.spotchat.protocol.PacketKind
 import com.weifurry.spotchat.protocol.PeerHello
@@ -208,6 +209,7 @@ class SpotChatEngine(
     fun encryptAckForPeer(
         peerFingerprint: String,
         deliveredMessageId: String,
+        status: DeliveryReceiptStatus = DeliveryReceiptStatus.Delivered,
         receivedAtEpochMillis: Long = System.currentTimeMillis()
     ): WirePacket {
         val sessionKey =
@@ -217,7 +219,8 @@ class SpotChatEngine(
         val ack =
             DeliveryAck(
                 messageId = deliveredMessageId,
-                receivedAtEpochMillis = receivedAtEpochMillis
+                receivedAtEpochMillis = receivedAtEpochMillis,
+                status = status
             )
         val frame =
             SpotChatCrypto.encrypt(

@@ -5,9 +5,9 @@ import com.weifurry.spotchat.domain.DuplicateMessageException
 import com.weifurry.spotchat.domain.SpotChatEngine
 import java.util.Base64
 import javax.crypto.AEADBadTagException
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -118,6 +118,32 @@ class SpotChatEngineTest {
         assertEquals(PacketKind.ENCRYPTED_ACK, ackPacket.kind)
         assertEquals(phone.localFingerprint, encryptedAck.senderFingerprint)
         assertEquals("message-42", ack.messageId)
+        assertEquals(DeliveryReceiptStatus.Delivered, ack.status)
+    }
+
+    @Test
+    fun encryptedReadAckPacketsCarryReadStatus() {
+        val watch = SpotChatEngine("手表", SpotChatCrypto.generateIdentity())
+        val phone = SpotChatEngine("手机", SpotChatCrypto.generateIdentity())
+
+        watch.openSession(phone.helloPacket().hello ?: error("missing phone hello"))
+        val trustedWatch = phone.openSession(watch.helloPacket().hello ?: error("missing watch hello"))
+        val ackPacket =
+            phone.encryptAckForPeer(
+                peerFingerprint = trustedWatch.fingerprint,
+                deliveredMessageId = "message-43",
+                status = DeliveryReceiptStatus.Read
+            )
+        val encryptedAck =
+            ChatCodec
+                .decode(ChatCodec.encode(ackPacket))
+                .encryptedMessage
+                ?: error("missing encrypted read ack")
+        val ack = watch.decryptAck(encryptedAck)
+
+        assertEquals(PacketKind.ENCRYPTED_ACK, ackPacket.kind)
+        assertEquals("message-43", ack.messageId)
+        assertEquals(DeliveryReceiptStatus.Read, ack.status)
     }
 
     @Test

@@ -28,9 +28,16 @@ data class EncryptedChatMessage(
 )
 
 @Serializable
+enum class DeliveryReceiptStatus {
+    Delivered,
+    Read
+}
+
+@Serializable
 data class DeliveryAck(
     val messageId: String,
-    val receivedAtEpochMillis: Long
+    val receivedAtEpochMillis: Long,
+    val status: DeliveryReceiptStatus = DeliveryReceiptStatus.Delivered
 )
 
 @Serializable

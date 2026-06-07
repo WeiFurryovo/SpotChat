@@ -112,6 +112,7 @@ import com.weifurry.spotchat.notifications.SpotChatNotificationIntents
 import com.weifurry.spotchat.notifications.SpotChatNotifier
 import com.weifurry.spotchat.presentation.theme.SpotChatTheme
 import com.weifurry.spotchat.protocol.ChatCodec
+import com.weifurry.spotchat.protocol.DeliveryReceiptStatus
 import com.weifurry.spotchat.protocol.PacketKind
 import com.weifurry.spotchat.protocol.PeerHello
 import com.weifurry.spotchat.protocol.WirePacket
@@ -156,6 +157,7 @@ private enum class DeliveryState(
     Sending("发送中"),
     Sent("已发送"),
     Delivered("已送达"),
+    Read("已读"),
     Failed("失败"),
     System("状态")
 }
@@ -193,6 +195,7 @@ private data class ChatBubble(
     val encrypted: Boolean,
     val timestamp: String,
     val senderName: String? = null,
+    val senderFingerprint: String? = null,
     val messageId: String? = null,
     val deliveryState: DeliveryState = DeliveryState.Received,
     val kind: ChatMessageKind = ChatMessageKind.Text,
@@ -504,6 +507,10 @@ internal fun SpotChatApp(
     val unreadCounts = remember { mutableStateMapOf<String, Int>() }
     val outgoingMessages = remember { mutableStateMapOf<String, OutgoingMessageRef>() }
     val deliveredCounts = remember { mutableStateMapOf<String, Int>() }
+    val deliveredReceiptsByMessage = remember { mutableStateMapOf<String, Set<String>>() }
+    val readCounts = remember { mutableStateMapOf<String, Int>() }
+    val readReceiptsByMessage = remember { mutableStateMapOf<String, Set<String>>() }
+    val sentReadReceipts = remember { mutableSetOf<String>() }
     val pendingOutboundMessages = remember { mutableStateMapOf<String, PendingOutboundMessage>() }
     val conversationUpdateOrder = remember { mutableStateMapOf<String, Long>() }
     var conversationUpdateSequence by remember { mutableStateOf(0L) }
@@ -649,6 +656,73 @@ internal fun SpotChatApp(
         notifier.clearConversation(conversationId)
     }
 
+    fun DeliveryState.canMoveTo(next: DeliveryState): Boolean =
+        deliveryStateRank(next) >= deliveryStateRank(this)
+
+    fun updateMessageState(
+        messageId: String,
+        deliveryState: DeliveryState,
+        receiptSenderFingerprint: String? = null
+    ) {
+        val outboundMessage = outgoingMessages[messageId]
+        if (
+            deliveryState == DeliveryState.Delivered &&
+            outboundMessage != null &&
+            outboundMessage.expectedDeliveries > 1
+        ) {
+            val receiptKey = receiptSenderFingerprint ?: messageId
+            val deliveredReceipts = deliveredReceiptsByMessage[outboundMessage.displayMessageId].orEmpty()
+            if (receiptKey in deliveredReceipts) {
+                return
+            }
+            val updatedDeliveredReceipts = deliveredReceipts + receiptKey
+            deliveredReceiptsByMessage[outboundMessage.displayMessageId] = updatedDeliveredReceipts
+            deliveredCounts[outboundMessage.displayMessageId] = updatedDeliveredReceipts.size
+            if (updatedDeliveredReceipts.size < outboundMessage.expectedDeliveries) {
+                return
+            }
+        }
+        if (
+            deliveryState == DeliveryState.Read &&
+            outboundMessage != null &&
+            outboundMessage.expectedDeliveries > 1
+        ) {
+            val receiptKey = receiptSenderFingerprint ?: messageId
+            val readReceipts = readReceiptsByMessage[outboundMessage.displayMessageId].orEmpty()
+            if (receiptKey in readReceipts) {
+                return
+            }
+            val updatedReadReceipts = readReceipts + receiptKey
+            readReceiptsByMessage[outboundMessage.displayMessageId] = updatedReadReceipts
+            readCounts[outboundMessage.displayMessageId] = updatedReadReceipts.size
+            if (updatedReadReceipts.size < outboundMessage.expectedDeliveries) {
+                return
+            }
+        }
+        val conversationIds =
+            if (outboundMessage == null) {
+                conversationMessages.keys.toList()
+            } else {
+                listOf(outboundMessage.conversationId)
+            }
+        val displayMessageId = outboundMessage?.displayMessageId ?: messageId
+        conversationIds.forEach { conversationId ->
+            val messages = messagesForConversation(conversationId)
+            val index = messages.indexOfFirst { message -> message.messageId == displayMessageId }
+            if (index >= 0) {
+                val currentMessage = messages[index]
+                if (!currentMessage.deliveryState.canMoveTo(deliveryState)) {
+                    return
+                }
+                conversationMessages[conversationId] =
+                    messages.toMutableList().also { updatedMessages ->
+                        updatedMessages[index] = currentMessage.copy(deliveryState = deliveryState)
+                    }
+                return
+            }
+        }
+    }
+
     fun notifyIncomingMessage(
         conversationId: String,
         message: ChatBubble
@@ -740,42 +814,6 @@ internal fun SpotChatApp(
                 )
         }
         return conversationId
-    }
-
-    fun updateMessageState(
-        messageId: String,
-        deliveryState: DeliveryState
-    ) {
-        val outboundMessage = outgoingMessages[messageId]
-        if (
-            deliveryState == DeliveryState.Delivered &&
-            outboundMessage != null &&
-            outboundMessage.expectedDeliveries > 1
-        ) {
-            val deliveredCount = (deliveredCounts[outboundMessage.displayMessageId] ?: 0) + 1
-            deliveredCounts[outboundMessage.displayMessageId] = deliveredCount
-            if (deliveredCount < outboundMessage.expectedDeliveries) {
-                return
-            }
-        }
-        val conversationIds =
-            if (outboundMessage == null) {
-                conversationMessages.keys.toList()
-            } else {
-                listOf(outboundMessage.conversationId)
-            }
-        val displayMessageId = outboundMessage?.displayMessageId ?: messageId
-        conversationIds.forEach { conversationId ->
-            val messages = messagesForConversation(conversationId)
-            val index = messages.indexOfFirst { message -> message.messageId == displayMessageId }
-            if (index >= 0) {
-                conversationMessages[conversationId] =
-                    messages.toMutableList().also { updatedMessages ->
-                        updatedMessages[index] = updatedMessages[index].copy(deliveryState = deliveryState)
-                    }
-                return
-            }
-        }
     }
 
     fun trustedPeer(fingerprint: String): StoredTrustedPeer? =
@@ -876,18 +914,12 @@ internal fun SpotChatApp(
         updateWearStateSnapshot()
     }
 
-    fun openConversation(conversation: ChatConversation) {
-        activeConversationId = conversation.id
-        clearConversationAlerts(conversation.id)
-        selectedActionMessage = null
-        appSurface = AppSurface.Chat
-    }
-
     suspend fun sendEncryptedAck(
         transport: SpotChatTransport,
         peer: TransportPeer,
         senderFingerprint: String,
         messageId: String,
+        status: DeliveryReceiptStatus = DeliveryReceiptStatus.Delivered,
         failureState: String
     ) {
         runCatching {
@@ -897,12 +929,59 @@ internal fun SpotChatApp(
                 packet =
                     engine.encryptAckForPeer(
                         peerFingerprint = senderFingerprint,
-                        deliveredMessageId = messageId
+                        deliveredMessageId = messageId,
+                        status = status
                     )
             )
         }.onFailure {
             trustState = failureState
         }
+    }
+
+    fun sendReadReceipt(
+        senderFingerprint: String,
+        messageId: String,
+        peer: TransportPeer? = routeForPeer(senderFingerprint)
+    ) {
+        val replyPeer = peer ?: return
+        val receiptKey = "$senderFingerprint:$messageId"
+        if (!sentReadReceipts.add(receiptKey)) {
+            return
+        }
+        coroutineScope.launch {
+            sendEncryptedAck(
+                transport = currentTransport(),
+                peer = replyPeer,
+                senderFingerprint = senderFingerprint,
+                messageId = messageId,
+                status = DeliveryReceiptStatus.Read,
+                failureState = "已读回执发送失败"
+            )
+        }
+    }
+
+    fun markConversationRead(conversationId: String) {
+        messagesForConversation(conversationId)
+            .filter { message ->
+                !message.mine &&
+                    message.deliveryState != DeliveryState.System &&
+                    message.messageId != null &&
+                    message.senderFingerprint != null
+            }
+            .forEach { message ->
+                sendReadReceipt(
+                    senderFingerprint = message.senderFingerprint ?: return@forEach,
+                    messageId = message.messageId ?: return@forEach
+                )
+            }
+    }
+
+    fun openConversation(conversation: ChatConversation) {
+        activeConversationId = conversation.id
+        clearConversationAlerts(conversation.id)
+        selectedActionMessage = null
+        appSurface = AppSurface.Chat
+        markConversationRead(conversation.id)
     }
 
     fun mergePeerWithHello(
@@ -1021,6 +1100,7 @@ internal fun SpotChatApp(
                                             } else {
                                                 null
                                             },
+                                        senderFingerprint = plain.senderFingerprint,
                                         messageId = plain.messageId,
                                         deliveryState = DeliveryState.Received
                                     )
@@ -1035,6 +1115,13 @@ internal fun SpotChatApp(
                                     messageId = plain.messageId,
                                     failureState = "回执发送失败"
                                 )
+                                if (appSurface == AppSurface.Chat && activeConversationId == conversationId) {
+                                    sendReadReceipt(
+                                        senderFingerprint = plain.senderFingerprint,
+                                        messageId = plain.messageId,
+                                        peer = replyPeer
+                                    )
+                                }
                             }
                             .onFailure { error ->
                                 if (error is DuplicateMessageException) {
@@ -1084,6 +1171,7 @@ internal fun SpotChatApp(
                                         mine = false,
                                         encrypted = true,
                                         timestamp = nowTime(),
+                                        senderFingerprint = plain.senderFingerprint,
                                         messageId = plain.messageId,
                                         deliveryState = DeliveryState.Received,
                                         kind = ChatMessageKind.Voice,
@@ -1101,6 +1189,13 @@ internal fun SpotChatApp(
                                     messageId = plain.messageId,
                                     failureState = "语音回执发送失败"
                                 )
+                                if (appSurface == AppSurface.Chat && activeConversationId == conversationId) {
+                                    sendReadReceipt(
+                                        senderFingerprint = plain.senderFingerprint,
+                                        messageId = plain.messageId,
+                                        peer = replyPeer
+                                    )
+                                }
                             }
                             .onFailure { error ->
                                 if (error is DuplicateMessageException) {
@@ -1138,8 +1233,21 @@ internal fun SpotChatApp(
                         rememberPeerRoute(encryptedAck.senderFingerprint, event.peer)
                         runCatching { engine.decryptAck(encryptedAck) }
                             .onSuccess { ack ->
-                                updateMessageState(ack.messageId, DeliveryState.Delivered)
-                                trustState = "对方已收到"
+                                val state =
+                                    when (ack.status) {
+                                        DeliveryReceiptStatus.Delivered -> DeliveryState.Delivered
+                                        DeliveryReceiptStatus.Read -> DeliveryState.Read
+                                    }
+                                updateMessageState(
+                                    messageId = ack.messageId,
+                                    deliveryState = state,
+                                    receiptSenderFingerprint = encryptedAck.senderFingerprint
+                                )
+                                trustState =
+                                    when (ack.status) {
+                                        DeliveryReceiptStatus.Delivered -> "对方已收到"
+                                        DeliveryReceiptStatus.Read -> "对方已读"
+                                    }
                             }
                             .onFailure {
                                 trustState = "回执验证失败"
@@ -4333,6 +4441,18 @@ private fun formatDuration(durationMs: Long): String {
     val seconds = totalSeconds % 60L
     return "%d:%02d".format(Locale.getDefault(), minutes, seconds)
 }
+
+private fun deliveryStateRank(state: DeliveryState): Int =
+    when (state) {
+        DeliveryState.System -> 0
+        DeliveryState.Failed -> 1
+        DeliveryState.Waiting -> 2
+        DeliveryState.Sending -> 3
+        DeliveryState.Sent -> 4
+        DeliveryState.Delivered -> 5
+        DeliveryState.Read -> 6
+        DeliveryState.Received -> 6
+    }
 
 private fun encodeChatPayload(
     conversation: ChatConversation,
