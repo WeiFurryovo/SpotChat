@@ -45,12 +45,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -882,6 +884,81 @@ internal fun SpotChatApp(
         trustedPeers.removeAll { existing ->
             existing.fingerprint == storedPeer.fingerprint || existing.publicKey == storedPeer.publicKey
         }
+    }
+
+    fun removeConversationRuntimeState(conversationId: String) {
+        val displayMessageIds =
+            messagesForConversation(conversationId)
+                .mapNotNull { message -> message.messageId }
+                .toSet()
+        pendingOutboundMessages
+            .filterValues { message -> message.conversationId == conversationId }
+            .keys
+            .toList()
+            .forEach { messageId -> pendingOutboundMessages.remove(messageId) }
+        pendingOutboundVoiceMessages
+            .filterValues { message -> message.conversationId == conversationId }
+            .keys
+            .toList()
+            .forEach { messageId -> pendingOutboundVoiceMessages.remove(messageId) }
+        outgoingMessages
+            .filterValues { message ->
+                message.conversationId == conversationId || message.displayMessageId in displayMessageIds
+            }
+            .keys
+            .toList()
+            .forEach { packetMessageId -> outgoingMessages.remove(packetMessageId) }
+        displayMessageIds.forEach { messageId ->
+            deliveredCounts.remove(messageId)
+            deliveredReceiptsByMessage.remove(messageId)
+            readCounts.remove(messageId)
+            readReceiptsByMessage.remove(messageId)
+        }
+        unreadCounts.remove(conversationId)
+        notifier.clearConversation(conversationId)
+    }
+
+    fun clearConversation(conversation: ChatConversation) {
+        removeConversationRuntimeState(conversation.id)
+        conversationMessages[conversation.id] =
+            listOf(
+                ChatBubble(
+                    text = "聊天已清空",
+                    mine = false,
+                    encrypted = true,
+                    timestamp = nowTime(),
+                    deliveryState = DeliveryState.System
+                )
+            )
+        conversationUpdateSequence += 1
+        conversationUpdateOrder[conversation.id] = conversationUpdateSequence
+        selectedActionMessage = null
+        pendingQuotedMessage = null
+        trustState = "聊天已清空"
+    }
+
+    fun forgetConversationPeer(conversation: ChatConversation) {
+        val peerFingerprint = conversation.peerFingerprint ?: return
+        val storedPeer = trustedPeer(peerFingerprint) ?: return
+        trustedPeerStore.forget(storedPeer.fingerprint, storedPeer.publicKey)
+        removeTrustedPeer(storedPeer)
+        knownPeersByFingerprint.remove(storedPeer.fingerprint)
+        if (activePeerFingerprint == storedPeer.fingerprint) {
+            activePeerFingerprint = null
+        }
+        removeConversationRuntimeState(conversation.id)
+        conversationMessages.remove(conversation.id)
+        conversationUpdateOrder.remove(conversation.id)
+        selectedActionMessage = null
+        pendingQuotedMessage = null
+        activeConversationId = NEARBY_GROUP_CONVERSATION_ID
+        appSurface = AppSurface.ConversationList
+        trustState = "已移除 ${storedPeer.deviceName}"
+        appendSystemMessage(
+            text = "已移除 ${storedPeer.deviceName} 的信任",
+            encrypted = true,
+            conversationId = NEARBY_GROUP_CONVERSATION_ID
+        )
     }
 
     fun rememberPeerRoute(
@@ -2227,7 +2304,14 @@ internal fun SpotChatApp(
                             trustedPeers = trustedPeers,
                             fingerprint = localFingerprint,
                             messages = messagesForConversation(selectedConversation.id),
-                            onNavigateBack = dismissOverlay
+                            onNavigateBack = dismissOverlay,
+                            onClearConversation = {
+                                clearConversation(selectedConversation)
+                                appSurface = AppSurface.Chat
+                            },
+                            onForgetPeer = {
+                                forgetConversationPeer(selectedConversation)
+                            }
                         )
                     }
                 }
@@ -3026,7 +3110,9 @@ private fun WatchChatInfoSurface(
     trustedPeers: List<StoredTrustedPeer>,
     fingerprint: String,
     messages: List<ChatBubble>,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    onClearConversation: () -> Unit,
+    onForgetPeer: () -> Unit
 ) {
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize()
@@ -3161,6 +3247,29 @@ private fun WatchChatInfoSurface(
                             compact = compact,
                             surfaceSpec = surfaceSpec
                         )
+                    }
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
+                        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
+                    ) {
+                        MessageActionButton(
+                            icon = Icons.Filled.Delete,
+                            text = "清空聊天",
+                            selected = false,
+                            compact = compact,
+                            onClick = onClearConversation
+                        )
+                        if (conversation.kind == ConversationKind.Direct) {
+                            MessageActionButton(
+                                icon = Icons.Filled.PersonRemove,
+                                text = "移除信任",
+                                selected = false,
+                                destructive = true,
+                                compact = compact,
+                                onClick = onForgetPeer
+                            )
+                        }
                     }
                 }
             }
@@ -3435,20 +3544,21 @@ private fun MessageActionButton(
     icon: ImageVector,
     text: String,
     selected: Boolean,
+    destructive: Boolean = false,
     compact: Boolean,
     onClick: () -> Unit
 ) {
     val background =
-        if (selected) {
-            chatGreen
-        } else {
-            chatSurfaceHigh.copy(alpha = 0.88f)
+        when {
+            destructive -> chatRose.copy(alpha = 0.22f)
+            selected -> chatGreen
+            else -> chatSurfaceHigh.copy(alpha = 0.88f)
         }
     val foreground =
-        if (selected) {
-            Color(0xFF001F1B)
-        } else {
-            MaterialTheme.colorScheme.onBackground
+        when {
+            destructive -> Color.White
+            selected -> Color(0xFF001F1B)
+            else -> MaterialTheme.colorScheme.onBackground
         }
     Row(
         modifier =
@@ -3459,7 +3569,12 @@ private fun MessageActionButton(
                 .background(background)
                 .border(
                     width = 1.dp,
-                    color = if (selected) Color.White.copy(alpha = 0.1f) else chatDivider.copy(alpha = 0.58f),
+                    color =
+                        when {
+                            destructive -> chatRose.copy(alpha = 0.62f)
+                            selected -> Color.White.copy(alpha = 0.1f)
+                            else -> chatDivider.copy(alpha = 0.58f)
+                        },
                     shape = RoundedCornerShape(8.dp)
                 )
                 .clickable(onClick = onClick)
