@@ -180,6 +180,7 @@ private enum class AppSurface {
     MessageActions,
     MessageSearch,
     StarredMessages,
+    ForwardMessage,
     SecurityCheck,
     Profile
 }
@@ -630,6 +631,7 @@ internal fun SpotChatApp(
     var pairingCode by remember { mutableStateOf<String?>(null) }
     var appSurface by remember { mutableStateOf(AppSurface.ConversationList) }
     var selectedActionMessage by remember { mutableStateOf<ChatBubble?>(null) }
+    var pendingForwardMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var isRecordingVoice by remember { mutableStateOf(false) }
     var activePlayer by remember { mutableStateOf<MediaPlayer?>(null) }
@@ -1066,6 +1068,7 @@ internal fun SpotChatApp(
         conversationUpdateOrder[conversation.id] = conversationUpdateSequence
         selectedActionMessage = null
         pendingQuotedMessage = null
+        pendingForwardMessage = null
         trustState = "聊天已清空"
     }
 
@@ -1087,6 +1090,7 @@ internal fun SpotChatApp(
         disappearingModesByConversation.remove(conversation.id)
         selectedActionMessage = null
         pendingQuotedMessage = null
+        pendingForwardMessage = null
         activeConversationId = NEARBY_GROUP_CONVERSATION_ID
         appSurface = AppSurface.ConversationList
         trustState = "已移除 ${storedPeer.deviceName}"
@@ -1411,6 +1415,10 @@ internal fun SpotChatApp(
                 }
         removeMessageCaches(conversation.id, message)
         selectedActionMessage = null
+        pendingForwardMessage =
+            pendingForwardMessage?.takeUnless { pendingMessage ->
+                pendingMessage.stableStarId() == message.stableStarId()
+            }
         appSurface = AppSurface.Chat
         trustState = "已删除本机消息"
     }
@@ -2313,6 +2321,19 @@ internal fun SpotChatApp(
         sendMessageToConversation(activeConversation(), text, quotedMessage = quote)
     }
 
+    fun forwardMessageToConversation(
+        targetConversation: ChatConversation,
+        message: ChatBubble
+    ) {
+        pendingForwardMessage = null
+        activeConversationId = targetConversation.id
+        appSurface = AppSurface.Chat
+        sendMessageToConversation(
+            conversation = targetConversation,
+            text = message.forwardText()
+        )
+    }
+
     fun retryMessage(
         conversation: ChatConversation,
         message: ChatBubble
@@ -2732,6 +2753,7 @@ internal fun SpotChatApp(
                     appSurface == AppSurface.MessageActions ||
                     appSurface == AppSurface.MessageSearch ||
                     appSurface == AppSurface.StarredMessages ||
+                    appSurface == AppSurface.ForwardMessage ||
                     appSurface == AppSurface.SecurityCheck
                 ) {
                     SlideInOverlay(
@@ -2929,9 +2951,39 @@ internal fun SpotChatApp(
                                     appSurface = AppSurface.Chat
                                     openCustomMessageInput()
                                 },
+                                onForwardMessage = {
+                                    pendingForwardMessage = actionMessage
+                                    appSurface = AppSurface.ForwardMessage
+                                },
                                 onRetryMessage = {
                                     appSurface = AppSurface.Chat
                                     retryMessage(selectedConversation, actionMessage)
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if (appSurface == AppSurface.ForwardMessage) {
+                    val forwardMessage = pendingForwardMessage
+                    if (forwardMessage != null) {
+                        SlideInOverlay(
+                            onDismissed = {
+                                appSurface = AppSurface.MessageActions
+                            }
+                        ) { dismissOverlay ->
+                            WatchForwardMessageSurface(
+                                isRoundScreen = isRoundScreen,
+                                conversations = currentConversations,
+                                sourceConversation = selectedConversation,
+                                message = forwardMessage,
+                                messagesByConversation = conversationMessages,
+                                unreadCounts = unreadCounts,
+                                pinnedConversationIds = pinnedConversationIds,
+                                mutedConversationIds = mutedConversationIds,
+                                onNavigateBack = dismissOverlay,
+                                onSelectConversation = { targetConversation ->
+                                    forwardMessageToConversation(targetConversation, forwardMessage)
                                 }
                             )
                         }
@@ -3657,6 +3709,96 @@ private fun ConversationCapsule(
 }
 
 @Composable
+private fun WatchForwardMessageSurface(
+    isRoundScreen: Boolean,
+    conversations: List<ChatConversation>,
+    sourceConversation: ChatConversation,
+    message: ChatBubble,
+    messagesByConversation: Map<String, List<ChatBubble>>,
+    unreadCounts: Map<String, Int>,
+    pinnedConversationIds: Map<String, Boolean>,
+    mutedConversationIds: Map<String, Boolean>,
+    onNavigateBack: () -> Unit,
+    onSelectConversation: (ChatConversation) -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
+        val accent = conversationAccentColor(sourceConversation)
+        val scrollState = rememberScrollState()
+
+        WatchFrame(
+            surfaceSpec = surfaceSpec,
+            accent = accent,
+            modifier = Modifier.padding(horizontal = surfaceSpec.chatHorizontalPadding)
+        ) {
+            ScreenScaffold(
+                scrollState = scrollState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(),
+                scrollIndicator = {}
+            ) { scaffoldPadding ->
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .padding(scaffoldPadding)
+                            .padding(
+                                top = surfaceSpec.chatTopPadding,
+                                bottom = surfaceSpec.chatBottomPadding
+                            ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp)
+                ) {
+                    ChatInfoHeader(
+                        conversation = sourceConversation,
+                        accent = accent,
+                        title = "转发消息",
+                        subtitle = "选择目标聊天",
+                        surfaceSpec = surfaceSpec,
+                        onNavigateBack = onNavigateBack
+                    )
+
+                    MessageCapsule(
+                        message =
+                            ChatBubble(
+                                text = message.forwardPreviewText(),
+                                mine = false,
+                                encrypted = message.encrypted,
+                                timestamp = message.timestamp,
+                                deliveryState = DeliveryState.System
+                            ),
+                        compact = compact,
+                        accent = accent,
+                        isStarred = false
+                    )
+
+                    conversations.forEach { conversation ->
+                        val lastMessage =
+                            messagesByConversation[conversation.id]
+                                .orEmpty()
+                                .lastOrNull { chatMessage -> chatMessage.deliveryState != DeliveryState.System }
+                        ConversationCapsule(
+                            conversation = conversation,
+                            lastMessage = lastMessage,
+                            unreadCount = unreadCounts[conversation.id] ?: 0,
+                            isPinned = pinnedConversationIds[conversation.id] == true,
+                            isMuted = mutedConversationIds[conversation.id] == true,
+                            featured = conversation.id == sourceConversation.id,
+                            surfaceSpec = surfaceSpec,
+                            onClick = { onSelectConversation(conversation) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun UnreadBadge(count: Int) {
     Box(
         modifier =
@@ -4021,6 +4163,7 @@ private fun WatchMessageActionsSurface(
     onOpenCustomMessageInput: () -> Unit,
     onSendQuickReply: (String) -> Unit,
     onReplyToMessage: () -> Unit,
+    onForwardMessage: () -> Unit,
     onRetryMessage: () -> Unit
 ) {
     BoxWithConstraints(
@@ -4118,6 +4261,13 @@ private fun WatchMessageActionsSurface(
                             selected = false,
                             compact = compact,
                             onClick = onReplyToMessage
+                        )
+                        MessageActionButton(
+                            icon = Icons.AutoMirrored.Filled.Chat,
+                            text = "转发消息",
+                            selected = false,
+                            compact = compact,
+                            onClick = onForwardMessage
                         )
                         MessageActionButton(
                             icon = Icons.Filled.Delete,
@@ -6114,6 +6264,23 @@ private fun ChatBubble.previewText(): String =
     } else {
         text
     }
+
+private fun ChatBubble.forwardPreviewText(): String =
+    "转发预览：${previewText()}"
+
+private fun ChatBubble.forwardText(): String {
+    val baseText =
+        if (kind == ChatMessageKind.Voice) {
+            "语音消息 · ${formatDuration(voiceDurationMs ?: 0L)}"
+        } else {
+            text
+        }
+    val quotePrefix =
+        quotedMessage?.let { quote ->
+            "引用 ${quote.senderName}：${quote.text}\n"
+        }.orEmpty()
+    return "转发：$quotePrefix$baseText"
+}
 
 private fun ChatBubble.searchText(): String =
     buildList {
