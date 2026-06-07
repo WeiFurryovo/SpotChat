@@ -73,10 +73,16 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.guava)
     implementation(libs.material.icons.extended)
     implementation(libs.wear.compose.foundation)
     implementation(libs.wear.input)
     implementation(libs.wear.compose.material)
+    implementation(libs.wear.protolayout)
+    implementation(libs.wear.protolayout.material)
+    implementation(libs.wear.protolayout.material3)
+    implementation(libs.wear.tiles)
+    implementation(libs.wear.watchface.complications.data.source.ktx)
 
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 

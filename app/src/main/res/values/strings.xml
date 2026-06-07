@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">SpotChat</string>
+    <string name="recent_chats_tile_label">SpotChat 最近聊天</string>
+    <string name="unread_complication_label">SpotChat 未读</string>
 </resources>

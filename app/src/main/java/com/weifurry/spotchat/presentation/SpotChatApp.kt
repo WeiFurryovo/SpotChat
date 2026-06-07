@@ -117,6 +117,10 @@ import com.weifurry.spotchat.transport.SpotChatTransport
 import com.weifurry.spotchat.transport.TransportEvent
 import com.weifurry.spotchat.transport.TransportKind
 import com.weifurry.spotchat.transport.TransportPeer
+import com.weifurry.spotchat.wear.RecentChatsTileService
+import com.weifurry.spotchat.wear.SpotChatWearStateStore
+import com.weifurry.spotchat.wear.WearChatSnapshot
+import com.weifurry.spotchat.wear.WearConversationSummary
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -430,6 +434,10 @@ internal fun SpotChatApp(
         remember(context) {
             SpotChatNotifier(context)
         }
+    val wearStateStore =
+        remember(context) {
+            SpotChatWearStateStore(context)
+        }
     val coroutineScope = rememberCoroutineScope()
     val trustedPeers =
         remember {
@@ -479,6 +487,8 @@ internal fun SpotChatApp(
     val outgoingMessages = remember { mutableStateMapOf<String, OutgoingMessageRef>() }
     val deliveredCounts = remember { mutableStateMapOf<String, Int>() }
     val pendingOutboundMessages = remember { mutableStateMapOf<String, PendingOutboundMessage>() }
+    val conversationUpdateOrder = remember { mutableStateMapOf<String, Long>() }
+    var conversationUpdateSequence by remember { mutableStateOf(0L) }
     var activeConversationId by remember { mutableStateOf(NEARBY_GROUP_CONVERSATION_ID) }
     if (conversationMessages[activeConversationId] == null) {
         activeConversationId = NEARBY_GROUP_CONVERSATION_ID
@@ -634,6 +644,8 @@ internal fun SpotChatApp(
         message: ChatBubble
     ) {
         conversationMessages[conversationId] = messagesForConversation(conversationId) + message
+        conversationUpdateSequence += 1
+        conversationUpdateOrder[conversationId] = conversationUpdateSequence
         if (
             !message.mine &&
             message.deliveryState != DeliveryState.System &&
@@ -805,6 +817,32 @@ internal fun SpotChatApp(
     fun activeConversation(): ChatConversation =
         conversations().firstOrNull { conversation -> conversation.id == activeConversationId }
             ?: conversations().first()
+
+    fun updateWearStateSnapshot() {
+        val summaries =
+            conversations().map { conversation ->
+                val lastMessage =
+                    messagesForConversation(conversation.id)
+                        .lastOrNull { message -> message.deliveryState != DeliveryState.System }
+                WearConversationSummary(
+                    id = conversation.id,
+                    title = conversation.title,
+                    subtitle = conversationPreview(conversation, lastMessage),
+                    unreadCount = unreadCounts[conversation.id] ?: 0,
+                    updatedAtEpochMillis = conversationUpdateOrder[conversation.id] ?: 0L
+                )
+            }
+        wearStateStore.save(
+            WearChatSnapshot(
+                conversations = summaries,
+                updatedAtEpochMillis = System.currentTimeMillis()
+            )
+        )
+    }
+
+    LaunchedEffect(conversationMessages.toMap(), unreadCounts.toMap(), trustedPeers.size) {
+        updateWearStateSnapshot()
+    }
 
     fun openConversation(conversation: ChatConversation) {
         activeConversationId = conversation.id
@@ -1353,8 +1391,20 @@ internal fun SpotChatApp(
         }
     }
 
+    fun handleTileIntent(intent: Intent) {
+        if (!intent.getBooleanExtra(RecentChatsTileService.EXTRA_TILE_OPEN, false)) {
+            return
+        }
+        val conversationId =
+            intent.getStringExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID)
+                ?: return
+        val conversation = conversationById(conversationId) ?: return
+        openConversation(conversation)
+    }
+
     LaunchedEffect(notificationIntent, trustedPeers.size) {
         val intent = notificationIntent ?: return@LaunchedEffect
+        handleTileIntent(intent)
         handleNotificationIntent(intent)
         onNotificationIntentHandled(intent)
     }
