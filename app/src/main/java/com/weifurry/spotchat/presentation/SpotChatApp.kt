@@ -57,6 +57,8 @@ import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.StarRate
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.runtime.Composable
@@ -174,6 +176,7 @@ private enum class AppSurface {
     ChatInfo,
     MessageActions,
     MessageSearch,
+    StarredMessages,
     SecurityCheck,
     Profile
 }
@@ -211,6 +214,9 @@ private data class ChatBubble(
     val voiceDurationMs: Long? = null,
     val voiceAudioBytes: ByteArray? = null
 )
+
+private fun ChatBubble.stableStarId(): String =
+    messageId ?: "${timestamp}:${senderName.orEmpty()}:$mine:${kind.name}:${previewText()}"
 
 private data class ChatConversation(
     val id: String,
@@ -304,6 +310,7 @@ private const val SEARCH_MESSAGE_REMOTE_INPUT_KEY = "spotchat_search_message"
 private const val MAX_CUSTOM_MESSAGE_CHARS = 280
 private const val MAX_SEARCH_QUERY_CHARS = 48
 private const val MAX_SEARCH_RESULTS = 12
+private const val MAX_STARRED_RESULTS = 24
 private const val MAX_QUOTED_MESSAGE_CHARS = 72
 private const val NEARBY_GROUP_CONVERSATION_ID = "group:nearby"
 private const val NEARBY_GROUP_TITLE = "附近群聊"
@@ -566,6 +573,7 @@ internal fun SpotChatApp(
     val unreadCounts = remember { mutableStateMapOf<String, Int>() }
     val pinnedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val mutedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
+    val starredMessageIdsByConversation = remember { mutableStateMapOf<String, Set<String>>() }
     val outgoingMessages = remember { mutableStateMapOf<String, OutgoingMessageRef>() }
     val deliveredCounts = remember { mutableStateMapOf<String, Int>() }
     val deliveredReceiptsByMessage = remember { mutableStateMapOf<String, Set<String>>() }
@@ -693,6 +701,29 @@ internal fun SpotChatApp(
                     message.searchText().contains(cleanQuery, ignoreCase = true)
             }
             .take(MAX_SEARCH_RESULTS)
+    }
+
+    fun starredMessageIds(conversationId: String): Set<String> =
+        starredMessageIdsByConversation[conversationId].orEmpty()
+
+    fun isMessageStarred(
+        conversationId: String,
+        message: ChatBubble
+    ): Boolean =
+        message.stableStarId() in starredMessageIds(conversationId)
+
+    fun starredMessages(conversationId: String): List<ChatBubble> {
+        val starredIds = starredMessageIds(conversationId)
+        if (starredIds.isEmpty()) {
+            return emptyList()
+        }
+        return messagesForConversation(conversationId)
+            .asReversed()
+            .filter { message ->
+                message.deliveryState != DeliveryState.System &&
+                    message.stableStarId() in starredIds
+            }
+            .take(MAX_STARRED_RESULTS)
     }
 
     fun peerReachabilityText(fingerprint: String): String =
@@ -970,6 +1001,7 @@ internal fun SpotChatApp(
             readReceiptsByMessage.remove(messageId)
         }
         unreadCounts.remove(conversationId)
+        starredMessageIdsByConversation.remove(conversationId)
         notifier.clearConversation(conversationId)
     }
 
@@ -1233,6 +1265,26 @@ internal fun SpotChatApp(
                 encrypted = true,
                 conversationId = conversation.id
             )
+        }
+    }
+
+    fun toggleMessageStarred(
+        conversation: ChatConversation,
+        message: ChatBubble
+    ) {
+        val starId = message.stableStarId()
+        val currentIds = starredMessageIds(conversation.id)
+        if (starId in currentIds) {
+            val updatedIds = currentIds - starId
+            if (updatedIds.isEmpty()) {
+                starredMessageIdsByConversation.remove(conversation.id)
+            } else {
+                starredMessageIdsByConversation[conversation.id] = updatedIds
+            }
+            trustState = "已取消星标"
+        } else {
+            starredMessageIdsByConversation[conversation.id] = currentIds + starId
+            trustState = "已星标消息"
         }
     }
 
@@ -2427,6 +2479,7 @@ internal fun SpotChatApp(
                     appSurface == AppSurface.ChatInfo ||
                     appSurface == AppSurface.MessageActions ||
                     appSurface == AppSurface.MessageSearch ||
+                    appSurface == AppSurface.StarredMessages ||
                     appSurface == AppSurface.SecurityCheck
                 ) {
                     SlideInOverlay(
@@ -2444,6 +2497,7 @@ internal fun SpotChatApp(
                             pendingPeer = pendingPeer,
                             trustedPeerCount = trustedPeers.size,
                             messages = messagesForConversation(selectedConversation.id),
+                            starredMessageIds = starredMessageIds(selectedConversation.id),
                             onSelectMode = ::selectMode,
                             onConfirmPairing = ::confirmPairing,
                             onRejectPairing = ::rejectPairing,
@@ -2485,9 +2539,13 @@ internal fun SpotChatApp(
                             isPinned = pinnedConversationIds[selectedConversation.id] == true,
                             isMuted = mutedConversationIds[selectedConversation.id] == true,
                             unreadCount = unreadCounts[selectedConversation.id] ?: 0,
+                            starredCount = starredMessageIds(selectedConversation.id).size,
                             onNavigateBack = dismissOverlay,
                             onOpenSecurityCheck = {
                                 appSurface = AppSurface.SecurityCheck
+                            },
+                            onOpenStarredMessages = {
+                                appSurface = AppSurface.StarredMessages
                             },
                             onSearchMessages = {
                                 appSurface = AppSurface.MessageSearch
@@ -2529,6 +2587,26 @@ internal fun SpotChatApp(
                     }
                 }
 
+                if (appSurface == AppSurface.StarredMessages) {
+                    SlideInOverlay(
+                        onDismissed = {
+                            appSurface = AppSurface.ChatInfo
+                        }
+                    ) { dismissOverlay ->
+                        WatchStarredMessagesSurface(
+                            isRoundScreen = isRoundScreen,
+                            conversation = selectedConversation,
+                            messages = starredMessages(selectedConversation.id),
+                            starredMessageIds = starredMessageIds(selectedConversation.id),
+                            onNavigateBack = dismissOverlay,
+                            onOpenMessage = { message ->
+                                selectedActionMessage = message
+                                appSurface = AppSurface.MessageActions
+                            }
+                        )
+                    }
+                }
+
                 if (appSurface == AppSurface.MessageSearch) {
                     SlideInOverlay(
                         onDismissed = {
@@ -2540,6 +2618,7 @@ internal fun SpotChatApp(
                             conversation = selectedConversation,
                             query = searchQuery,
                             results = searchMessages(selectedConversation.id, searchQuery),
+                            starredMessageIds = starredMessageIds(selectedConversation.id),
                             onNavigateBack = dismissOverlay,
                             onSearchAgain = ::openMessageSearchInput,
                             onOpenMessage = { message ->
@@ -2565,7 +2644,11 @@ internal fun SpotChatApp(
                                 isRoundScreen = isRoundScreen,
                                 conversation = selectedConversation,
                                 message = actionMessage,
+                                isStarred = isMessageStarred(selectedConversation.id, actionMessage),
                                 onNavigateBack = dismissOverlay,
+                                onToggleStarred = {
+                                    toggleMessageStarred(selectedConversation, actionMessage)
+                                },
                                 onOpenCustomMessageInput = {
                                     pendingQuotedMessage = null
                                     appSurface = AppSurface.Chat
@@ -3376,8 +3459,10 @@ private fun WatchChatInfoSurface(
     isPinned: Boolean,
     isMuted: Boolean,
     unreadCount: Int,
+    starredCount: Int,
     onNavigateBack: () -> Unit,
     onOpenSecurityCheck: () -> Unit,
+    onOpenStarredMessages: () -> Unit,
     onSearchMessages: () -> Unit,
     onTogglePinned: () -> Unit,
     onToggleMuted: () -> Unit,
@@ -3497,6 +3582,31 @@ private fun WatchChatInfoSurface(
                         )
                     }
 
+                    Row(
+                        modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
+                        horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        InfoMetricPill(
+                            label = "星标",
+                            value = starredCount.coerceAtMost(99).toString(),
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                        InfoMetricPill(
+                            label = "可达",
+                            value = reachability.shortReachabilityLabel(),
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                        InfoMetricPill(
+                            label = "类型",
+                            value = conversation.kind.label,
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
                     ChatInfoLine(
                         icon =
                             if (conversation.kind == ConversationKind.Group) {
@@ -3580,6 +3690,13 @@ private fun WatchChatInfoSurface(
                             onClick = onToggleUnread
                         )
                         MessageActionButton(
+                            icon = Icons.Filled.StarRate,
+                            text = "星标消息",
+                            selected = starredCount > 0,
+                            compact = compact,
+                            onClick = onOpenStarredMessages
+                        )
+                        MessageActionButton(
                             icon = Icons.Filled.Lock,
                             text = "安全校验",
                             selected = true,
@@ -3622,7 +3739,9 @@ private fun WatchMessageActionsSurface(
     isRoundScreen: Boolean,
     conversation: ChatConversation,
     message: ChatBubble,
+    isStarred: Boolean,
     onNavigateBack: () -> Unit,
+    onToggleStarred: () -> Unit,
     onOpenCustomMessageInput: () -> Unit,
     onSendQuickReply: (String) -> Unit,
     onReplyToMessage: () -> Unit,
@@ -3676,7 +3795,8 @@ private fun WatchMessageActionsSurface(
                         MessageCapsule(
                             message = message,
                             compact = compact,
-                            accent = accent
+                            accent = accent,
+                            isStarred = isStarred
                         )
                     }
 
@@ -3693,6 +3813,13 @@ private fun WatchMessageActionsSurface(
                                 onClick = onRetryMessage
                             )
                         }
+                        MessageActionButton(
+                            icon = if (isStarred) Icons.Filled.StarRate else Icons.Filled.StarBorder,
+                            text = if (isStarred) "取消星标" else "星标消息",
+                            selected = isStarred,
+                            compact = compact,
+                            onClick = onToggleStarred
+                        )
                         MessageActionButton(
                             icon = Icons.Filled.Keyboard,
                             text = "输入消息",
@@ -3735,6 +3862,7 @@ private fun WatchMessageSearchSurface(
     conversation: ChatConversation,
     query: String,
     results: List<ChatBubble>,
+    starredMessageIds: Set<String>,
     onNavigateBack: () -> Unit,
     onSearchAgain: () -> Unit,
     onOpenMessage: (ChatBubble) -> Unit
@@ -3825,6 +3953,94 @@ private fun WatchMessageSearchSurface(
                                     message = message,
                                     compact = compact,
                                     accent = accent,
+                                    isStarred = message.stableStarId() in starredMessageIds,
+                                    onClick = { onOpenMessage(message) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WatchStarredMessagesSurface(
+    isRoundScreen: Boolean,
+    conversation: ChatConversation,
+    messages: List<ChatBubble>,
+    starredMessageIds: Set<String>,
+    onNavigateBack: () -> Unit,
+    onOpenMessage: (ChatBubble) -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
+        val accent = conversationAccentColor(conversation)
+        val scrollState = rememberScrollState()
+
+        WatchFrame(
+            surfaceSpec = surfaceSpec,
+            accent = accent,
+            modifier = Modifier.padding(horizontal = surfaceSpec.chatHorizontalPadding)
+        ) {
+            ScreenScaffold(
+                scrollState = scrollState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(),
+                scrollIndicator = {}
+            ) { scaffoldPadding ->
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .padding(scaffoldPadding)
+                            .padding(
+                                top = surfaceSpec.chatTopPadding,
+                                bottom = surfaceSpec.chatBottomPadding
+                            ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp)
+                ) {
+                    ChatInfoHeader(
+                        conversation = conversation,
+                        accent = accent,
+                        title = "星标消息",
+                        subtitle = conversation.title,
+                        surfaceSpec = surfaceSpec,
+                        onNavigateBack = onNavigateBack
+                    )
+
+                    if (messages.isEmpty()) {
+                        SearchEmptyState(
+                            text = "还没有星标消息",
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
+                        )
+                    } else {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.86f else 0.94f),
+                            verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 7.dp)
+                        ) {
+                            Text(
+                                text = "${messages.size} 条星标",
+                                color = chatRowMuted,
+                                fontSize = if (compact) 9.sp else 10.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            messages.forEach { message ->
+                                MessageCapsule(
+                                    message = message,
+                                    compact = compact,
+                                    accent = accent,
+                                    isStarred = message.stableStarId() in starredMessageIds,
                                     onClick = { onOpenMessage(message) }
                                 )
                             }
@@ -4887,6 +5103,7 @@ private fun WatchChatSurface(
     pendingPeer: TrustedPeer?,
     trustedPeerCount: Int,
     messages: List<ChatBubble>,
+    starredMessageIds: Set<String>,
     onSelectMode: (TransportMode) -> Unit,
     onConfirmPairing: () -> Unit,
     onRejectPairing: () -> Unit,
@@ -4962,6 +5179,7 @@ private fun WatchChatSurface(
                                 message = message,
                                 compact = compact,
                                 accent = accent,
+                                isStarred = message.stableStarId() in starredMessageIds,
                                 onClick =
                                     if (message.deliveryState == DeliveryState.System) {
                                         null
@@ -5068,6 +5286,7 @@ private fun MessageCapsule(
     message: ChatBubble,
     compact: Boolean,
     accent: Color,
+    isStarred: Boolean = false,
     onClick: (() -> Unit)? = null
 ) {
     val alignment = if (message.mine) Alignment.CenterEnd else Alignment.CenterStart
@@ -5178,6 +5397,17 @@ private fun MessageCapsule(
                         overflow = TextOverflow.Ellipsis
                     )
                     Spacer(modifier = Modifier.weight(1f))
+                    if (isStarred) {
+                        Icon(
+                            imageVector = Icons.Filled.StarRate,
+                            contentDescription = "已星标",
+                            tint = chatAmber,
+                            modifier =
+                                Modifier
+                                    .padding(end = 4.dp)
+                                    .size(if (compact) 10.dp else 11.dp)
+                        )
+                    }
                     Text(
                         text = message.timestamp,
                         color = foreground.copy(alpha = 0.62f),
@@ -5432,6 +5662,14 @@ private fun conversationPreview(
 
 private fun directConversationId(peerFingerprint: String): String =
     "$DIRECT_CONVERSATION_PREFIX$peerFingerprint"
+
+private fun String.shortReachabilityLabel(): String =
+    when {
+        contains("当前可发送") || contains("可发送") -> "可发"
+        contains("最近发现") -> "最近"
+        contains("等待") -> "等待"
+        else -> take(4)
+    }
 
 private fun formatDuration(durationMs: Long): String {
     val totalSeconds = (durationMs / 1_000L).coerceAtLeast(1L)
