@@ -583,6 +583,7 @@ internal fun SpotChatApp(
     var activePlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     val greetedPeers = remember { mutableSetOf<String>() }
     val knownPeersByFingerprint = remember { mutableStateMapOf<String, TransportPeer>() }
+    val peerLastSeenAt = remember { mutableStateMapOf<String, Long>() }
 
     fun hasBluetoothRuntimePermissions(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
@@ -666,8 +667,37 @@ internal fun SpotChatApp(
     fun messagesForConversation(conversationId: String): List<ChatBubble> =
         conversationMessages[conversationId].orEmpty()
 
+    fun peerReachabilityText(fingerprint: String): String =
+        if (knownPeersByFingerprint[fingerprint] != null) {
+            "当前可发送"
+        } else {
+            peerLastSeenAt[fingerprint]
+                ?.let { lastSeen -> "最近发现 ${formatClockTime(lastSeen)}" }
+                ?: "等待发现"
+        }
+
+    fun groupReachabilityText(memberFingerprints: List<String>): String {
+        if (memberFingerprints.isEmpty()) {
+            return "等待成员"
+        }
+        val reachableCount = memberFingerprints.count { fingerprint ->
+            knownPeersByFingerprint[fingerprint] != null
+        }
+        if (reachableCount > 0) {
+            return "$reachableCount/${memberFingerprints.size} 可发送"
+        }
+        val lastSeenAt =
+            memberFingerprints
+                .mapNotNull { fingerprint -> peerLastSeenAt[fingerprint] }
+                .maxOrNull()
+        return lastSeenAt
+            ?.let { lastSeen -> "最近发现 ${formatClockTime(lastSeen)}" }
+            ?: "等待发现"
+    }
+
     fun conversationById(conversationId: String): ChatConversation? {
         if (conversationId == NEARBY_GROUP_CONVERSATION_ID) {
+            val memberFingerprints = trustedPeers.map { peer -> peer.fingerprint }
             return ChatConversation(
                 id = NEARBY_GROUP_CONVERSATION_ID,
                 kind = ConversationKind.Group,
@@ -676,9 +706,9 @@ internal fun SpotChatApp(
                     if (trustedPeers.isEmpty()) {
                         "群聊 · 等待成员"
                     } else {
-                        "群聊 · ${trustedPeers.size} 位成员"
+                        "群聊 · ${trustedPeers.size} 位成员 · ${groupReachabilityText(memberFingerprints)}"
                     },
-                memberFingerprints = trustedPeers.map { peer -> peer.fingerprint }
+                memberFingerprints = memberFingerprints
             )
         }
 
@@ -693,12 +723,7 @@ internal fun SpotChatApp(
             id = directConversationId(peer.fingerprint),
             kind = ConversationKind.Direct,
             title = peer.deviceName,
-            subtitle =
-                if (knownPeersByFingerprint[peer.fingerprint] == null) {
-                    "私聊 · 待发现"
-                } else {
-                    "私聊 · 可发送"
-                },
+            subtitle = "私聊 · ${peerReachabilityText(peer.fingerprint)}",
             peerFingerprint = peer.fingerprint,
             memberFingerprints = listOf(peer.fingerprint)
         )
@@ -943,6 +968,7 @@ internal fun SpotChatApp(
         trustedPeerStore.forget(storedPeer.fingerprint, storedPeer.publicKey)
         removeTrustedPeer(storedPeer)
         knownPeersByFingerprint.remove(storedPeer.fingerprint)
+        peerLastSeenAt.remove(storedPeer.fingerprint)
         if (activePeerFingerprint == storedPeer.fingerprint) {
             activePeerFingerprint = null
         }
@@ -966,6 +992,7 @@ internal fun SpotChatApp(
         peer: TransportPeer
     ) {
         knownPeersByFingerprint[fingerprint] = peer
+        peerLastSeenAt[fingerprint] = System.currentTimeMillis()
     }
 
     fun routeForPeer(fingerprint: String): TransportPeer? =
@@ -982,6 +1009,7 @@ internal fun SpotChatApp(
 
     fun conversations(): List<ChatConversation> =
         buildList {
+            val groupMemberFingerprints = trustedPeers.map { peer -> peer.fingerprint }
             add(
                 ChatConversation(
                     id = NEARBY_GROUP_CONVERSATION_ID,
@@ -991,9 +1019,9 @@ internal fun SpotChatApp(
                         if (trustedPeers.isEmpty()) {
                             "群聊 · 等待成员"
                         } else {
-                            "群聊 · ${trustedPeers.size} 位成员"
+                            "群聊 · ${trustedPeers.size} 位成员 · ${groupReachabilityText(groupMemberFingerprints)}"
                         },
-                    memberFingerprints = trustedPeers.map { peer -> peer.fingerprint }
+                    memberFingerprints = groupMemberFingerprints
                 )
             )
             trustedPeers.forEach { peer ->
@@ -1002,12 +1030,7 @@ internal fun SpotChatApp(
                         id = directConversationId(peer.fingerprint),
                         kind = ConversationKind.Direct,
                         title = peer.deviceName,
-                        subtitle =
-                            if (routeForPeer(peer.fingerprint) == null) {
-                                "私聊 · 待发现"
-                            } else {
-                                "私聊 · 可发送"
-                            },
+                        subtitle = "私聊 · ${peerReachabilityText(peer.fingerprint)}",
                         peerFingerprint = peer.fingerprint,
                         memberFingerprints = listOf(peer.fingerprint)
                     )
@@ -1041,7 +1064,13 @@ internal fun SpotChatApp(
         )
     }
 
-    LaunchedEffect(conversationMessages.toMap(), unreadCounts.toMap(), trustedPeers.size) {
+    LaunchedEffect(
+        conversationMessages.toMap(),
+        unreadCounts.toMap(),
+        trustedPeers.size,
+        knownPeersByFingerprint.toMap(),
+        peerLastSeenAt.toMap()
+    ) {
         updateWearStateSnapshot()
     }
 
@@ -2303,6 +2332,14 @@ internal fun SpotChatApp(
                             conversation = selectedConversation,
                             trustedPeers = trustedPeers,
                             fingerprint = localFingerprint,
+                            reachability =
+                                if (selectedConversation.kind == ConversationKind.Direct) {
+                                    selectedConversation.peerFingerprint
+                                        ?.let { fingerprint -> peerReachabilityText(fingerprint) }
+                                        ?: "等待发现"
+                                } else {
+                                    groupReachabilityText(selectedConversation.memberFingerprints)
+                                },
                             messages = messagesForConversation(selectedConversation.id),
                             onNavigateBack = dismissOverlay,
                             onClearConversation = {
@@ -3109,6 +3146,7 @@ private fun WatchChatInfoSurface(
     conversation: ChatConversation,
     trustedPeers: List<StoredTrustedPeer>,
     fingerprint: String,
+    reachability: String,
     messages: List<ChatBubble>,
     onNavigateBack: () -> Unit,
     onClearConversation: () -> Unit,
@@ -3224,6 +3262,15 @@ private fun WatchChatInfoSurface(
                         icon = Icons.AutoMirrored.Filled.Chat,
                         label = "类型",
                         value = conversation.kind.label,
+                        accent = accent,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec
+                    )
+
+                    ChatInfoLine(
+                        icon = Icons.Filled.Lan,
+                        label = "可达状态",
+                        value = reachability,
                         accent = accent,
                         compact = compact,
                         surfaceSpec = surfaceSpec
@@ -4429,10 +4476,10 @@ private fun ChatHeroHeader(
             Row(
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                StatusDot(trustState = trustState, size = if (compact) 6.dp else 7.dp)
+                StatusDot(trustState = conversation.subtitle, size = if (compact) 6.dp else 7.dp)
                 Spacer(modifier = Modifier.width(5.dp))
                 Text(
-                    text = "${conversation.kind.label} · ${transportMode.label} · $trustState",
+                    text = "${transportMode.label} · ${conversation.subtitle}",
                     color = chatRowMuted,
                     fontSize = if (compact) 9.sp else 10.sp,
                     maxLines = 1,
@@ -4752,11 +4799,14 @@ private fun VoiceButton(
 private fun nowTime(): String =
     SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
 
+private fun formatClockTime(epochMillis: Long): String =
+    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(epochMillis))
+
 @Composable
 private fun statusColor(trustState: String): Color =
     when {
         trustState.contains("失败") || trustState.contains("拒绝") -> MaterialTheme.colorScheme.error
-        trustState.contains("待") || trustState.contains("未") -> chatAmber
+        trustState.contains("待") || trustState.contains("未") || trustState.contains("最近发现") -> chatAmber
         else -> chatGreen
     }
 
