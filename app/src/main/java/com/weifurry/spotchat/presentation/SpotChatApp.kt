@@ -1288,6 +1288,46 @@ internal fun SpotChatApp(
         }
     }
 
+    fun deleteMessageForMe(
+        conversation: ChatConversation,
+        message: ChatBubble
+    ) {
+        val starId = message.stableStarId()
+        val displayMessageId = message.messageId
+        conversationMessages[conversation.id] =
+            messagesForConversation(conversation.id)
+                .filterNot { existingMessage ->
+                    existingMessage.stableStarId() == starId
+                }
+        val updatedStarIds = starredMessageIds(conversation.id) - starId
+        if (updatedStarIds.isEmpty()) {
+            starredMessageIdsByConversation.remove(conversation.id)
+        } else {
+            starredMessageIdsByConversation[conversation.id] = updatedStarIds
+        }
+        if (displayMessageId != null) {
+            pendingOutboundMessages.remove(displayMessageId)
+            pendingOutboundVoiceMessages.remove(displayMessageId)
+            deliveredCounts.remove(displayMessageId)
+            deliveredReceiptsByMessage.remove(displayMessageId)
+            readCounts.remove(displayMessageId)
+            readReceiptsByMessage.remove(displayMessageId)
+            outgoingMessages
+                .filterValues { outgoingMessage ->
+                    outgoingMessage.conversationId == conversation.id &&
+                        outgoingMessage.displayMessageId == displayMessageId
+                }
+                .keys
+                .toList()
+                .forEach { packetMessageId -> outgoingMessages.remove(packetMessageId) }
+        }
+        selectedActionMessage = null
+        pendingQuotedMessage =
+            pendingQuotedMessage?.takeUnless { quote -> quote.messageId == displayMessageId }
+        appSurface = AppSurface.Chat
+        trustState = "已删除本机消息"
+    }
+
     fun openConversation(conversation: ChatConversation) {
         activeConversationId = conversation.id
         clearConversationAlerts(conversation.id)
@@ -2649,6 +2689,9 @@ internal fun SpotChatApp(
                                 onToggleStarred = {
                                     toggleMessageStarred(selectedConversation, actionMessage)
                                 },
+                                onDeleteMessage = {
+                                    deleteMessageForMe(selectedConversation, actionMessage)
+                                },
                                 onOpenCustomMessageInput = {
                                     pendingQuotedMessage = null
                                     appSurface = AppSurface.Chat
@@ -3742,6 +3785,7 @@ private fun WatchMessageActionsSurface(
     isStarred: Boolean,
     onNavigateBack: () -> Unit,
     onToggleStarred: () -> Unit,
+    onDeleteMessage: () -> Unit,
     onOpenCustomMessageInput: () -> Unit,
     onSendQuickReply: (String) -> Unit,
     onReplyToMessage: () -> Unit,
@@ -3833,6 +3877,14 @@ private fun WatchMessageActionsSurface(
                             selected = false,
                             compact = compact,
                             onClick = onReplyToMessage
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.Delete,
+                            text = "删除本机消息",
+                            selected = false,
+                            destructive = true,
+                            compact = compact,
+                            onClick = onDeleteMessage
                         )
                         customMessageQuickChoices.take(2).forEach { reply ->
                             MessageActionButton(
