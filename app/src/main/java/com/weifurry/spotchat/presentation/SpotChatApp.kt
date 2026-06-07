@@ -3000,6 +3000,10 @@ internal fun SpotChatApp(
                     currentConversations.filter { conversation ->
                         archivedConversationIds[conversation.id] == true
                     }
+                val archivedUnreadCount =
+                    archivedConversationList.count { conversation ->
+                        (unreadCounts[conversation.id] ?: 0) > 0
+                    }
                 val selectedConversation =
                     currentConversations.firstOrNull { conversation -> conversation.id == activeConversationId }
                         ?: currentConversations.first()
@@ -3012,6 +3016,7 @@ internal fun SpotChatApp(
                         activeFilter = chatListFilter,
                         favoriteConversationIds = favoriteConversationIds,
                         archivedCount = archivedConversationList.size,
+                        archivedUnreadCount = archivedUnreadCount,
                         unreadCounts = unreadCounts,
                         pinnedConversationIds = pinnedConversationIds,
                         isConversationMuted = ::isConversationMuted,
@@ -3076,6 +3081,7 @@ internal fun SpotChatApp(
                         WatchArchivedChatsSurface(
                             isRoundScreen = isRoundScreen,
                             conversations = archivedConversationList,
+                            archivedUnreadCount = archivedUnreadCount,
                             messagesByConversation = conversationMessages,
                             unreadCounts = unreadCounts,
                             pinnedConversationIds = pinnedConversationIds,
@@ -3530,6 +3536,7 @@ private fun WatchConversationListSurface(
     activeFilter: ChatListFilter,
     favoriteConversationIds: Map<String, Boolean>,
     archivedCount: Int,
+    archivedUnreadCount: Int,
     unreadCounts: Map<String, Int>,
     pinnedConversationIds: Map<String, Boolean>,
     isConversationMuted: (String) -> Boolean,
@@ -3682,6 +3689,7 @@ private fun WatchConversationListSurface(
                     if (archivedCount > 0) {
                         ArchivedChatsCapsule(
                             archivedCount = archivedCount,
+                            unreadCount = archivedUnreadCount,
                             compact = compact,
                             surfaceSpec = surfaceSpec,
                             onClick = onOpenArchivedChats
@@ -4234,6 +4242,7 @@ private fun EmptyFilterCapsule(
 @Composable
 private fun ArchivedChatsCapsule(
     archivedCount: Int,
+    unreadCount: Int,
     compact: Boolean,
     surfaceSpec: WatchSurfaceSpec,
     onClick: () -> Unit
@@ -4279,12 +4288,22 @@ private fun ArchivedChatsCapsule(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = "$archivedCount 个聊天",
-                color = chatRowMuted,
+                text =
+                    if (unreadCount > 0) {
+                        "$archivedCount 个聊天 · $unreadCount 个未读"
+                    } else {
+                        "$archivedCount 个聊天"
+                    },
+                color = if (unreadCount > 0) Color.White else chatRowMuted,
                 fontSize = if (compact) 9.sp else 10.sp,
+                fontWeight = if (unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+        if (unreadCount > 0) {
+            Spacer(modifier = Modifier.width(6.dp))
+            UnreadBadge(count = unreadCount)
         }
     }
 }
@@ -4502,6 +4521,7 @@ private fun WatchForwardMessageSurface(
 private fun WatchArchivedChatsSurface(
     isRoundScreen: Boolean,
     conversations: List<ChatConversation>,
+    archivedUnreadCount: Int,
     messagesByConversation: Map<String, List<ChatBubble>>,
     unreadCounts: Map<String, Int>,
     pinnedConversationIds: Map<String, Boolean>,
@@ -4555,6 +4575,8 @@ private fun WatchArchivedChatsSurface(
                         subtitle =
                             if (conversations.isEmpty()) {
                                 "没有隐藏的聊天"
+                            } else if (archivedUnreadCount > 0) {
+                                "${conversations.size} 个聊天 · $archivedUnreadCount 个未读"
                             } else {
                                 "${conversations.size} 个聊天"
                             },
