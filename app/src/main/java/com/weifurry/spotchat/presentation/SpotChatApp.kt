@@ -51,8 +51,11 @@ import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MarkChatUnread
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PersonRemove
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -561,6 +564,8 @@ internal fun SpotChatApp(
             }
         }
     val unreadCounts = remember { mutableStateMapOf<String, Int>() }
+    val pinnedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
+    val mutedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val outgoingMessages = remember { mutableStateMapOf<String, OutgoingMessageRef>() }
     val deliveredCounts = remember { mutableStateMapOf<String, Int>() }
     val deliveredReceiptsByMessage = remember { mutableStateMapOf<String, Set<String>>() }
@@ -862,7 +867,9 @@ internal fun SpotChatApp(
             (appSurface != AppSurface.Chat || activeConversationId != conversationId)
         ) {
             unreadCounts[conversationId] = (unreadCounts[conversationId] ?: 0) + 1
-            notifyIncomingMessage(conversationId, message)
+            if (mutedConversationIds[conversationId] != true) {
+                notifyIncomingMessage(conversationId, message)
+            }
         }
     }
 
@@ -998,6 +1005,8 @@ internal fun SpotChatApp(
         removeConversationRuntimeState(conversation.id)
         conversationMessages.remove(conversation.id)
         conversationUpdateOrder.remove(conversation.id)
+        pinnedConversationIds.remove(conversation.id)
+        mutedConversationIds.remove(conversation.id)
         selectedActionMessage = null
         pendingQuotedMessage = null
         activeConversationId = NEARBY_GROUP_CONVERSATION_ID
@@ -1030,6 +1039,21 @@ internal fun SpotChatApp(
             capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
     }
 
+    fun sortConversations(conversations: List<ChatConversation>): List<ChatConversation> =
+        conversations.sortedWith(
+            compareByDescending<ChatConversation> { conversation ->
+                pinnedConversationIds[conversation.id] == true
+            }.thenByDescending { conversation ->
+                (unreadCounts[conversation.id] ?: 0) > 0
+            }.thenByDescending { conversation ->
+                conversationUpdateOrder[conversation.id] ?: 0L
+            }.thenBy { conversation ->
+                if (conversation.id == NEARBY_GROUP_CONVERSATION_ID) 0 else 1
+            }.thenBy { conversation ->
+                conversation.title.lowercase(Locale.getDefault())
+            }
+        )
+
     fun conversations(): List<ChatConversation> =
         buildList {
             val groupMemberFingerprints = trustedPeers.map { peer -> peer.fingerprint }
@@ -1059,7 +1083,7 @@ internal fun SpotChatApp(
                     )
                 )
             }
-        }
+        }.let(::sortConversations)
 
     fun activeConversation(): ChatConversation =
         conversations().firstOrNull { conversation -> conversation.id == activeConversationId }
@@ -1076,7 +1100,9 @@ internal fun SpotChatApp(
                     title = conversation.title,
                     subtitle = conversationPreview(conversation, lastMessage),
                     unreadCount = unreadCounts[conversation.id] ?: 0,
-                    updatedAtEpochMillis = conversationUpdateOrder[conversation.id] ?: 0L
+                    updatedAtEpochMillis = conversationUpdateOrder[conversation.id] ?: 0L,
+                    isPinned = pinnedConversationIds[conversation.id] == true,
+                    isMuted = mutedConversationIds[conversation.id] == true
                 )
             }
         wearStateStore.save(
@@ -1090,6 +1116,8 @@ internal fun SpotChatApp(
     LaunchedEffect(
         conversationMessages.toMap(),
         unreadCounts.toMap(),
+        pinnedConversationIds.toMap(),
+        mutedConversationIds.toMap(),
         trustedPeers.size,
         knownPeersByFingerprint.toMap(),
         peerLastSeenAt.toMap()
@@ -1157,6 +1185,55 @@ internal fun SpotChatApp(
                     messageId = message.messageId ?: return@forEach
                 )
             }
+    }
+
+    fun toggleConversationPinned(conversation: ChatConversation) {
+        val isPinned = pinnedConversationIds[conversation.id] == true
+        if (isPinned) {
+            pinnedConversationIds.remove(conversation.id)
+        } else {
+            pinnedConversationIds[conversation.id] = true
+        }
+        appendSystemMessage(
+            text = if (isPinned) "已取消置顶" else "已置顶聊天",
+            encrypted = true,
+            conversationId = conversation.id
+        )
+    }
+
+    fun toggleConversationMuted(conversation: ChatConversation) {
+        val isMuted = mutedConversationIds[conversation.id] == true
+        if (isMuted) {
+            mutedConversationIds.remove(conversation.id)
+        } else {
+            mutedConversationIds[conversation.id] = true
+            notifier.clearConversation(conversation.id)
+        }
+        appendSystemMessage(
+            text = if (isMuted) "已恢复通知" else "已静音聊天",
+            encrypted = true,
+            conversationId = conversation.id
+        )
+    }
+
+    fun toggleConversationUnread(conversation: ChatConversation) {
+        val unreadCount = unreadCounts[conversation.id] ?: 0
+        if (unreadCount > 0) {
+            clearConversationAlerts(conversation.id)
+            markConversationRead(conversation.id)
+            appendSystemMessage(
+                text = "已标为已读",
+                encrypted = true,
+                conversationId = conversation.id
+            )
+        } else {
+            unreadCounts[conversation.id] = 1
+            appendSystemMessage(
+                text = "已标为未读",
+                encrypted = true,
+                conversationId = conversation.id
+            )
+        }
     }
 
     fun openConversation(conversation: ChatConversation) {
@@ -2300,6 +2377,8 @@ internal fun SpotChatApp(
                         profile = profile,
                         conversations = currentConversations,
                         unreadCounts = unreadCounts,
+                        pinnedConversationIds = pinnedConversationIds,
+                        mutedConversationIds = mutedConversationIds,
                         messagesByConversation = conversationMessages,
                         transportMode = transportMode,
                         trustState = trustState,
@@ -2401,8 +2480,11 @@ internal fun SpotChatApp(
                                         ?: "等待发现"
                                 } else {
                                     groupReachabilityText(selectedConversation.memberFingerprints)
-                                },
+                            },
                             messages = messagesForConversation(selectedConversation.id),
+                            isPinned = pinnedConversationIds[selectedConversation.id] == true,
+                            isMuted = mutedConversationIds[selectedConversation.id] == true,
+                            unreadCount = unreadCounts[selectedConversation.id] ?: 0,
                             onNavigateBack = dismissOverlay,
                             onOpenSecurityCheck = {
                                 appSurface = AppSurface.SecurityCheck
@@ -2410,6 +2492,15 @@ internal fun SpotChatApp(
                             onSearchMessages = {
                                 appSurface = AppSurface.MessageSearch
                                 openMessageSearchInput()
+                            },
+                            onTogglePinned = {
+                                toggleConversationPinned(selectedConversation)
+                            },
+                            onToggleMuted = {
+                                toggleConversationMuted(selectedConversation)
+                            },
+                            onToggleUnread = {
+                                toggleConversationUnread(selectedConversation)
                             },
                             onClearConversation = {
                                 clearConversation(selectedConversation)
@@ -2606,6 +2697,8 @@ private fun WatchConversationListSurface(
     profile: ProfileSettings,
     conversations: List<ChatConversation>,
     unreadCounts: Map<String, Int>,
+    pinnedConversationIds: Map<String, Boolean>,
+    mutedConversationIds: Map<String, Boolean>,
     messagesByConversation: Map<String, List<ChatBubble>>,
     transportMode: TransportMode,
     trustState: String,
@@ -2721,6 +2814,8 @@ private fun WatchConversationListSurface(
                             conversation = conversation,
                             lastMessage = lastMessage,
                             unreadCount = unreadCounts[conversation.id] ?: 0,
+                            isPinned = pinnedConversationIds[conversation.id] == true,
+                            isMuted = mutedConversationIds[conversation.id] == true,
                             featured = conversation.id == NEARBY_GROUP_CONVERSATION_ID,
                             surfaceSpec = surfaceSpec,
                             onClick = {
@@ -3099,6 +3194,8 @@ private fun ConversationCapsule(
     conversation: ChatConversation,
     lastMessage: ChatBubble?,
     unreadCount: Int,
+    isPinned: Boolean,
+    isMuted: Boolean,
     featured: Boolean,
     surfaceSpec: WatchSurfaceSpec,
     onClick: () -> Unit
@@ -3166,6 +3263,28 @@ private fun ConversationCapsule(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
+                if (isPinned) {
+                    Icon(
+                        imageVector = Icons.Filled.PushPin,
+                        contentDescription = "已置顶",
+                        tint = accent,
+                        modifier =
+                            Modifier
+                                .padding(start = 4.dp)
+                                .size(if (compact) 10.dp else 12.dp)
+                    )
+                }
+                if (isMuted) {
+                    Icon(
+                        imageVector = Icons.Filled.NotificationsOff,
+                        contentDescription = "已静音",
+                        tint = chatRowMuted,
+                        modifier =
+                            Modifier
+                                .padding(start = 4.dp)
+                                .size(if (compact) 10.dp else 12.dp)
+                    )
+                }
                 Text(
                     text = lastMessage?.timestamp ?: conversation.kind.label,
                     color = chatRowMuted,
@@ -3254,9 +3373,15 @@ private fun WatchChatInfoSurface(
     fingerprint: String,
     reachability: String,
     messages: List<ChatBubble>,
+    isPinned: Boolean,
+    isMuted: Boolean,
+    unreadCount: Int,
     onNavigateBack: () -> Unit,
     onOpenSecurityCheck: () -> Unit,
     onSearchMessages: () -> Unit,
+    onTogglePinned: () -> Unit,
+    onToggleMuted: () -> Unit,
+    onToggleUnread: () -> Unit,
     onClearConversation: () -> Unit,
     onForgetPeer: () -> Unit
 ) {
@@ -3347,6 +3472,31 @@ private fun WatchChatInfoSurface(
                         )
                     }
 
+                    Row(
+                        modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
+                        horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        InfoMetricPill(
+                            label = "置顶",
+                            value = if (isPinned) "开" else "关",
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                        InfoMetricPill(
+                            label = "通知",
+                            value = if (isMuted) "静音" else "开启",
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                        InfoMetricPill(
+                            label = "未读",
+                            value = unreadCount.coerceAtMost(99).toString(),
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
                     ChatInfoLine(
                         icon =
                             if (conversation.kind == ConversationKind.Group) {
@@ -3408,6 +3558,27 @@ private fun WatchChatInfoSurface(
                         modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
                         verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
                     ) {
+                        MessageActionButton(
+                            icon = Icons.Filled.PushPin,
+                            text = if (isPinned) "取消置顶" else "置顶聊天",
+                            selected = isPinned,
+                            compact = compact,
+                            onClick = onTogglePinned
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.NotificationsOff,
+                            text = if (isMuted) "恢复通知" else "静音聊天",
+                            selected = isMuted,
+                            compact = compact,
+                            onClick = onToggleMuted
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.MarkChatUnread,
+                            text = if (unreadCount > 0) "标为已读" else "标为未读",
+                            selected = unreadCount > 0,
+                            compact = compact,
+                            onClick = onToggleUnread
+                        )
                         MessageActionButton(
                             icon = Icons.Filled.Lock,
                             text = "安全校验",

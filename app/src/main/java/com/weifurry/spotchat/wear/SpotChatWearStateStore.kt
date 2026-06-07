@@ -11,7 +11,9 @@ data class WearConversationSummary(
     val title: String,
     val subtitle: String,
     val unreadCount: Int,
-    val updatedAtEpochMillis: Long
+    val updatedAtEpochMillis: Long,
+    val isPinned: Boolean = false,
+    val isMuted: Boolean = false
 )
 
 @Serializable
@@ -52,6 +54,8 @@ class SpotChatWearStateStore(context: Context) {
                     snapshot.conversations
                         .sortedWith(
                             compareByDescending<WearConversationSummary> { conversation ->
+                                conversation.isPinned
+                            }.thenByDescending { conversation ->
                                 conversation.unreadCount > 0
                             }.thenByDescending { conversation -> conversation.updatedAtEpochMillis }
                         )

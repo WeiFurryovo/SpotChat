@@ -108,11 +108,19 @@ class RecentChatsTileService : TileService() {
     private fun conversationRow(
         conversation: WearConversationSummary
     ): LayoutElementBuilders.LayoutElement {
+        val titlePrefix =
+            listOfNotNull(
+                "置顶".takeIf { conversation.isPinned },
+                "静音".takeIf { conversation.isMuted }
+            )
+                .takeIf { flags -> flags.isNotEmpty() }
+                ?.joinToString(separator = " · ", postfix = " · ")
+                .orEmpty()
         val title =
             if (conversation.unreadCount > 0) {
-                "${conversation.title} · ${conversation.unreadCount}"
+                "$titlePrefix${conversation.title} · ${conversation.unreadCount}"
             } else {
-                conversation.title
+                "$titlePrefix${conversation.title}"
             }
         val targetConversationId =
             conversation.id.takeUnless { id -> id == EMPTY_CONVERSATION_ID }
