@@ -199,6 +199,7 @@ private enum class ChatListFilter(
     val label: String
 ) {
     All("全部"),
+    Favorites("收藏"),
     Unread("未读"),
     Direct("私聊"),
     Group("群聊")
@@ -206,10 +207,12 @@ private enum class ChatListFilter(
 
 private fun ChatConversation.matchesFilter(
     filter: ChatListFilter,
-    unreadCounts: Map<String, Int>
+    unreadCounts: Map<String, Int>,
+    favoriteConversationIds: Map<String, Boolean>
 ): Boolean =
     when (filter) {
         ChatListFilter.All -> true
+        ChatListFilter.Favorites -> favoriteConversationIds[id] == true
         ChatListFilter.Unread -> (unreadCounts[id] ?: 0) > 0
         ChatListFilter.Direct -> kind == ConversationKind.Direct
         ChatListFilter.Group -> kind == ConversationKind.Group
@@ -664,6 +667,7 @@ internal fun SpotChatApp(
         }
     val unreadCounts = remember { mutableStateMapOf<String, Int>() }
     val pinnedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
+    val favoriteConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val mutedConversations = remember { mutableStateMapOf<String, MutedConversation>() }
     val archivedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val starredMessageIdsByConversation = remember { mutableStateMapOf<String, Set<String>>() }
@@ -1218,6 +1222,7 @@ internal fun SpotChatApp(
         conversationMessages.remove(conversation.id)
         conversationUpdateOrder.remove(conversation.id)
         pinnedConversationIds.remove(conversation.id)
+        favoriteConversationIds.remove(conversation.id)
         mutedConversations.remove(conversation.id)
         archivedConversationIds.remove(conversation.id)
         disappearingModesByConversation.remove(conversation.id)
@@ -1335,6 +1340,7 @@ internal fun SpotChatApp(
         conversationMessages.toMap(),
         unreadCounts.toMap(),
         pinnedConversationIds.toMap(),
+        favoriteConversationIds.toMap(),
         mutedConversations.toMap(),
         archivedConversationIds.toMap(),
         disappearingModesByConversation.toMap(),
@@ -1416,6 +1422,22 @@ internal fun SpotChatApp(
         }
         appendSystemMessage(
             text = if (isPinned) "已取消置顶" else "已置顶聊天",
+            encrypted = true,
+            conversationId = conversation.id
+        )
+    }
+
+    fun toggleConversationFavorite(conversation: ChatConversation) {
+        val isFavorite = favoriteConversationIds[conversation.id] == true
+        if (isFavorite) {
+            favoriteConversationIds.remove(conversation.id)
+            trustState = "已取消收藏"
+        } else {
+            favoriteConversationIds[conversation.id] = true
+            trustState = "已收藏聊天"
+        }
+        appendSystemMessage(
+            text = if (isFavorite) "已取消收藏" else "已收藏聊天",
             encrypted = true,
             conversationId = conversation.id
         )
@@ -2899,7 +2921,7 @@ internal fun SpotChatApp(
                     }
                 val visibleConversationList =
                     visibleConversationListBase.filter { conversation ->
-                        conversation.matchesFilter(chatListFilter, unreadCounts)
+                        conversation.matchesFilter(chatListFilter, unreadCounts, favoriteConversationIds)
                     }
                 val archivedConversationList =
                     currentConversations.filter { conversation ->
@@ -2915,6 +2937,7 @@ internal fun SpotChatApp(
                         conversations = visibleConversationList,
                         allVisibleConversations = visibleConversationListBase,
                         activeFilter = chatListFilter,
+                        favoriteConversationIds = favoriteConversationIds,
                         archivedCount = archivedConversationList.size,
                         unreadCounts = unreadCounts,
                         pinnedConversationIds = pinnedConversationIds,
@@ -3081,6 +3104,7 @@ internal fun SpotChatApp(
                             },
                             messages = messagesForConversation(selectedConversation.id),
                             isPinned = pinnedConversationIds[selectedConversation.id] == true,
+                            isFavorite = favoriteConversationIds[selectedConversation.id] == true,
                             isMuted = isConversationMuted(selectedConversation.id),
                             muteStatus = muteStatusLabel(selectedConversation.id),
                             muteAction = muteActionLabel(selectedConversation.id),
@@ -3103,6 +3127,9 @@ internal fun SpotChatApp(
                             },
                             onTogglePinned = {
                                 toggleConversationPinned(selectedConversation)
+                            },
+                            onToggleFavorite = {
+                                toggleConversationFavorite(selectedConversation)
                             },
                             onToggleMuted = {
                                 toggleConversationMuted(selectedConversation)
@@ -3387,6 +3414,7 @@ private fun WatchConversationListSurface(
     conversations: List<ChatConversation>,
     allVisibleConversations: List<ChatConversation>,
     activeFilter: ChatListFilter,
+    favoriteConversationIds: Map<String, Boolean>,
     archivedCount: Int,
     unreadCounts: Map<String, Int>,
     pinnedConversationIds: Map<String, Boolean>,
@@ -3493,6 +3521,10 @@ private fun WatchConversationListSurface(
 
                     ChatFilterStrip(
                         activeFilter = activeFilter,
+                        favoriteCount =
+                            allVisibleConversations.count { conversation ->
+                                favoriteConversationIds[conversation.id] == true
+                            },
                         unreadCount =
                             allVisibleConversations.count { conversation ->
                                 (unreadCounts[conversation.id] ?: 0) > 0
@@ -3802,6 +3834,7 @@ private fun OrbitButton(
 @Composable
 private fun ChatFilterStrip(
     activeFilter: ChatListFilter,
+    favoriteCount: Int,
     unreadCount: Int,
     directCount: Int,
     groupCount: Int,
@@ -3827,6 +3860,7 @@ private fun ChatFilterStrip(
                 count =
                     when (filter) {
                         ChatListFilter.All -> directCount + groupCount
+                        ChatListFilter.Favorites -> favoriteCount
                         ChatListFilter.Unread -> unreadCount
                         ChatListFilter.Direct -> directCount
                         ChatListFilter.Group -> groupCount
@@ -4068,6 +4102,7 @@ private fun EmptyFilterCapsule(
             text =
                 when (filter) {
                     ChatListFilter.All -> "还没有聊天"
+                    ChatListFilter.Favorites -> "没有收藏聊天"
                     ChatListFilter.Unread -> "没有未读聊天"
                     ChatListFilter.Direct -> "没有私聊"
                     ChatListFilter.Group -> "没有群聊"
@@ -4509,6 +4544,7 @@ private fun WatchChatInfoSurface(
     reachability: String,
     messages: List<ChatBubble>,
     isPinned: Boolean,
+    isFavorite: Boolean,
     isMuted: Boolean,
     muteStatus: String,
     muteAction: String,
@@ -4521,6 +4557,7 @@ private fun WatchChatInfoSurface(
     onOpenStarredMessages: () -> Unit,
     onSearchMessages: () -> Unit,
     onTogglePinned: () -> Unit,
+    onToggleFavorite: () -> Unit,
     onToggleMuted: () -> Unit,
     onToggleArchived: () -> Unit,
     onToggleUnread: () -> Unit,
@@ -4621,8 +4658,8 @@ private fun WatchChatInfoSurface(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         InfoMetricPill(
-                            label = "置顶",
-                            value = if (isPinned) "开" else "关",
+                            label = "收藏",
+                            value = if (isFavorite) "是" else "否",
                             compact = compact,
                             modifier = Modifier.weight(1f)
                         )
@@ -4732,6 +4769,13 @@ private fun WatchChatInfoSurface(
                             selected = isPinned,
                             compact = compact,
                             onClick = onTogglePinned
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.StarRate,
+                            text = if (isFavorite) "取消收藏" else "收藏聊天",
+                            selected = isFavorite,
+                            compact = compact,
+                            onClick = onToggleFavorite
                         )
                         MessageActionButton(
                             icon = Icons.Filled.NotificationsOff,
