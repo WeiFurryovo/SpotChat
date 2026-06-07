@@ -6,6 +6,7 @@ import kotlinx.serialization.Serializable
 enum class PacketKind {
     HELLO,
     ENCRYPTED_MESSAGE,
+    ENCRYPTED_VOICE_MESSAGE,
     ENCRYPTED_ACK,
     ACK
 }
@@ -30,6 +31,13 @@ data class EncryptedChatMessage(
 data class DeliveryAck(
     val messageId: String,
     val receivedAtEpochMillis: Long
+)
+
+@Serializable
+data class VoiceMessagePayload(
+    val codec: String,
+    val durationMs: Long,
+    val audioBase64: String
 )
 
 @Serializable

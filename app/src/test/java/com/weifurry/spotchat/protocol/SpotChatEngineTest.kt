@@ -7,6 +7,7 @@ import java.util.Base64
 import javax.crypto.AEADBadTagException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -117,5 +118,34 @@ class SpotChatEngineTest {
         assertEquals(PacketKind.ENCRYPTED_ACK, ackPacket.kind)
         assertEquals(phone.localFingerprint, encryptedAck.senderFingerprint)
         assertEquals("message-42", ack.messageId)
+    }
+
+    @Test
+    fun encryptedVoicePacketsCarryAudioPayload() {
+        val watch = SpotChatEngine("手表", SpotChatCrypto.generateIdentity())
+        val phone = SpotChatEngine("手机", SpotChatCrypto.generateIdentity())
+
+        val trustedPhone =
+            watch.openSession(phone.helloPacket().hello ?: error("missing phone hello"))
+        phone.openSession(watch.helloPacket().hello ?: error("missing watch hello"))
+        val audioBytes = byteArrayOf(1, 3, 5, 7, 9)
+        val voicePacket =
+            watch.encryptVoiceForPeer(
+                peerFingerprint = trustedPhone.fingerprint,
+                audioBytes = audioBytes,
+                durationMs = 1_250L
+            )
+        val encryptedVoice =
+            ChatCodec
+                .decode(ChatCodec.encode(voicePacket))
+                .encryptedMessage
+                ?: error("missing encrypted voice")
+        val plain = phone.decryptVoice(encryptedVoice)
+
+        assertEquals(PacketKind.ENCRYPTED_VOICE_MESSAGE, voicePacket.kind)
+        assertEquals(watch.localFingerprint, plain.senderFingerprint)
+        assertEquals(SpotChatEngine.VOICE_CODEC_AAC, plain.codec)
+        assertEquals(1_250L, plain.durationMs)
+        assertArrayEquals(audioBytes, plain.audioBytes)
     }
 }

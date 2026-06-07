@@ -6,6 +6,7 @@ import com.weifurry.spotchat.protocol.DeliveryAck
 import com.weifurry.spotchat.protocol.EncryptedChatMessage
 import com.weifurry.spotchat.protocol.PacketKind
 import com.weifurry.spotchat.protocol.PeerHello
+import com.weifurry.spotchat.protocol.VoiceMessagePayload
 import com.weifurry.spotchat.protocol.WirePacket
 import java.security.KeyPair
 import java.util.Base64
@@ -28,6 +29,37 @@ data class PlainChatMessage(
     val sentAtEpochMillis: Long,
     val text: String
 )
+
+data class PlainVoiceMessage(
+    val messageId: String,
+    val senderFingerprint: String,
+    val sentAtEpochMillis: Long,
+    val codec: String,
+    val durationMs: Long,
+    val audioBytes: ByteArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is PlainVoiceMessage) return false
+
+        return messageId == other.messageId &&
+            senderFingerprint == other.senderFingerprint &&
+            sentAtEpochMillis == other.sentAtEpochMillis &&
+            codec == other.codec &&
+            durationMs == other.durationMs &&
+            audioBytes.contentEquals(other.audioBytes)
+    }
+
+    override fun hashCode(): Int {
+        var result = messageId.hashCode()
+        result = 31 * result + senderFingerprint.hashCode()
+        result = 31 * result + sentAtEpochMillis.hashCode()
+        result = 31 * result + codec.hashCode()
+        result = 31 * result + durationMs.hashCode()
+        result = 31 * result + audioBytes.contentHashCode()
+        return result
+    }
+}
 
 class DuplicateMessageException(
     val messageId: String,
@@ -82,24 +114,87 @@ class SpotChatEngine(
         text: String,
         sentAtEpochMillis: Long = System.currentTimeMillis()
     ): WirePacket {
+        val messageId = UUID.randomUUID().toString()
+        val frame =
+            encryptPayloadForPeer(
+                peerFingerprint = peerFingerprint,
+                kind = PacketKind.ENCRYPTED_MESSAGE,
+                messageId = messageId,
+                plaintext = text.toByteArray(Charsets.UTF_8)
+            )
+        return encryptedPayloadPacket(
+            kind = PacketKind.ENCRYPTED_MESSAGE,
+            messageId = messageId,
+            sentAtEpochMillis = sentAtEpochMillis,
+            frame = frame
+        )
+    }
+
+    fun encryptVoiceForPeer(
+        peerFingerprint: String,
+        audioBytes: ByteArray,
+        durationMs: Long,
+        codec: String = VOICE_CODEC_AAC,
+        sentAtEpochMillis: Long = System.currentTimeMillis()
+    ): WirePacket {
+        require(audioBytes.isNotEmpty()) {
+            "Voice message audio cannot be empty"
+        }
+        require(durationMs > 0L) {
+            "Voice message duration must be positive"
+        }
+        val messageId = UUID.randomUUID().toString()
+        val payload =
+            VoiceMessagePayload(
+                codec = codec,
+                durationMs = durationMs,
+                audioBase64 = base64(audioBytes)
+            )
+        val frame =
+            encryptPayloadForPeer(
+                peerFingerprint = peerFingerprint,
+                kind = PacketKind.ENCRYPTED_VOICE_MESSAGE,
+                messageId = messageId,
+                plaintext = json.encodeToString(payload).toByteArray(Charsets.UTF_8)
+            )
+        return encryptedPayloadPacket(
+            kind = PacketKind.ENCRYPTED_VOICE_MESSAGE,
+            messageId = messageId,
+            sentAtEpochMillis = sentAtEpochMillis,
+            frame = frame
+        )
+    }
+
+    private fun encryptPayloadForPeer(
+        peerFingerprint: String,
+        kind: PacketKind,
+        messageId: String,
+        plaintext: ByteArray
+    ): EncryptedFrame {
         val sessionKey =
             sessions[peerFingerprint]
                 ?: error("No trusted session for peer $peerFingerprint")
-        val messageId = UUID.randomUUID().toString()
         val associatedData =
             payloadAssociatedData(
-                kind = PacketKind.ENCRYPTED_MESSAGE,
+                kind = kind,
                 messageId = messageId,
                 senderFingerprint = localFingerprint
             )
-        val frame =
-            SpotChatCrypto.encrypt(
-                sessionKey = sessionKey,
-                plaintext = text.toByteArray(Charsets.UTF_8),
-                associatedData = associatedData
-            )
-        return WirePacket(
-            kind = PacketKind.ENCRYPTED_MESSAGE,
+        return SpotChatCrypto.encrypt(
+            sessionKey = sessionKey,
+            plaintext = plaintext,
+            associatedData = associatedData
+        )
+    }
+
+    private fun encryptedPayloadPacket(
+        kind: PacketKind,
+        messageId: String,
+        sentAtEpochMillis: Long,
+        frame: EncryptedFrame
+    ): WirePacket =
+        WirePacket(
+            kind = kind,
             encryptedMessage =
                 EncryptedChatMessage(
                     messageId = messageId,
@@ -109,7 +204,6 @@ class SpotChatEngine(
                     ciphertext = base64(frame.ciphertext)
                 )
         )
-    }
 
     fun encryptAckForPeer(
         peerFingerprint: String,
@@ -150,6 +244,38 @@ class SpotChatEngine(
     }
 
     fun decryptText(message: EncryptedChatMessage): PlainChatMessage {
+        val plaintext = decryptPayload(message, PacketKind.ENCRYPTED_MESSAGE, rememberReplay = true)
+        return PlainChatMessage(
+            messageId = message.messageId,
+            senderFingerprint = message.senderFingerprint,
+            sentAtEpochMillis = message.sentAtEpochMillis,
+            text = plaintext.toString(Charsets.UTF_8)
+        )
+    }
+
+    fun decryptVoice(message: EncryptedChatMessage): PlainVoiceMessage {
+        val plaintext = decryptPayload(message, PacketKind.ENCRYPTED_VOICE_MESSAGE, rememberReplay = true)
+        val payload = json.decodeFromString<VoiceMessagePayload>(plaintext.toString(Charsets.UTF_8))
+        return PlainVoiceMessage(
+            messageId = message.messageId,
+            senderFingerprint = message.senderFingerprint,
+            sentAtEpochMillis = message.sentAtEpochMillis,
+            codec = payload.codec,
+            durationMs = payload.durationMs,
+            audioBytes = Base64.getDecoder().decode(payload.audioBase64)
+        )
+    }
+
+    fun decryptAck(message: EncryptedChatMessage): DeliveryAck {
+        val plaintext = decryptPayload(message, PacketKind.ENCRYPTED_ACK, rememberReplay = false)
+        return json.decodeFromString(plaintext.toString(Charsets.UTF_8))
+    }
+
+    private fun decryptPayload(
+        message: EncryptedChatMessage,
+        kind: PacketKind,
+        rememberReplay: Boolean
+    ): ByteArray {
         val replayKey = replayKey(message)
         val sessionKey =
             sessions[message.senderFingerprint]
@@ -165,41 +291,15 @@ class SpotChatEngine(
                 frame = frame,
                 associatedData =
                     payloadAssociatedData(
-                        kind = PacketKind.ENCRYPTED_MESSAGE,
+                        kind = kind,
                         messageId = message.messageId,
                         senderFingerprint = message.senderFingerprint
                     )
             )
-        rememberMessage(replayKey, message)
-        return PlainChatMessage(
-            messageId = message.messageId,
-            senderFingerprint = message.senderFingerprint,
-            sentAtEpochMillis = message.sentAtEpochMillis,
-            text = plaintext.toString(Charsets.UTF_8)
-        )
-    }
-
-    fun decryptAck(message: EncryptedChatMessage): DeliveryAck {
-        val sessionKey =
-            sessions[message.senderFingerprint]
-                ?: error("No trusted session for sender ${message.senderFingerprint}")
-        val frame =
-            EncryptedFrame(
-                nonce = Base64.getDecoder().decode(message.nonce),
-                ciphertext = Base64.getDecoder().decode(message.ciphertext)
-            )
-        val plaintext =
-            SpotChatCrypto.decrypt(
-                sessionKey = sessionKey,
-                frame = frame,
-                associatedData =
-                    payloadAssociatedData(
-                        kind = PacketKind.ENCRYPTED_ACK,
-                        messageId = message.messageId,
-                        senderFingerprint = message.senderFingerprint
-                    )
-            )
-        return json.decodeFromString(plaintext.toString(Charsets.UTF_8))
+        if (rememberReplay) {
+            rememberMessage(replayKey, message)
+        }
+        return plaintext
     }
 
     private fun payloadAssociatedData(
@@ -236,6 +336,7 @@ class SpotChatEngine(
     }
 
     companion object {
+        const val VOICE_CODEC_AAC = "aac-m4a"
         private const val MAX_SEEN_MESSAGES = 512
     }
 }

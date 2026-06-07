@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.RemoteInput
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.MediaPlayer
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
@@ -49,8 +50,11 @@ import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -117,6 +121,8 @@ import com.weifurry.spotchat.transport.SpotChatTransport
 import com.weifurry.spotchat.transport.TransportEvent
 import com.weifurry.spotchat.transport.TransportKind
 import com.weifurry.spotchat.transport.TransportPeer
+import com.weifurry.spotchat.voice.RecordedVoiceMessage
+import com.weifurry.spotchat.voice.SpotChatVoiceRecorder
 import com.weifurry.spotchat.wear.RecentChatsTileService
 import com.weifurry.spotchat.wear.SpotChatWearStateStore
 import com.weifurry.spotchat.wear.WearChatSnapshot
@@ -169,6 +175,11 @@ private enum class ConversationKind(
     Group("群聊")
 }
 
+private enum class ChatMessageKind {
+    Text,
+    Voice
+}
+
 private data class DefaultAvatar(
     val id: String,
     val background: Color,
@@ -183,7 +194,10 @@ private data class ChatBubble(
     val timestamp: String,
     val senderName: String? = null,
     val messageId: String? = null,
-    val deliveryState: DeliveryState = DeliveryState.Received
+    val deliveryState: DeliveryState = DeliveryState.Received,
+    val kind: ChatMessageKind = ChatMessageKind.Text,
+    val voiceDurationMs: Long? = null,
+    val voiceAudioBytes: ByteArray? = null
 )
 
 private data class ChatConversation(
@@ -434,6 +448,10 @@ internal fun SpotChatApp(
         remember(context) {
             SpotChatNotifier(context)
         }
+    val voiceRecorder =
+        remember(context) {
+            SpotChatVoiceRecorder(context)
+        }
     val wearStateStore =
         remember(context) {
             SpotChatWearStateStore(context)
@@ -501,6 +519,8 @@ internal fun SpotChatApp(
     var pairingCode by remember { mutableStateOf<String?>(null) }
     var appSurface by remember { mutableStateOf(AppSurface.ConversationList) }
     var selectedActionMessage by remember { mutableStateOf<ChatBubble?>(null) }
+    var isRecordingVoice by remember { mutableStateOf(false) }
+    var activePlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     val greetedPeers = remember { mutableSetOf<String>() }
     val knownPeersByFingerprint = remember { mutableStateMapOf<String, TransportPeer>() }
 
@@ -536,6 +556,18 @@ internal fun SpotChatApp(
                     "通知回复已开启"
                 } else {
                     "通知权限被拒绝"
+                }
+        }
+
+    val audioPermissionLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            trustState =
+                if (granted) {
+                    "可以录制语音"
+                } else {
+                    "录音权限被拒绝"
                 }
         }
 
@@ -1031,6 +1063,72 @@ internal fun SpotChatApp(
                             }
                     }
 
+                    PacketKind.ENCRYPTED_VOICE_MESSAGE -> {
+                        val encryptedMessage = packet.encryptedMessage ?: return
+                        val storedSender = trustedPeer(encryptedMessage.senderFingerprint)
+                        if (storedSender == null) {
+                            trustState = "拦截未确认语音"
+                            appendSystemMessage(
+                                text = "未确认设备发来的语音已拦截",
+                                encrypted = false
+                            )
+                            return
+                        }
+                        runCatching { engine.decryptVoice(encryptedMessage) }
+                            .onSuccess { plain ->
+                                val conversationId = directConversationId(plain.senderFingerprint)
+                                appendMessage(
+                                    conversationId,
+                                    ChatBubble(
+                                        text = "语音消息 · ${formatDuration(plain.durationMs)}",
+                                        mine = false,
+                                        encrypted = true,
+                                        timestamp = nowTime(),
+                                        messageId = plain.messageId,
+                                        deliveryState = DeliveryState.Received,
+                                        kind = ChatMessageKind.Voice,
+                                        voiceDurationMs = plain.durationMs,
+                                        voiceAudioBytes = plain.audioBytes
+                                    )
+                                )
+                                trustState = "收到加密语音"
+                                rememberPeerRoute(plain.senderFingerprint, event.peer)
+                                val replyPeer = routeForPeer(plain.senderFingerprint) ?: event.peer
+                                sendEncryptedAck(
+                                    transport = transport,
+                                    peer = replyPeer,
+                                    senderFingerprint = plain.senderFingerprint,
+                                    messageId = plain.messageId,
+                                    failureState = "语音回执发送失败"
+                                )
+                            }
+                            .onFailure { error ->
+                                if (error is DuplicateMessageException) {
+                                    trustState = "重复语音已忽略"
+                                    rememberPeerRoute(error.senderFingerprint, event.peer)
+                                    val replyPeer = routeForPeer(error.senderFingerprint) ?: event.peer
+                                    sendEncryptedAck(
+                                        transport = transport,
+                                        peer = replyPeer,
+                                        senderFingerprint = error.senderFingerprint,
+                                        messageId = error.messageId,
+                                        failureState = "重复语音回执发送失败"
+                                    )
+                                } else {
+                                    appendMessage(
+                                        activeConversationId,
+                                        ChatBubble(
+                                            text = error.readableMessage("无法解密语音"),
+                                            mine = false,
+                                            encrypted = false,
+                                            timestamp = nowTime()
+                                        )
+                                    )
+                                    trustState = "语音解密失败"
+                                }
+                            }
+                    }
+
                     PacketKind.ENCRYPTED_ACK -> {
                         val encryptedAck = packet.encryptedMessage ?: return
                         if (trustedPeer(encryptedAck.senderFingerprint) == null) {
@@ -1246,6 +1344,123 @@ internal fun SpotChatApp(
         )
     }
 
+    fun sendVoiceToConversation(
+        conversation: ChatConversation,
+        recordedVoice: RecordedVoiceMessage
+    ) {
+        if (conversation.memberFingerprints.isEmpty()) {
+            trustState = if (pendingPeer == null) "等待配对" else "请先确认校验码"
+            recordedVoice.file.delete()
+            appendMessage(
+                conversation.id,
+                ChatBubble(
+                    text = if (pendingPeer == null) "群聊还没有成员，请先完成配对" else "请先确认配对校验码",
+                    mine = false,
+                    encrypted = true,
+                    timestamp = nowTime(),
+                    deliveryState = DeliveryState.Waiting
+                )
+            )
+            return
+        }
+
+        val displayMessageId = UUID.randomUUID().toString()
+        appendMessage(
+            conversation.id,
+            ChatBubble(
+                text = "语音消息 · ${formatDuration(recordedVoice.durationMs)}",
+                mine = true,
+                encrypted = true,
+                timestamp = nowTime(),
+                messageId = displayMessageId,
+                deliveryState = DeliveryState.Sending,
+                kind = ChatMessageKind.Voice,
+                voiceDurationMs = recordedVoice.durationMs,
+                voiceAudioBytes = recordedVoice.audioBytes
+            )
+        )
+
+        val targets = targetsForConversation(conversation)
+        if (targets.isEmpty()) {
+            updateMessageState(displayMessageId, DeliveryState.Waiting)
+            trustState = "成员未在线"
+            recordedVoice.file.delete()
+            return
+        }
+
+        trustState = "正在加密发送语音"
+        coroutineScope.launch {
+            var sentCount = 0
+            var failedCount = 0
+            targets.forEach { (peerFingerprint, peer) ->
+                val packetResult =
+                    runCatching {
+                        engine.encryptVoiceForPeer(
+                            peerFingerprint = peerFingerprint,
+                            audioBytes = recordedVoice.audioBytes,
+                            durationMs = recordedVoice.durationMs
+                        )
+                    }
+                if (packetResult.isFailure) {
+                    failedCount += 1
+                    appendMessage(
+                        conversation.id,
+                        ChatBubble(
+                            text = packetResult.exceptionOrNull().readableMessage("无法加密语音"),
+                            mine = false,
+                            encrypted = false,
+                            timestamp = nowTime()
+                        )
+                    )
+                    return@forEach
+                }
+                val packet = packetResult.getOrNull() ?: return@forEach
+                val packetMessageId = packet.encryptedMessage?.messageId ?: return@forEach
+                outgoingMessages[packetMessageId] =
+                    OutgoingMessageRef(
+                        conversationId = conversation.id,
+                        displayMessageId = displayMessageId,
+                        expectedDeliveries = targets.size
+                    )
+
+                runCatching {
+                    sendPacket(currentTransport(), peer, packet)
+                }.onSuccess {
+                    sentCount += 1
+                }.onFailure { error ->
+                    failedCount += 1
+                    appendMessage(
+                        conversation.id,
+                        ChatBubble(
+                            text = error.readableMessage("无法发送语音"),
+                            mine = false,
+                            encrypted = false,
+                            timestamp = nowTime()
+                        )
+                    )
+                }
+            }
+
+            when {
+                sentCount > 0 && failedCount == 0 -> {
+                    updateMessageState(displayMessageId, DeliveryState.Sent)
+                    trustState = "语音已加密发送"
+                }
+
+                sentCount > 0 -> {
+                    updateMessageState(displayMessageId, DeliveryState.Sent)
+                    trustState = "语音部分发送"
+                }
+
+                else -> {
+                    updateMessageState(displayMessageId, DeliveryState.Failed)
+                    trustState = "语音发送失败"
+                }
+            }
+            recordedVoice.file.delete()
+        }
+    }
+
     fun sendMessageToConversation(
         conversation: ChatConversation,
         text: String,
@@ -1354,6 +1569,84 @@ internal fun SpotChatApp(
         sendMessageToConversation(activeConversation(), text)
     }
 
+    fun toggleVoiceRecording() {
+        if (
+            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            trustState = "语音需要录音权限"
+            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+
+        if (!isRecordingVoice) {
+            runCatching {
+                voiceRecorder.start()
+            }.onSuccess {
+                isRecordingVoice = true
+                trustState = "正在录音"
+            }.onFailure { error ->
+                trustState = error.readableMessage("无法开始录音")
+            }
+            return
+        }
+
+        runCatching {
+            voiceRecorder.stop()
+        }.onSuccess { recordedVoice ->
+            isRecordingVoice = false
+            if (recordedVoice == null) {
+                trustState = "语音太短"
+            } else {
+                sendVoiceToConversation(activeConversation(), recordedVoice)
+            }
+        }.onFailure { error ->
+            isRecordingVoice = false
+            voiceRecorder.cancel()
+            trustState = error.readableMessage("无法完成录音")
+        }
+    }
+
+    fun playVoiceMessage(message: ChatBubble) {
+        val audioBytes = message.voiceAudioBytes
+        if (message.kind != ChatMessageKind.Voice || audioBytes == null) {
+            selectedActionMessage = message
+            appSurface = AppSurface.MessageActions
+            return
+        }
+        runCatching {
+            activePlayer?.release()
+            val playbackDir = context.cacheDir.resolve("voice-playback").apply { mkdirs() }
+            val playbackFile = playbackDir.resolve("${message.messageId ?: UUID.randomUUID()}.m4a")
+            playbackFile.writeBytes(audioBytes)
+            MediaPlayer().apply {
+                setDataSource(playbackFile.absolutePath)
+                setOnCompletionListener { player ->
+                    player.release()
+                    playbackFile.delete()
+                    if (activePlayer === player) {
+                        activePlayer = null
+                    }
+                }
+                setOnErrorListener { player, _, _ ->
+                    player.release()
+                    playbackFile.delete()
+                    if (activePlayer === player) {
+                        activePlayer = null
+                    }
+                    trustState = "语音播放失败"
+                    true
+                }
+                prepare()
+                start()
+                activePlayer = this
+            }
+            trustState = "正在播放语音"
+        }.onFailure { error ->
+            trustState = error.readableMessage("语音播放失败")
+        }
+    }
+
     LaunchedEffect(pendingOutboundMessages.size, knownPeersByFingerprint.size) {
         pendingOutboundMessages.values
             .toList()
@@ -1407,6 +1700,14 @@ internal fun SpotChatApp(
         handleTileIntent(intent)
         handleNotificationIntent(intent)
         onNotificationIntentHandled(intent)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            voiceRecorder.cancel()
+            activePlayer?.release()
+            activePlayer = null
+        }
     }
 
     val messageInputLauncher =
@@ -1590,12 +1891,13 @@ internal fun SpotChatApp(
                             onRejectPairing = ::rejectPairing,
                             onSendQuickReply = ::sendQuickReply,
                             onOpenCustomMessageInput = ::openCustomMessageInput,
+                            onToggleVoiceRecording = ::toggleVoiceRecording,
+                            isRecordingVoice = isRecordingVoice,
                             onOpenChatInfo = {
                                 appSurface = AppSurface.ChatInfo
                             },
                             onOpenMessageActions = { message ->
-                                selectedActionMessage = message
-                                appSurface = AppSurface.MessageActions
+                                playVoiceMessage(message)
                             },
                             onNavigateBack = dismissOverlay
                         )
@@ -3516,6 +3818,8 @@ private fun WatchChatSurface(
     onRejectPairing: () -> Unit,
     onSendQuickReply: (String) -> Unit,
     onOpenCustomMessageInput: () -> Unit,
+    onToggleVoiceRecording: () -> Unit,
+    isRecordingVoice: Boolean,
     onOpenChatInfo: () -> Unit,
     onOpenMessageActions: (ChatBubble) -> Unit,
     onNavigateBack: () -> Unit
@@ -3598,7 +3902,9 @@ private fun WatchChatSurface(
                         quickReplyHeight = quickReplyHeight,
                         surfaceSpec = surfaceSpec,
                         onSendQuickReply = onSendQuickReply,
-                        onOpenCustomMessageInput = onOpenCustomMessageInput
+                        onOpenCustomMessageInput = onOpenCustomMessageInput,
+                        onToggleVoiceRecording = onToggleVoiceRecording,
+                        isRecordingVoice = isRecordingVoice
                     )
                 }
             }
@@ -3768,6 +4074,8 @@ private fun MessageCapsule(
                         imageVector =
                             if (message.mine) {
                                 Icons.Filled.DoneAll
+                            } else if (message.kind == ChatMessageKind.Voice) {
+                                Icons.Filled.Mic
                             } else {
                                 Icons.Filled.VerifiedUser
                             },
@@ -3814,7 +4122,12 @@ private fun MessageCapsule(
                 )
             }
             Text(
-                text = message.text,
+                text =
+                    if (message.kind == ChatMessageKind.Voice) {
+                        "语音 · ${formatDuration(message.voiceDurationMs ?: 0L)}"
+                    } else {
+                        message.text
+                    },
                 color = foreground,
                 fontSize = if (compact) 12.sp else 14.sp,
                 lineHeight = if (compact) 15.sp else 17.sp,
@@ -3842,7 +4155,9 @@ private fun ReplyDock(
     quickReplyHeight: Dp,
     surfaceSpec: WatchSurfaceSpec,
     onSendQuickReply: (String) -> Unit,
-    onOpenCustomMessageInput: () -> Unit
+    onOpenCustomMessageInput: () -> Unit,
+    onToggleVoiceRecording: () -> Unit,
+    isRecordingVoice: Boolean
 ) {
     val compact = surfaceSpec.compact
     Row(
@@ -3858,7 +4173,7 @@ private fun ReplyDock(
         horizontalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        customMessageQuickChoices.take(2).forEach { reply ->
+        customMessageQuickChoices.take(1).forEach { reply ->
             QuickReplyChip(
                 text = reply,
                 height = quickReplyHeight - 6.dp,
@@ -3869,6 +4184,11 @@ private fun ReplyDock(
         InputButton(
             height = quickReplyHeight - 6.dp,
             onClick = onOpenCustomMessageInput
+        )
+        VoiceButton(
+            height = quickReplyHeight - 6.dp,
+            recording = isRecordingVoice,
+            onClick = onToggleVoiceRecording
         )
     }
 }
@@ -3921,6 +4241,30 @@ private fun InputButton(
             imageVector = Icons.Filled.Keyboard,
             contentDescription = "输入消息",
             tint = Color.White,
+            modifier = Modifier.size(16.dp)
+        )
+    }
+}
+
+@Composable
+private fun VoiceButton(
+    height: Dp,
+    recording: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier =
+            Modifier
+                .size(height)
+                .clip(CircleShape)
+                .background(if (recording) chatRose.copy(alpha = 0.92f) else chatGreen.copy(alpha = 0.88f))
+                .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = if (recording) Icons.Filled.Stop else Icons.Filled.Mic,
+            contentDescription = if (recording) "停止录音" else "录音",
+            tint = if (recording) Color.White else Color(0xFF001F1B),
             modifier = Modifier.size(16.dp)
         )
     }
@@ -3982,6 +4326,13 @@ private fun conversationPreview(
 
 private fun directConversationId(peerFingerprint: String): String =
     "$DIRECT_CONVERSATION_PREFIX$peerFingerprint"
+
+private fun formatDuration(durationMs: Long): String {
+    val totalSeconds = (durationMs / 1_000L).coerceAtLeast(1L)
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    return "%d:%02d".format(Locale.getDefault(), minutes, seconds)
+}
 
 private fun encodeChatPayload(
     conversation: ChatConversation,
