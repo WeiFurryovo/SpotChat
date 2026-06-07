@@ -44,6 +44,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.AutoDelete
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DoneAll
@@ -142,6 +143,7 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
@@ -193,6 +195,19 @@ private enum class ChatMessageKind {
     Voice
 }
 
+private enum class DisappearingMessageMode(
+    val label: String,
+    val durationMs: Long?
+) {
+    Off("关闭", null),
+    OneMinute("1分钟", 60_000L),
+    OneHour("1小时", 3_600_000L),
+    OneDay("24小时", 86_400_000L);
+
+    fun next(): DisappearingMessageMode =
+        entries[(ordinal + 1) % entries.size]
+}
+
 private data class DefaultAvatar(
     val id: String,
     val background: Color,
@@ -212,7 +227,9 @@ private data class ChatBubble(
     val kind: ChatMessageKind = ChatMessageKind.Text,
     val quotedMessage: QuotedMessage? = null,
     val voiceDurationMs: Long? = null,
-    val voiceAudioBytes: ByteArray? = null
+    val voiceAudioBytes: ByteArray? = null,
+    val createdAtEpochMillis: Long = System.currentTimeMillis(),
+    val expiresAtEpochMillis: Long? = null
 )
 
 private fun ChatBubble.stableStarId(): String =
@@ -312,6 +329,7 @@ private const val MAX_SEARCH_QUERY_CHARS = 48
 private const val MAX_SEARCH_RESULTS = 12
 private const val MAX_STARRED_RESULTS = 24
 private const val MAX_QUOTED_MESSAGE_CHARS = 72
+private const val DISAPPEARING_SWEEP_INTERVAL_MS = 15_000L
 private const val NEARBY_GROUP_CONVERSATION_ID = "group:nearby"
 private const val NEARBY_GROUP_TITLE = "附近群聊"
 private const val DIRECT_CONVERSATION_PREFIX = "direct:"
@@ -574,6 +592,7 @@ internal fun SpotChatApp(
     val pinnedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val mutedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val starredMessageIdsByConversation = remember { mutableStateMapOf<String, Set<String>>() }
+    val disappearingModesByConversation = remember { mutableStateMapOf<String, DisappearingMessageMode>() }
     val outgoingMessages = remember { mutableStateMapOf<String, OutgoingMessageRef>() }
     val deliveredCounts = remember { mutableStateMapOf<String, Int>() }
     val deliveredReceiptsByMessage = remember { mutableStateMapOf<String, Set<String>>() }
@@ -889,17 +908,29 @@ internal fun SpotChatApp(
         conversationId: String,
         message: ChatBubble
     ) {
-        conversationMessages[conversationId] = messagesForConversation(conversationId) + message
+        val disappearingMode = disappearingModesByConversation[conversationId] ?: DisappearingMessageMode.Off
+        val timedMessage =
+            if (
+                message.deliveryState == DeliveryState.System ||
+                disappearingMode.durationMs == null ||
+                message.expiresAtEpochMillis != null
+            ) {
+                message
+            } else {
+                val createdAt = message.createdAtEpochMillis
+                message.copy(expiresAtEpochMillis = createdAt + disappearingMode.durationMs)
+            }
+        conversationMessages[conversationId] = messagesForConversation(conversationId) + timedMessage
         conversationUpdateSequence += 1
         conversationUpdateOrder[conversationId] = conversationUpdateSequence
         if (
-            !message.mine &&
-            message.deliveryState != DeliveryState.System &&
+            !timedMessage.mine &&
+            timedMessage.deliveryState != DeliveryState.System &&
             (appSurface != AppSurface.Chat || activeConversationId != conversationId)
         ) {
             unreadCounts[conversationId] = (unreadCounts[conversationId] ?: 0) + 1
             if (mutedConversationIds[conversationId] != true) {
-                notifyIncomingMessage(conversationId, message)
+                notifyIncomingMessage(conversationId, timedMessage)
             }
         }
     }
@@ -1039,6 +1070,7 @@ internal fun SpotChatApp(
         conversationUpdateOrder.remove(conversation.id)
         pinnedConversationIds.remove(conversation.id)
         mutedConversationIds.remove(conversation.id)
+        disappearingModesByConversation.remove(conversation.id)
         selectedActionMessage = null
         pendingQuotedMessage = null
         activeConversationId = NEARBY_GROUP_CONVERSATION_ID
@@ -1150,6 +1182,7 @@ internal fun SpotChatApp(
         unreadCounts.toMap(),
         pinnedConversationIds.toMap(),
         mutedConversationIds.toMap(),
+        disappearingModesByConversation.toMap(),
         trustedPeers.size,
         knownPeersByFingerprint.toMap(),
         peerLastSeenAt.toMap()
@@ -1268,6 +1301,22 @@ internal fun SpotChatApp(
         }
     }
 
+    fun toggleDisappearingMessages(conversation: ChatConversation) {
+        val nextMode =
+            (disappearingModesByConversation[conversation.id] ?: DisappearingMessageMode.Off).next()
+        if (nextMode == DisappearingMessageMode.Off) {
+            disappearingModesByConversation.remove(conversation.id)
+        } else {
+            disappearingModesByConversation[conversation.id] = nextMode
+        }
+        appendSystemMessage(
+            text = "限时消息：${nextMode.label}",
+            encrypted = true,
+            conversationId = conversation.id
+        )
+        trustState = "限时消息${nextMode.label}"
+    }
+
     fun toggleMessageStarred(
         conversation: ChatConversation,
         message: ChatBubble
@@ -1288,22 +1337,17 @@ internal fun SpotChatApp(
         }
     }
 
-    fun deleteMessageForMe(
-        conversation: ChatConversation,
+    fun removeMessageCaches(
+        conversationId: String,
         message: ChatBubble
     ) {
         val starId = message.stableStarId()
         val displayMessageId = message.messageId
-        conversationMessages[conversation.id] =
-            messagesForConversation(conversation.id)
-                .filterNot { existingMessage ->
-                    existingMessage.stableStarId() == starId
-                }
-        val updatedStarIds = starredMessageIds(conversation.id) - starId
+        val updatedStarIds = starredMessageIds(conversationId) - starId
         if (updatedStarIds.isEmpty()) {
-            starredMessageIdsByConversation.remove(conversation.id)
+            starredMessageIdsByConversation.remove(conversationId)
         } else {
-            starredMessageIdsByConversation[conversation.id] = updatedStarIds
+            starredMessageIdsByConversation[conversationId] = updatedStarIds
         }
         if (displayMessageId != null) {
             pendingOutboundMessages.remove(displayMessageId)
@@ -1314,18 +1358,68 @@ internal fun SpotChatApp(
             readReceiptsByMessage.remove(displayMessageId)
             outgoingMessages
                 .filterValues { outgoingMessage ->
-                    outgoingMessage.conversationId == conversation.id &&
+                    outgoingMessage.conversationId == conversationId &&
                         outgoingMessage.displayMessageId == displayMessageId
                 }
                 .keys
                 .toList()
                 .forEach { packetMessageId -> outgoingMessages.remove(packetMessageId) }
         }
-        selectedActionMessage = null
         pendingQuotedMessage =
             pendingQuotedMessage?.takeUnless { quote -> quote.messageId == displayMessageId }
+    }
+
+    fun deleteMessageForMe(
+        conversation: ChatConversation,
+        message: ChatBubble
+    ) {
+        val starId = message.stableStarId()
+        conversationMessages[conversation.id] =
+            messagesForConversation(conversation.id)
+                .filterNot { existingMessage ->
+                    existingMessage.stableStarId() == starId
+                }
+        removeMessageCaches(conversation.id, message)
+        selectedActionMessage = null
         appSurface = AppSurface.Chat
         trustState = "已删除本机消息"
+    }
+
+    fun sweepExpiredMessages(nowEpochMillis: Long = System.currentTimeMillis()) {
+        conversationMessages.keys.toList().forEach { conversationId ->
+            val messages = messagesForConversation(conversationId)
+            val expiredMessages =
+                messages.filter { message ->
+                    message.deliveryState != DeliveryState.System &&
+                        message.expiresAtEpochMillis?.let { expiresAt -> expiresAt <= nowEpochMillis } == true
+                }
+            if (expiredMessages.isEmpty()) {
+                return@forEach
+            }
+            val expiredIds = expiredMessages.map { message -> message.stableStarId() }.toSet()
+            conversationMessages[conversationId] =
+                messages.filterNot { message -> message.stableStarId() in expiredIds }
+            expiredMessages.forEach { message ->
+                removeMessageCaches(conversationId, message)
+            }
+            conversationUpdateSequence += 1
+            conversationUpdateOrder[conversationId] = conversationUpdateSequence
+            if (selectedActionMessage?.stableStarId() in expiredIds) {
+                selectedActionMessage = null
+                appSurface = AppSurface.Chat
+            }
+            notifier.clearConversation(conversationId)
+        }
+    }
+
+    LaunchedEffect(
+        conversationMessages.toMap(),
+        disappearingModesByConversation.toMap()
+    ) {
+        while (true) {
+            sweepExpiredMessages()
+            delay(DISAPPEARING_SWEEP_INTERVAL_MS)
+        }
     }
 
     fun openConversation(conversation: ChatConversation) {
@@ -2580,6 +2674,9 @@ internal fun SpotChatApp(
                             isMuted = mutedConversationIds[selectedConversation.id] == true,
                             unreadCount = unreadCounts[selectedConversation.id] ?: 0,
                             starredCount = starredMessageIds(selectedConversation.id).size,
+                            disappearingMode =
+                                disappearingModesByConversation[selectedConversation.id]
+                                    ?: DisappearingMessageMode.Off,
                             onNavigateBack = dismissOverlay,
                             onOpenSecurityCheck = {
                                 appSurface = AppSurface.SecurityCheck
@@ -2599,6 +2696,9 @@ internal fun SpotChatApp(
                             },
                             onToggleUnread = {
                                 toggleConversationUnread(selectedConversation)
+                            },
+                            onToggleDisappearingMessages = {
+                                toggleDisappearingMessages(selectedConversation)
                             },
                             onClearConversation = {
                                 clearConversation(selectedConversation)
@@ -3503,6 +3603,7 @@ private fun WatchChatInfoSurface(
     isMuted: Boolean,
     unreadCount: Int,
     starredCount: Int,
+    disappearingMode: DisappearingMessageMode,
     onNavigateBack: () -> Unit,
     onOpenSecurityCheck: () -> Unit,
     onOpenStarredMessages: () -> Unit,
@@ -3510,6 +3611,7 @@ private fun WatchChatInfoSurface(
     onTogglePinned: () -> Unit,
     onToggleMuted: () -> Unit,
     onToggleUnread: () -> Unit,
+    onToggleDisappearingMessages: () -> Unit,
     onClearConversation: () -> Unit,
     onForgetPeer: () -> Unit
 ) {
@@ -3643,8 +3745,8 @@ private fun WatchChatInfoSurface(
                             modifier = Modifier.weight(1f)
                         )
                         InfoMetricPill(
-                            label = "类型",
-                            value = conversation.kind.label,
+                            label = "限时",
+                            value = disappearingMode.label,
                             compact = compact,
                             modifier = Modifier.weight(1f)
                         )
@@ -3738,6 +3840,13 @@ private fun WatchChatInfoSurface(
                             selected = starredCount > 0,
                             compact = compact,
                             onClick = onOpenStarredMessages
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.AutoDelete,
+                            text = disappearingActionLabel(disappearingMode),
+                            selected = disappearingMode != DisappearingMessageMode.Off,
+                            compact = compact,
+                            onClick = onToggleDisappearingMessages
                         )
                         MessageActionButton(
                             icon = Icons.Filled.Lock,
@@ -5461,7 +5570,10 @@ private fun MessageCapsule(
                         )
                     }
                     Text(
-                        text = message.timestamp,
+                        text =
+                            message.expiresAtEpochMillis
+                                ?.let { expiresAt -> "剩 ${formatTimeRemaining(expiresAt)}" }
+                                ?: message.timestamp,
                         color = foreground.copy(alpha = 0.62f),
                         fontSize = 9.sp,
                         maxLines = 1
@@ -5722,6 +5834,24 @@ private fun String.shortReachabilityLabel(): String =
         contains("等待") -> "等待"
         else -> take(4)
     }
+
+private fun disappearingActionLabel(mode: DisappearingMessageMode): String =
+    if (mode == DisappearingMessageMode.Off) {
+        "开启限时消息"
+    } else {
+        "限时改为${mode.next().label}"
+    }
+
+private fun formatTimeRemaining(expiresAtEpochMillis: Long): String {
+    val remainingMs = (expiresAtEpochMillis - System.currentTimeMillis()).coerceAtLeast(0L)
+    val totalSeconds = (remainingMs / 1_000L).coerceAtLeast(1L)
+    return when {
+        totalSeconds < 60L -> "${totalSeconds}秒"
+        totalSeconds < 3_600L -> "${totalSeconds / 60L}分"
+        totalSeconds < 86_400L -> "${totalSeconds / 3_600L}小时"
+        else -> "${totalSeconds / 86_400L}天"
+    }
+}
 
 private fun formatDuration(durationMs: Long): String {
     val totalSeconds = (durationMs / 1_000L).coerceAtLeast(1L)
