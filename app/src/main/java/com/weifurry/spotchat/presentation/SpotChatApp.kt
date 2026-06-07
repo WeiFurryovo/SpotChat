@@ -671,6 +671,7 @@ internal fun SpotChatApp(
     val mutedConversations = remember { mutableStateMapOf<String, MutedConversation>() }
     val archivedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val starredMessageIdsByConversation = remember { mutableStateMapOf<String, Set<String>>() }
+    val pinnedMessageIdsByConversation = remember { mutableStateMapOf<String, String>() }
     val disappearingModesByConversation = remember { mutableStateMapOf<String, DisappearingMessageMode>() }
     val outgoingMessages = remember { mutableStateMapOf<String, OutgoingMessageRef>() }
     val deliveredCounts = remember { mutableStateMapOf<String, Int>() }
@@ -853,6 +854,18 @@ internal fun SpotChatApp(
             }
             .take(MAX_STARRED_RESULTS)
     }
+
+    fun pinnedMessage(conversationId: String): ChatBubble? {
+        val pinnedId = pinnedMessageIdsByConversation[conversationId] ?: return null
+        return messagesForConversation(conversationId)
+            .firstOrNull { message -> message.stableStarId() == pinnedId }
+    }
+
+    fun isMessagePinned(
+        conversationId: String,
+        message: ChatBubble
+    ): Boolean =
+        pinnedMessageIdsByConversation[conversationId] == message.stableStarId()
 
     fun peerReachabilityText(fingerprint: String): String =
         if (knownPeersByFingerprint[fingerprint] != null) {
@@ -1185,6 +1198,7 @@ internal fun SpotChatApp(
         }
         unreadCounts.remove(conversationId)
         starredMessageIdsByConversation.remove(conversationId)
+        pinnedMessageIdsByConversation.remove(conversationId)
         notifier.clearConversation(conversationId)
     }
 
@@ -1225,6 +1239,7 @@ internal fun SpotChatApp(
         favoriteConversationIds.remove(conversation.id)
         mutedConversations.remove(conversation.id)
         archivedConversationIds.remove(conversation.id)
+        pinnedMessageIdsByConversation.remove(conversation.id)
         disappearingModesByConversation.remove(conversation.id)
         selectedActionMessage = null
         pendingQuotedMessage = null
@@ -1544,6 +1559,20 @@ internal fun SpotChatApp(
         }
     }
 
+    fun toggleMessagePinned(
+        conversation: ChatConversation,
+        message: ChatBubble
+    ) {
+        val pinId = message.stableStarId()
+        if (pinnedMessageIdsByConversation[conversation.id] == pinId) {
+            pinnedMessageIdsByConversation.remove(conversation.id)
+            trustState = "已取消置顶消息"
+        } else {
+            pinnedMessageIdsByConversation[conversation.id] = pinId
+            trustState = "已置顶消息"
+        }
+    }
+
     fun applyMessageReaction(
         conversationId: String,
         targetMessageId: String,
@@ -1571,6 +1600,9 @@ internal fun SpotChatApp(
             starredMessageIdsByConversation.remove(conversationId)
         } else {
             starredMessageIdsByConversation[conversationId] = updatedStarIds
+        }
+        if (pinnedMessageIdsByConversation[conversationId] == starId) {
+            pinnedMessageIdsByConversation.remove(conversationId)
         }
         if (displayMessageId != null) {
             pendingOutboundMessages.remove(displayMessageId)
@@ -3063,6 +3095,7 @@ internal fun SpotChatApp(
                             pendingPeer = pendingPeer,
                             trustedPeerCount = trustedPeers.size,
                             messages = messagesForConversation(selectedConversation.id),
+                            pinnedMessage = pinnedMessage(selectedConversation.id),
                             starredMessageIds = starredMessageIds(selectedConversation.id),
                             onSelectMode = ::selectMode,
                             onConfirmPairing = ::confirmPairing,
@@ -3232,6 +3265,7 @@ internal fun SpotChatApp(
                                 conversation = selectedConversation,
                                 message = actionMessage,
                                 isStarred = isMessageStarred(selectedConversation.id, actionMessage),
+                                isPinned = isMessagePinned(selectedConversation.id, actionMessage),
                                 voicePlaybackSpeed = voicePlaybackSpeed,
                                 onNavigateBack = dismissOverlay,
                                 onPlayVoiceMessage = {
@@ -3244,6 +3278,9 @@ internal fun SpotChatApp(
                                 },
                                 onToggleStarred = {
                                     toggleMessageStarred(selectedConversation, actionMessage)
+                                },
+                                onTogglePinned = {
+                                    toggleMessagePinned(selectedConversation, actionMessage)
                                 },
                                 onDeleteMessage = {
                                     deleteMessageForMe(selectedConversation, actionMessage)
@@ -4856,11 +4893,13 @@ private fun WatchMessageActionsSurface(
     conversation: ChatConversation,
     message: ChatBubble,
     isStarred: Boolean,
+    isPinned: Boolean,
     voicePlaybackSpeed: VoicePlaybackSpeed,
     onNavigateBack: () -> Unit,
     onPlayVoiceMessage: () -> Unit,
     onCycleVoicePlaybackSpeed: () -> Unit,
     onToggleStarred: () -> Unit,
+    onTogglePinned: () -> Unit,
     onDeleteMessage: () -> Unit,
     onReactToMessage: (String) -> Unit,
     onOpenCustomMessageInput: () -> Unit,
@@ -4957,6 +4996,13 @@ private fun WatchMessageActionsSurface(
                             selected = isStarred,
                             compact = compact,
                             onClick = onToggleStarred
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.PushPin,
+                            text = if (isPinned) "取消置顶消息" else "置顶消息",
+                            selected = isPinned,
+                            compact = compact,
+                            onClick = onTogglePinned
                         )
                         reactionChoices.forEach { reaction ->
                             MessageActionButton(
@@ -6500,6 +6546,7 @@ private fun WatchChatSurface(
     pendingPeer: TrustedPeer?,
     trustedPeerCount: Int,
     messages: List<ChatBubble>,
+    pinnedMessage: ChatBubble?,
     starredMessageIds: Set<String>,
     onSelectMode: (TransportMode) -> Unit,
     onConfirmPairing: () -> Unit,
@@ -6561,6 +6608,16 @@ private fun WatchChatSurface(
                             surfaceSpec = surfaceSpec,
                             onConfirmPairing = onConfirmPairing,
                             onRejectPairing = onRejectPairing
+                        )
+                    }
+
+                    pinnedMessage?.let { message ->
+                        PinnedMessageBanner(
+                            message = message,
+                            compact = compact,
+                            surfaceSpec = surfaceSpec,
+                            accent = accent,
+                            onClick = { onOpenMessageActions(message) }
                         )
                     }
 
@@ -6889,6 +6946,56 @@ private fun MessageCapsule(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun PinnedMessageBanner(
+    message: ChatBubble,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    accent: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.86f else 0.94f)
+                .height(if (compact) 34.dp else 38.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.82f))
+                .border(1.dp, accent.copy(alpha = 0.34f), RoundedCornerShape(8.dp))
+                .clickable(onClick = onClick)
+                .padding(horizontal = if (compact) 8.dp else 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.PushPin,
+            contentDescription = "置顶消息",
+            tint = accent,
+            modifier = Modifier.size(if (compact) 13.dp else 15.dp)
+        )
+        Spacer(modifier = Modifier.width(if (compact) 7.dp else 9.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "置顶消息",
+                color = chatRowMuted,
+                fontSize = if (compact) 8.sp else 9.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+            Text(
+                text = message.previewText(),
+                color = MaterialTheme.colorScheme.onBackground,
+                fontSize = if (compact) 10.sp else 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
