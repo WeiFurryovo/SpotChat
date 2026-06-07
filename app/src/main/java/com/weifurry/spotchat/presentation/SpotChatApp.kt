@@ -3,6 +3,7 @@ package com.weifurry.spotchat.presentation
 import android.Manifest
 import android.app.Activity
 import android.app.RemoteInput
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -103,6 +104,8 @@ import com.weifurry.spotchat.domain.StoredTrustedPeer
 import com.weifurry.spotchat.domain.SpotChatEngine
 import com.weifurry.spotchat.domain.TrustedPeer
 import com.weifurry.spotchat.domain.TrustedPeerStore
+import com.weifurry.spotchat.notifications.SpotChatNotificationIntents
+import com.weifurry.spotchat.notifications.SpotChatNotifier
 import com.weifurry.spotchat.presentation.theme.SpotChatTheme
 import com.weifurry.spotchat.protocol.ChatCodec
 import com.weifurry.spotchat.protocol.PacketKind
@@ -194,6 +197,13 @@ private data class OutgoingMessageRef(
     val expectedDeliveries: Int
 )
 
+private data class PendingOutboundMessage(
+    val conversationId: String,
+    val text: String,
+    val displayMessageId: String,
+    val targetFingerprints: List<String>
+)
+
 @Serializable
 private data class ChatPayload(
     val version: Int = 1,
@@ -217,6 +227,7 @@ private const val CUSTOM_MESSAGE_REMOTE_INPUT_KEY = "spotchat_custom_message"
 private const val MAX_CUSTOM_MESSAGE_CHARS = 280
 private const val NEARBY_GROUP_CONVERSATION_ID = "group:nearby"
 private const val NEARBY_GROUP_TITLE = "附近群聊"
+private const val DIRECT_CONVERSATION_PREFIX = "direct:"
 private const val CHAT_PAYLOAD_KIND_DIRECT = "direct"
 private const val CHAT_PAYLOAD_KIND_GROUP = "group"
 private val customMessageQuickChoices = arrayOf("收到", "马上到", "稍后联系")
@@ -367,7 +378,10 @@ private data class WatchSurfaceSpec(
 }
 
 @Composable
-internal fun SpotChatApp() {
+internal fun SpotChatApp(
+    notificationIntent: Intent? = null,
+    onNotificationIntentHandled: (Intent) -> Unit = {}
+) {
     val context = LocalContext.current
     val activity = context as? Activity
     val defaultDeviceName =
@@ -411,6 +425,10 @@ internal fun SpotChatApp() {
     val bluetoothTransport =
         remember(context) {
             BluetoothChatTransport(context)
+        }
+    val notifier =
+        remember(context) {
+            SpotChatNotifier(context)
         }
     val coroutineScope = rememberCoroutineScope()
     val trustedPeers =
@@ -460,6 +478,7 @@ internal fun SpotChatApp() {
     val unreadCounts = remember { mutableStateMapOf<String, Int>() }
     val outgoingMessages = remember { mutableStateMapOf<String, OutgoingMessageRef>() }
     val deliveredCounts = remember { mutableStateMapOf<String, Int>() }
+    val pendingOutboundMessages = remember { mutableStateMapOf<String, PendingOutboundMessage>() }
     var activeConversationId by remember { mutableStateOf(NEARBY_GROUP_CONVERSATION_ID) }
     if (conversationMessages[activeConversationId] == null) {
         activeConversationId = NEARBY_GROUP_CONVERSATION_ID
@@ -498,6 +517,28 @@ internal fun SpotChatApp() {
             }
         }
 
+    val notificationPermissionLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            trustState =
+                if (granted) {
+                    "通知回复已开启"
+                } else {
+                    "通知权限被拒绝"
+                }
+        }
+
+    LaunchedEffect(Unit) {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     fun currentTransport(): SpotChatTransport =
         if (transportMode == TransportMode.Lan) {
             lanTransport
@@ -523,6 +564,71 @@ internal fun SpotChatApp() {
     fun messagesForConversation(conversationId: String): List<ChatBubble> =
         conversationMessages[conversationId].orEmpty()
 
+    fun conversationById(conversationId: String): ChatConversation? {
+        if (conversationId == NEARBY_GROUP_CONVERSATION_ID) {
+            return ChatConversation(
+                id = NEARBY_GROUP_CONVERSATION_ID,
+                kind = ConversationKind.Group,
+                title = NEARBY_GROUP_TITLE,
+                subtitle =
+                    if (trustedPeers.isEmpty()) {
+                        "群聊 · 等待成员"
+                    } else {
+                        "群聊 · ${trustedPeers.size} 位成员"
+                    },
+                memberFingerprints = trustedPeers.map { peer -> peer.fingerprint }
+            )
+        }
+
+        val peerFingerprint =
+            conversationId
+                .removePrefix(DIRECT_CONVERSATION_PREFIX)
+                .takeIf { fingerprint -> fingerprint != conversationId && fingerprint.isNotBlank() }
+                ?: return null
+        val peer = trustedPeers.firstOrNull { storedPeer -> storedPeer.fingerprint == peerFingerprint }
+            ?: return null
+        return ChatConversation(
+            id = directConversationId(peer.fingerprint),
+            kind = ConversationKind.Direct,
+            title = peer.deviceName,
+            subtitle =
+                if (knownPeersByFingerprint[peer.fingerprint] == null) {
+                    "私聊 · 待发现"
+                } else {
+                    "私聊 · 可发送"
+                },
+            peerFingerprint = peer.fingerprint,
+            memberFingerprints = listOf(peer.fingerprint)
+        )
+    }
+
+    fun clearConversationAlerts(conversationId: String) {
+        unreadCounts[conversationId] = 0
+        notifier.clearConversation(conversationId)
+    }
+
+    fun notifyIncomingMessage(
+        conversationId: String,
+        message: ChatBubble
+    ) {
+        if (message.mine || message.deliveryState == DeliveryState.System) {
+            return
+        }
+        val conversation = conversationById(conversationId) ?: return
+        val senderName =
+            message.senderName
+                ?: conversation.title
+                    .takeIf { conversation.kind == ConversationKind.Direct }
+                ?: "SpotChat"
+        notifier.showIncomingMessage(
+            conversationId = conversationId,
+            conversationTitle = conversation.title,
+            senderName = senderName,
+            messageText = message.text,
+            unreadCount = unreadCounts[conversationId] ?: 1
+        )
+    }
+
     fun appendMessage(
         conversationId: String,
         message: ChatBubble
@@ -534,6 +640,7 @@ internal fun SpotChatApp() {
             (appSurface != AppSurface.Chat || activeConversationId != conversationId)
         ) {
             unreadCounts[conversationId] = (unreadCounts[conversationId] ?: 0) + 1
+            notifyIncomingMessage(conversationId, message)
         }
     }
 
@@ -701,7 +808,7 @@ internal fun SpotChatApp() {
 
     fun openConversation(conversation: ChatConversation) {
         activeConversationId = conversation.id
-        unreadCounts[conversation.id] = 0
+        clearConversationAlerts(conversation.id)
         selectedActionMessage = null
         appSurface = AppSurface.Chat
     }
@@ -978,82 +1085,24 @@ internal fun SpotChatApp() {
         profile = profileStore.save(updated)
     }
 
-    fun sendQuickReply(text: String) {
-        val conversation = activeConversation()
-        if (transportMode == TransportMode.Lan && !hasLanConnection()) {
-            trustState = "局域网未连接"
-            appendMessage(
-                conversation.id,
-                ChatBubble(
-                    text = "当前没有可用的局域网连接，消息未发送",
-                    mine = false,
-                    encrypted = false,
-                    timestamp = nowTime(),
-                    deliveryState = DeliveryState.Failed
-                )
-            )
-            return
-        }
-
-        val targets =
-            conversation.memberFingerprints.mapNotNull { fingerprint ->
-                val peer = routeForPeer(fingerprint)
-                val storedPeer = trustedPeer(fingerprint)
-                if (peer == null || storedPeer == null) {
-                    null
-                } else {
-                    fingerprint to peer
-                }
+    fun targetsForConversation(conversation: ChatConversation): List<Pair<String, TransportPeer>> =
+        conversation.memberFingerprints.mapNotNull { fingerprint ->
+            val peer = routeForPeer(fingerprint)
+            val storedPeer = trustedPeer(fingerprint)
+            if (peer == null || storedPeer == null) {
+                null
+            } else {
+                fingerprint to peer
             }
-
-        if (conversation.memberFingerprints.isEmpty()) {
-            trustState = if (pendingPeer == null) "等待配对" else "请先确认校验码"
-            appendMessage(
-                conversation.id,
-                ChatBubble(
-                    text = if (pendingPeer == null) "群聊还没有成员，请先完成配对" else "请先确认配对校验码",
-                    mine = false,
-                    encrypted = true,
-                    timestamp = nowTime(),
-                    deliveryState = DeliveryState.Waiting
-                )
-            )
-            return
         }
 
-        if (targets.isEmpty()) {
-            trustState = "成员未在线"
-            appendMessage(
-                conversation.id,
-                ChatBubble(
-                    text =
-                        if (conversation.kind == ConversationKind.Direct) {
-                            "对方暂时未在线，消息未发送"
-                        } else {
-                            "群成员暂时未在线，消息未发送"
-                        },
-                    mine = false,
-                    encrypted = true,
-                    timestamp = nowTime(),
-                    deliveryState = DeliveryState.Waiting
-                )
-            )
-            return
-        }
-
-        val displayMessageId = UUID.randomUUID().toString()
-        appendMessage(
-            conversation.id,
-            ChatBubble(
-                text = text,
-                mine = true,
-                encrypted = true,
-                timestamp = nowTime(),
-                messageId = displayMessageId,
-                deliveryState = DeliveryState.Sending
-            )
-        )
-
+    fun sendPreparedMessage(
+        conversation: ChatConversation,
+        text: String,
+        displayMessageId: String,
+        targets: List<Pair<String, TransportPeer>>,
+        requeueOnFailure: Boolean
+    ) {
         trustState = "正在加密发送"
         coroutineScope.launch {
             var sentCount = 0
@@ -1107,6 +1156,7 @@ internal fun SpotChatApp() {
 
             when {
                 sentCount > 0 && failedCount == 0 -> {
+                    pendingOutboundMessages.remove(displayMessageId)
                     updateMessageState(displayMessageId, DeliveryState.Sent)
                     trustState =
                         if (conversation.kind == ConversationKind.Group) {
@@ -1117,8 +1167,21 @@ internal fun SpotChatApp() {
                 }
 
                 sentCount > 0 -> {
+                    pendingOutboundMessages.remove(displayMessageId)
                     updateMessageState(displayMessageId, DeliveryState.Sent)
                     trustState = "部分成员已发送"
+                }
+
+                requeueOnFailure -> {
+                    pendingOutboundMessages[displayMessageId] =
+                        PendingOutboundMessage(
+                            conversationId = conversation.id,
+                            text = text,
+                            displayMessageId = displayMessageId,
+                            targetFingerprints = conversation.memberFingerprints
+                        )
+                    updateMessageState(displayMessageId, DeliveryState.Waiting)
+                    trustState = "等待对方上线"
                 }
 
                 else -> {
@@ -1127,6 +1190,173 @@ internal fun SpotChatApp() {
                 }
             }
         }
+    }
+
+    fun trySendPendingOutboundMessage(queuedReply: PendingOutboundMessage) {
+        val conversation = conversationById(queuedReply.conversationId) ?: return
+        val targets = targetsForConversation(conversation)
+        if (targets.isEmpty()) {
+            return
+        }
+        updateMessageState(queuedReply.displayMessageId, DeliveryState.Sending)
+        sendPreparedMessage(
+            conversation = conversation,
+            text = queuedReply.text,
+            displayMessageId = queuedReply.displayMessageId,
+            targets = targets,
+            requeueOnFailure = true
+        )
+    }
+
+    fun sendMessageToConversation(
+        conversation: ChatConversation,
+        text: String,
+        requeueWhenOffline: Boolean = true
+    ) {
+        val cleanText = text.trim().take(MAX_CUSTOM_MESSAGE_CHARS)
+        if (cleanText.isBlank()) {
+            return
+        }
+
+        val displayMessageId = UUID.randomUUID().toString()
+        if (transportMode == TransportMode.Lan && !hasLanConnection()) {
+            trustState = "局域网未连接"
+            appendMessage(
+                conversation.id,
+                ChatBubble(
+                    text = cleanText,
+                    mine = true,
+                    encrypted = true,
+                    timestamp = nowTime(),
+                    messageId = displayMessageId,
+                    deliveryState =
+                        if (requeueWhenOffline && conversation.memberFingerprints.isNotEmpty()) {
+                            DeliveryState.Waiting
+                        } else {
+                            DeliveryState.Failed
+                        }
+                )
+            )
+            if (requeueWhenOffline && conversation.memberFingerprints.isNotEmpty()) {
+                pendingOutboundMessages[displayMessageId] =
+                    PendingOutboundMessage(
+                        conversationId = conversation.id,
+                        text = cleanText,
+                        displayMessageId = displayMessageId,
+                        targetFingerprints = conversation.memberFingerprints
+                    )
+                trustState = "等待网络恢复"
+            }
+            return
+        }
+
+        if (conversation.memberFingerprints.isEmpty()) {
+            trustState = if (pendingPeer == null) "等待配对" else "请先确认校验码"
+            appendMessage(
+                conversation.id,
+                ChatBubble(
+                    text = if (pendingPeer == null) "群聊还没有成员，请先完成配对" else "请先确认配对校验码",
+                    mine = false,
+                    encrypted = true,
+                    timestamp = nowTime(),
+                    deliveryState = DeliveryState.Waiting
+                )
+            )
+            return
+        }
+
+        val targets = targetsForConversation(conversation)
+        if (targets.isEmpty()) {
+            trustState = "成员未在线"
+            appendMessage(
+                conversation.id,
+                ChatBubble(
+                    text = cleanText,
+                    mine = true,
+                    encrypted = true,
+                    timestamp = nowTime(),
+                    messageId = displayMessageId,
+                    deliveryState = DeliveryState.Waiting
+                )
+            )
+            if (requeueWhenOffline) {
+                pendingOutboundMessages[displayMessageId] =
+                    PendingOutboundMessage(
+                        conversationId = conversation.id,
+                        text = cleanText,
+                        displayMessageId = displayMessageId,
+                        targetFingerprints = conversation.memberFingerprints
+                    )
+            }
+            return
+        }
+
+        appendMessage(
+            conversation.id,
+            ChatBubble(
+                text = cleanText,
+                mine = true,
+                encrypted = true,
+                timestamp = nowTime(),
+                messageId = displayMessageId,
+                deliveryState = DeliveryState.Sending
+            )
+        )
+
+        sendPreparedMessage(
+            conversation = conversation,
+            text = cleanText,
+            displayMessageId = displayMessageId,
+            targets = targets,
+            requeueOnFailure = requeueWhenOffline
+        )
+    }
+
+    fun sendQuickReply(text: String) {
+        sendMessageToConversation(activeConversation(), text)
+    }
+
+    LaunchedEffect(pendingOutboundMessages.size, knownPeersByFingerprint.size) {
+        pendingOutboundMessages.values
+            .toList()
+            .filter { queuedReply ->
+                queuedReply.targetFingerprints.any { fingerprint ->
+                    knownPeersByFingerprint[fingerprint] != null
+                }
+            }
+            .forEach { queuedReply -> trySendPendingOutboundMessage(queuedReply) }
+    }
+
+    fun handleNotificationIntent(intent: Intent) {
+        if (!notifier.isTrustedNotificationIntent(intent)) {
+            return
+        }
+        val conversationId =
+            intent.getStringExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID) ?: return
+        val conversation = conversationById(conversationId) ?: return
+        clearConversationAlerts(conversation.id)
+        openConversation(conversation)
+
+        if (intent.action != SpotChatNotificationIntents.ACTION_REPLY) {
+            return
+        }
+        val replyText =
+            RemoteInput
+                .getResultsFromIntent(intent)
+                ?.getCharSequence(SpotChatNotificationIntents.EXTRA_REMOTE_REPLY)
+                ?.toString()
+                ?.trim()
+                ?.take(MAX_CUSTOM_MESSAGE_CHARS)
+                .orEmpty()
+        if (replyText.isNotBlank()) {
+            sendMessageToConversation(conversation, replyText)
+        }
+    }
+
+    LaunchedEffect(notificationIntent, trustedPeers.size) {
+        val intent = notificationIntent ?: return@LaunchedEffect
+        handleNotificationIntent(intent)
+        onNotificationIntentHandled(intent)
     }
 
     val messageInputLauncher =
@@ -3701,7 +3931,7 @@ private fun conversationPreview(
     } ?: conversation.subtitle
 
 private fun directConversationId(peerFingerprint: String): String =
-    "direct:$peerFingerprint"
+    "$DIRECT_CONVERSATION_PREFIX$peerFingerprint"
 
 private fun encodeChatPayload(
     conversation: ChatConversation,
