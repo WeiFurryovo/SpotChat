@@ -699,6 +699,7 @@ internal fun SpotChatApp(
     var pairingCode by remember { mutableStateOf<String?>(null) }
     var appSurface by remember { mutableStateOf(AppSurface.ConversationList) }
     var messageActionsReturnSurface by remember { mutableStateOf(AppSurface.Chat) }
+    val messageActionsBackStack = remember { mutableStateListOf<ChatBubble>() }
     var selectedActionMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var pendingForwardMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var searchQuery by remember { mutableStateOf("") }
@@ -870,6 +871,22 @@ internal fun SpotChatApp(
         message: ChatBubble
     ): Boolean =
         pinnedMessageIdsByConversation[conversationId] == message.stableStarId()
+
+    fun quotedMessageTarget(
+        conversationId: String,
+        quote: QuotedMessage?
+    ): ChatBubble? =
+        quote?.let { quoted ->
+            val messages = messagesForConversation(conversationId)
+            messages.firstOrNull { message -> message.messageId == quoted.messageId }
+                ?: messages.firstOrNull { message ->
+                    message.previewText() == quoted.text &&
+                        (
+                            (message.mine && quoted.senderName == "我") ||
+                                message.senderName == quoted.senderName
+                        )
+                }
+        }
 
     fun peerReachabilityText(fingerprint: String): String =
         if (knownPeersByFingerprint[fingerprint] != null) {
@@ -2691,6 +2708,7 @@ internal fun SpotChatApp(
     fun playVoiceMessage(message: ChatBubble) {
         val audioBytes = message.voiceAudioBytes
         if (message.kind != ChatMessageKind.Voice || audioBytes == null || message.canRetry()) {
+            messageActionsBackStack.clear()
             messageActionsReturnSurface = appSurface
             selectedActionMessage = message
             appSurface = AppSurface.MessageActions
@@ -3085,6 +3103,7 @@ internal fun SpotChatApp(
                             onSearchAgain = ::openGlobalSearchInput,
                             onOpenResult = { result ->
                                 activeConversationId = result.conversation.id
+                                messageActionsBackStack.clear()
                                 messageActionsReturnSurface = AppSurface.GlobalSearch
                                 selectedActionMessage = result.message
                                 clearConversationAlerts(result.conversation.id)
@@ -3244,6 +3263,7 @@ internal fun SpotChatApp(
                             starredMessageIds = starredMessageIds(selectedConversation.id),
                             onNavigateBack = dismissOverlay,
                             onOpenMessage = { message ->
+                                messageActionsBackStack.clear()
                                 messageActionsReturnSurface = AppSurface.StarredMessages
                                 selectedActionMessage = message
                                 appSurface = AppSurface.MessageActions
@@ -3267,6 +3287,7 @@ internal fun SpotChatApp(
                             onNavigateBack = dismissOverlay,
                             onSearchAgain = ::openMessageSearchInput,
                             onOpenMessage = { message ->
+                                messageActionsBackStack.clear()
                                 messageActionsReturnSurface = AppSurface.MessageSearch
                                 selectedActionMessage = message
                                 appSurface = AppSurface.MessageActions
@@ -3281,11 +3302,22 @@ internal fun SpotChatApp(
                             ?: messagesForConversation(selectedConversation.id)
                                 .lastOrNull { message -> message.deliveryState != DeliveryState.System }
                     if (actionMessage != null) {
+                        val quotedTarget =
+                            quotedMessageTarget(selectedConversation.id, actionMessage.quotedMessage)
+                                ?.takeUnless { targetMessage ->
+                                    targetMessage.stableStarId() == actionMessage.stableStarId()
+                                }
                         SlideInOverlay(
                             onDismissed = {
-                                selectedActionMessage = null
-                                appSurface = messageActionsReturnSurface
-                            }
+                                val previousMessage = messageActionsBackStack.removeLastOrNull()
+                                if (previousMessage == null) {
+                                    selectedActionMessage = null
+                                    appSurface = messageActionsReturnSurface
+                                } else {
+                                    selectedActionMessage = previousMessage
+                                }
+                            },
+                            animationKey = actionMessage.stableStarId()
                         ) { dismissOverlay ->
                             WatchMessageActionsSurface(
                                 isRoundScreen = isRoundScreen,
@@ -3294,6 +3326,7 @@ internal fun SpotChatApp(
                                 isStarred = isMessageStarred(selectedConversation.id, actionMessage),
                                 isPinned = isMessagePinned(selectedConversation.id, actionMessage),
                                 voicePlaybackSpeed = voicePlaybackSpeed,
+                                hasQuotedMessageTarget = quotedTarget != null,
                                 onNavigateBack = dismissOverlay,
                                 onPlayVoiceMessage = {
                                     playVoiceMessage(actionMessage)
@@ -3318,6 +3351,12 @@ internal fun SpotChatApp(
                                     clearConversationAlerts(selectedConversation.id)
                                     markConversationRead(selectedConversation.id)
                                     appSurface = AppSurface.Chat
+                                },
+                                onOpenQuotedMessage = {
+                                    quotedTarget?.let { targetMessage ->
+                                        messageActionsBackStack.add(actionMessage)
+                                        selectedActionMessage = targetMessage
+                                    }
                                 },
                                 onDeleteMessage = {
                                     deleteMessageForMe(selectedConversation, actionMessage)
@@ -3407,6 +3446,7 @@ internal fun SpotChatApp(
 @Composable
 private fun SlideInOverlay(
     onDismissed: () -> Unit,
+    animationKey: Any? = Unit,
     content: @Composable (dismissOverlay: () -> Unit) -> Unit
 ) {
     BoxWithConstraints(
@@ -3438,7 +3478,7 @@ private fun SlideInOverlay(
                 }
         }
 
-        LaunchedEffect(widthPx) {
+        LaunchedEffect(widthPx, animationKey) {
             offsetX = widthPx
             animateProfileTo(0f)
         }
@@ -4932,6 +4972,7 @@ private fun WatchMessageActionsSurface(
     isStarred: Boolean,
     isPinned: Boolean,
     voicePlaybackSpeed: VoicePlaybackSpeed,
+    hasQuotedMessageTarget: Boolean,
     onNavigateBack: () -> Unit,
     onPlayVoiceMessage: () -> Unit,
     onCycleVoicePlaybackSpeed: () -> Unit,
@@ -4939,6 +4980,7 @@ private fun WatchMessageActionsSurface(
     onTogglePinned: () -> Unit,
     onCopyMessage: () -> Unit,
     onViewInChat: () -> Unit,
+    onOpenQuotedMessage: () -> Unit,
     onDeleteMessage: () -> Unit,
     onReactToMessage: (String) -> Unit,
     onOpenCustomMessageInput: () -> Unit,
@@ -5057,6 +5099,15 @@ private fun WatchMessageActionsSurface(
                             compact = compact,
                             onClick = onViewInChat
                         )
+                        if (hasQuotedMessageTarget) {
+                            MessageActionButton(
+                                icon = Icons.AutoMirrored.Filled.Chat,
+                                text = "查看引用消息",
+                                selected = false,
+                                compact = compact,
+                                onClick = onOpenQuotedMessage
+                            )
+                        }
                         reactionChoices.forEach { reaction ->
                             MessageActionButton(
                                 icon = Icons.AutoMirrored.Filled.Chat,
