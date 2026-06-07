@@ -194,6 +194,26 @@ private enum class ConversationKind(
     Group("群聊")
 }
 
+private enum class ChatListFilter(
+    val label: String
+) {
+    All("全部"),
+    Unread("未读"),
+    Direct("私聊"),
+    Group("群聊")
+}
+
+private fun ChatConversation.matchesFilter(
+    filter: ChatListFilter,
+    unreadCounts: Map<String, Int>
+): Boolean =
+    when (filter) {
+        ChatListFilter.All -> true
+        ChatListFilter.Unread -> (unreadCounts[id] ?: 0) > 0
+        ChatListFilter.Direct -> kind == ConversationKind.Direct
+        ChatListFilter.Group -> kind == ConversationKind.Group
+    }
+
 private enum class ChatMessageKind {
     Text,
     Voice
@@ -636,6 +656,7 @@ internal fun SpotChatApp(
     var selectedActionMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var pendingForwardMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var searchQuery by remember { mutableStateOf("") }
+    var chatListFilter by remember { mutableStateOf(ChatListFilter.All) }
     var isRecordingVoice by remember { mutableStateOf(false) }
     var activePlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     val greetedPeers = remember { mutableSetOf<String>() }
@@ -2717,9 +2738,13 @@ internal fun SpotChatApp(
                 contentAlignment = Alignment.Center
             ) {
                 val currentConversations = conversations()
-                val visibleConversationList =
+                val visibleConversationListBase =
                     currentConversations.filterNot { conversation ->
                         archivedConversationIds[conversation.id] == true
+                    }
+                val visibleConversationList =
+                    visibleConversationListBase.filter { conversation ->
+                        conversation.matchesFilter(chatListFilter, unreadCounts)
                     }
                 val archivedConversationList =
                     currentConversations.filter { conversation ->
@@ -2733,6 +2758,8 @@ internal fun SpotChatApp(
                         isRoundScreen = isRoundScreen,
                         profile = profile,
                         conversations = visibleConversationList,
+                        allVisibleConversations = visibleConversationListBase,
+                        activeFilter = chatListFilter,
                         archivedCount = archivedConversationList.size,
                         unreadCounts = unreadCounts,
                         pinnedConversationIds = pinnedConversationIds,
@@ -2748,6 +2775,9 @@ internal fun SpotChatApp(
                         onConfirmPairing = ::confirmPairing,
                         onRejectPairing = ::rejectPairing,
                         onOpenConversation = ::openConversation,
+                        onSelectFilter = { filter ->
+                            chatListFilter = filter
+                        },
                         onOpenArchivedChats = {
                             appSurface = AppSurface.ArchivedChats
                         },
@@ -3159,6 +3189,8 @@ private fun WatchConversationListSurface(
     isRoundScreen: Boolean,
     profile: ProfileSettings,
     conversations: List<ChatConversation>,
+    allVisibleConversations: List<ChatConversation>,
+    activeFilter: ChatListFilter,
     archivedCount: Int,
     unreadCounts: Map<String, Int>,
     pinnedConversationIds: Map<String, Boolean>,
@@ -3174,6 +3206,7 @@ private fun WatchConversationListSurface(
     onConfirmPairing: () -> Unit,
     onRejectPairing: () -> Unit,
     onOpenConversation: (ChatConversation) -> Unit,
+    onSelectFilter: (ChatListFilter) -> Unit,
     onOpenArchivedChats: () -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
@@ -3261,12 +3294,39 @@ private fun WatchConversationListSurface(
                         surfaceSpec = surfaceSpec
                     )
 
+                    ChatFilterStrip(
+                        activeFilter = activeFilter,
+                        unreadCount =
+                            allVisibleConversations.count { conversation ->
+                                (unreadCounts[conversation.id] ?: 0) > 0
+                            },
+                        directCount =
+                            allVisibleConversations.count { conversation ->
+                                conversation.kind == ConversationKind.Direct
+                            },
+                        groupCount =
+                            allVisibleConversations.count { conversation ->
+                                conversation.kind == ConversationKind.Group
+                            },
+                        compact = compact,
+                        surfaceSpec = surfaceSpec,
+                        onSelectFilter = onSelectFilter
+                    )
+
                     if (pendingPeer != null) {
                         PairingPrompt(
                             peer = pendingPeer,
                             surfaceSpec = surfaceSpec,
                             onConfirmPairing = onConfirmPairing,
                             onRejectPairing = onRejectPairing
+                        )
+                    }
+
+                    if (conversations.isEmpty()) {
+                        EmptyFilterCapsule(
+                            filter = activeFilter,
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
                         )
                     }
 
@@ -3537,6 +3597,85 @@ private fun OrbitButton(
 }
 
 @Composable
+private fun ChatFilterStrip(
+    activeFilter: ChatListFilter,
+    unreadCount: Int,
+    directCount: Int,
+    groupCount: Int,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    onSelectFilter: (ChatListFilter) -> Unit
+) {
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.84f else 0.94f)
+                .height(if (compact) 30.dp else 34.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black.copy(alpha = 0.18f))
+                .border(1.dp, chatDivider.copy(alpha = 0.52f), RoundedCornerShape(8.dp))
+                .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        ChatListFilter.entries.forEach { filter ->
+            FilterSegment(
+                filter = filter,
+                count =
+                    when (filter) {
+                        ChatListFilter.All -> directCount + groupCount
+                        ChatListFilter.Unread -> unreadCount
+                        ChatListFilter.Direct -> directCount
+                        ChatListFilter.Group -> groupCount
+                    },
+                selected = activeFilter == filter,
+                compact = compact,
+                modifier = Modifier.weight(1f),
+                onClick = { onSelectFilter(filter) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun FilterSegment(
+    filter: ChatListFilter,
+    count: Int,
+    selected: Boolean,
+    compact: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val foreground = if (selected) Color(0xFF001F1B) else chatRowMuted
+    val background =
+        if (selected) {
+            chatGreen
+        } else {
+            Color.Transparent
+        }
+    Box(
+        modifier =
+            modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(7.dp))
+                .background(background)
+                .clickable(onClick = onClick)
+                .padding(horizontal = if (compact) 2.dp else 4.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "${filter.label} ${count.coerceAtMost(99)}",
+            color = foreground,
+            fontSize = if (compact) 8.sp else 9.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
 private fun SecurityStrip(
     fingerprint: String,
     pairingCode: String?,
@@ -3658,6 +3797,40 @@ private fun ActionPill(
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+private fun EmptyFilterCapsule(
+    filter: ChatListFilter,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec
+) {
+    Box(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.72f))
+                .border(1.dp, chatDivider.copy(alpha = 0.48f), RoundedCornerShape(8.dp))
+                .padding(horizontal = 10.dp, vertical = if (compact) 8.dp else 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text =
+                when (filter) {
+                    ChatListFilter.All -> "还没有聊天"
+                    ChatListFilter.Unread -> "没有未读聊天"
+                    ChatListFilter.Direct -> "没有私聊"
+                    ChatListFilter.Group -> "没有群聊"
+                },
+            color = chatRowMuted,
+            fontSize = if (compact) 10.sp else 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center
         )
     }
