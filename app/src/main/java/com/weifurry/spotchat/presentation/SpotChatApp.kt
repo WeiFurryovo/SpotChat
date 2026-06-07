@@ -214,6 +214,23 @@ private fun ChatConversation.matchesFilter(
         ChatListFilter.Group -> kind == ConversationKind.Group
     }
 
+private enum class MutePreset(
+    val label: String,
+    val durationMs: Long?
+) {
+    EightHours("8小时", 28_800_000L),
+    OneWeek("1周", 604_800_000L),
+    Always("始终", null)
+}
+
+private data class MutedConversation(
+    val preset: MutePreset,
+    val untilEpochMillis: Long?
+) {
+    fun isActive(nowEpochMillis: Long = System.currentTimeMillis()): Boolean =
+        untilEpochMillis == null || untilEpochMillis > nowEpochMillis
+}
+
 private enum class ChatMessageKind {
     Text,
     Voice
@@ -360,6 +377,7 @@ private const val MAX_SEARCH_RESULTS = 12
 private const val MAX_STARRED_RESULTS = 24
 private const val MAX_QUOTED_MESSAGE_CHARS = 72
 private const val DISAPPEARING_SWEEP_INTERVAL_MS = 15_000L
+private const val MUTE_SWEEP_INTERVAL_MS = 60_000L
 private const val NEARBY_GROUP_CONVERSATION_ID = "group:nearby"
 private const val NEARBY_GROUP_TITLE = "附近群聊"
 private const val DIRECT_CONVERSATION_PREFIX = "direct:"
@@ -627,7 +645,7 @@ internal fun SpotChatApp(
         }
     val unreadCounts = remember { mutableStateMapOf<String, Int>() }
     val pinnedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
-    val mutedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
+    val mutedConversations = remember { mutableStateMapOf<String, MutedConversation>() }
     val archivedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val starredMessageIdsByConversation = remember { mutableStateMapOf<String, Set<String>>() }
     val disappearingModesByConversation = remember { mutableStateMapOf<String, DisappearingMessageMode>() }
@@ -852,6 +870,49 @@ internal fun SpotChatApp(
         notifier.clearConversation(conversationId)
     }
 
+    fun muteState(
+        conversationId: String,
+        nowEpochMillis: Long = System.currentTimeMillis()
+    ): MutedConversation? {
+        val mute = mutedConversations[conversationId] ?: return null
+        if (mute.isActive(nowEpochMillis)) {
+            return mute
+        }
+        mutedConversations.remove(conversationId)
+        return null
+    }
+
+    fun isConversationMuted(
+        conversationId: String,
+        nowEpochMillis: Long = System.currentTimeMillis()
+    ): Boolean =
+        muteState(conversationId, nowEpochMillis) != null
+
+    fun muteStatusLabel(conversationId: String): String {
+        val mute = muteState(conversationId) ?: return "开启"
+        val untilEpochMillis = mute.untilEpochMillis ?: return "始终"
+        val remainingMs = (untilEpochMillis - System.currentTimeMillis()).coerceAtLeast(0L)
+        val remainingMinutes = (remainingMs + 59_999L) / 60_000L
+        return when {
+            remainingMinutes <= 1L -> "1分钟"
+            remainingMinutes < 60L -> "${remainingMinutes}分"
+            remainingMinutes < 24L * 60L -> "${(remainingMinutes + 59L) / 60L}小时"
+            else -> "${(remainingMinutes + 1_439L) / 1_440L}天"
+        }
+    }
+
+    fun muteActionLabel(conversationId: String): String {
+        val currentPreset = muteState(conversationId)?.preset
+        val nextPreset =
+            when (currentPreset) {
+                null -> MutePreset.EightHours
+                MutePreset.EightHours -> MutePreset.OneWeek
+                MutePreset.OneWeek -> MutePreset.Always
+                MutePreset.Always -> null
+            }
+        return nextPreset?.let { preset -> "静音${preset.label}" } ?: "恢复通知"
+    }
+
     fun DeliveryState.canMoveTo(next: DeliveryState): Boolean =
         deliveryStateRank(next) >= deliveryStateRank(this)
 
@@ -969,7 +1030,7 @@ internal fun SpotChatApp(
             (appSurface != AppSurface.Chat || activeConversationId != conversationId)
         ) {
             unreadCounts[conversationId] = (unreadCounts[conversationId] ?: 0) + 1
-            if (mutedConversationIds[conversationId] != true) {
+            if (!isConversationMuted(conversationId)) {
                 notifyIncomingMessage(conversationId, timedMessage)
             }
         }
@@ -1110,7 +1171,7 @@ internal fun SpotChatApp(
         conversationMessages.remove(conversation.id)
         conversationUpdateOrder.remove(conversation.id)
         pinnedConversationIds.remove(conversation.id)
-        mutedConversationIds.remove(conversation.id)
+        mutedConversations.remove(conversation.id)
         archivedConversationIds.remove(conversation.id)
         disappearingModesByConversation.remove(conversation.id)
         selectedActionMessage = null
@@ -1212,7 +1273,7 @@ internal fun SpotChatApp(
                     unreadCount = unreadCounts[conversation.id] ?: 0,
                     updatedAtEpochMillis = conversationUpdateOrder[conversation.id] ?: 0L,
                     isPinned = pinnedConversationIds[conversation.id] == true,
-                    isMuted = mutedConversationIds[conversation.id] == true
+                    isMuted = isConversationMuted(conversation.id)
                 )
             }
         wearStateStore.save(
@@ -1227,7 +1288,7 @@ internal fun SpotChatApp(
         conversationMessages.toMap(),
         unreadCounts.toMap(),
         pinnedConversationIds.toMap(),
-        mutedConversationIds.toMap(),
+        mutedConversations.toMap(),
         archivedConversationIds.toMap(),
         disappearingModesByConversation.toMap(),
         trustedPeers.size,
@@ -1314,15 +1375,29 @@ internal fun SpotChatApp(
     }
 
     fun toggleConversationMuted(conversation: ChatConversation) {
-        val isMuted = mutedConversationIds[conversation.id] == true
-        if (isMuted) {
-            mutedConversationIds.remove(conversation.id)
+        val currentPreset = muteState(conversation.id)?.preset
+        val nextPreset =
+            when (currentPreset) {
+                null -> MutePreset.EightHours
+                MutePreset.EightHours -> MutePreset.OneWeek
+                MutePreset.OneWeek -> MutePreset.Always
+                MutePreset.Always -> null
+            }
+        if (nextPreset == null) {
+            mutedConversations.remove(conversation.id)
+            trustState = "已恢复通知"
         } else {
-            mutedConversationIds[conversation.id] = true
+            val nowEpochMillis = System.currentTimeMillis()
+            mutedConversations[conversation.id] =
+                MutedConversation(
+                    preset = nextPreset,
+                    untilEpochMillis = nextPreset.durationMs?.let { duration -> nowEpochMillis + duration }
+                )
             notifier.clearConversation(conversation.id)
+            trustState = "静音${nextPreset.label}"
         }
         appendSystemMessage(
-            text = if (isMuted) "已恢复通知" else "已静音聊天",
+            text = nextPreset?.let { preset -> "已静音${preset.label}" } ?: "已恢复通知",
             encrypted = true,
             conversationId = conversation.id
         )
@@ -1502,6 +1577,18 @@ internal fun SpotChatApp(
         while (true) {
             sweepExpiredMessages()
             delay(DISAPPEARING_SWEEP_INTERVAL_MS)
+        }
+    }
+
+    LaunchedEffect(mutedConversations.toMap()) {
+        while (mutedConversations.isNotEmpty()) {
+            val nowEpochMillis = System.currentTimeMillis()
+            mutedConversations
+                .filterValues { mute -> !mute.isActive(nowEpochMillis) }
+                .keys
+                .toList()
+                .forEach { conversationId -> mutedConversations.remove(conversationId) }
+            delay(MUTE_SWEEP_INTERVAL_MS)
         }
     }
 
@@ -2763,7 +2850,7 @@ internal fun SpotChatApp(
                         archivedCount = archivedConversationList.size,
                         unreadCounts = unreadCounts,
                         pinnedConversationIds = pinnedConversationIds,
-                        mutedConversationIds = mutedConversationIds,
+                        isConversationMuted = ::isConversationMuted,
                         messagesByConversation = conversationMessages,
                         transportMode = transportMode,
                         trustState = trustState,
@@ -2825,7 +2912,7 @@ internal fun SpotChatApp(
                             messagesByConversation = conversationMessages,
                             unreadCounts = unreadCounts,
                             pinnedConversationIds = pinnedConversationIds,
-                            mutedConversationIds = mutedConversationIds,
+                            isConversationMuted = ::isConversationMuted,
                             onNavigateBack = dismissOverlay,
                             onOpenConversation = ::openConversation
                         )
@@ -2896,7 +2983,9 @@ internal fun SpotChatApp(
                             },
                             messages = messagesForConversation(selectedConversation.id),
                             isPinned = pinnedConversationIds[selectedConversation.id] == true,
-                            isMuted = mutedConversationIds[selectedConversation.id] == true,
+                            isMuted = isConversationMuted(selectedConversation.id),
+                            muteStatus = muteStatusLabel(selectedConversation.id),
+                            muteAction = muteActionLabel(selectedConversation.id),
                             isArchived = archivedConversationIds[selectedConversation.id] == true,
                             unreadCount = unreadCounts[selectedConversation.id] ?: 0,
                             starredCount = starredMessageIds(selectedConversation.id).size,
@@ -3073,7 +3162,7 @@ internal fun SpotChatApp(
                                 messagesByConversation = conversationMessages,
                                 unreadCounts = unreadCounts,
                                 pinnedConversationIds = pinnedConversationIds,
-                                mutedConversationIds = mutedConversationIds,
+                                isConversationMuted = ::isConversationMuted,
                                 onNavigateBack = dismissOverlay,
                                 onSelectConversation = { targetConversation ->
                                     forwardMessageToConversation(targetConversation, forwardMessage)
@@ -3194,7 +3283,7 @@ private fun WatchConversationListSurface(
     archivedCount: Int,
     unreadCounts: Map<String, Int>,
     pinnedConversationIds: Map<String, Boolean>,
-    mutedConversationIds: Map<String, Boolean>,
+    isConversationMuted: (String) -> Boolean,
     messagesByConversation: Map<String, List<ChatBubble>>,
     transportMode: TransportMode,
     trustState: String,
@@ -3349,7 +3438,7 @@ private fun WatchConversationListSurface(
                             lastMessage = lastMessage,
                             unreadCount = unreadCounts[conversation.id] ?: 0,
                             isPinned = pinnedConversationIds[conversation.id] == true,
-                            isMuted = mutedConversationIds[conversation.id] == true,
+                            isMuted = isConversationMuted(conversation.id),
                             featured = conversation.id == NEARBY_GROUP_CONVERSATION_ID,
                             surfaceSpec = surfaceSpec,
                             onClick = {
@@ -4022,7 +4111,7 @@ private fun WatchForwardMessageSurface(
     messagesByConversation: Map<String, List<ChatBubble>>,
     unreadCounts: Map<String, Int>,
     pinnedConversationIds: Map<String, Boolean>,
-    mutedConversationIds: Map<String, Boolean>,
+    isConversationMuted: (String) -> Boolean,
     onNavigateBack: () -> Unit,
     onSelectConversation: (ChatConversation) -> Unit
 ) {
@@ -4091,7 +4180,7 @@ private fun WatchForwardMessageSurface(
                             lastMessage = lastMessage,
                             unreadCount = unreadCounts[conversation.id] ?: 0,
                             isPinned = pinnedConversationIds[conversation.id] == true,
-                            isMuted = mutedConversationIds[conversation.id] == true,
+                            isMuted = isConversationMuted(conversation.id),
                             featured = conversation.id == sourceConversation.id,
                             surfaceSpec = surfaceSpec,
                             onClick = { onSelectConversation(conversation) }
@@ -4110,7 +4199,7 @@ private fun WatchArchivedChatsSurface(
     messagesByConversation: Map<String, List<ChatBubble>>,
     unreadCounts: Map<String, Int>,
     pinnedConversationIds: Map<String, Boolean>,
-    mutedConversationIds: Map<String, Boolean>,
+    isConversationMuted: (String) -> Boolean,
     onNavigateBack: () -> Unit,
     onOpenConversation: (ChatConversation) -> Unit
 ) {
@@ -4184,7 +4273,7 @@ private fun WatchArchivedChatsSurface(
                                 lastMessage = lastMessage,
                                 unreadCount = unreadCounts[conversation.id] ?: 0,
                                 isPinned = pinnedConversationIds[conversation.id] == true,
-                                isMuted = mutedConversationIds[conversation.id] == true,
+                                isMuted = isConversationMuted(conversation.id),
                                 featured = false,
                                 surfaceSpec = surfaceSpec,
                                 onClick = { onOpenConversation(conversation) }
@@ -4264,6 +4353,8 @@ private fun WatchChatInfoSurface(
     messages: List<ChatBubble>,
     isPinned: Boolean,
     isMuted: Boolean,
+    muteStatus: String,
+    muteAction: String,
     isArchived: Boolean,
     unreadCount: Int,
     starredCount: Int,
@@ -4380,7 +4471,7 @@ private fun WatchChatInfoSurface(
                         )
                         InfoMetricPill(
                             label = "通知",
-                            value = if (isMuted) "静音" else "开启",
+                            value = muteStatus,
                             compact = compact,
                             modifier = Modifier.weight(1f)
                         )
@@ -4487,7 +4578,7 @@ private fun WatchChatInfoSurface(
                         )
                         MessageActionButton(
                             icon = Icons.Filled.NotificationsOff,
-                            text = if (isMuted) "恢复通知" else "静音聊天",
+                            text = muteAction,
                             selected = isMuted,
                             compact = compact,
                             onClick = onToggleMuted
