@@ -698,6 +698,7 @@ internal fun SpotChatApp(
     var pendingPeer by remember { mutableStateOf<TrustedPeer?>(null) }
     var pairingCode by remember { mutableStateOf<String?>(null) }
     var appSurface by remember { mutableStateOf(AppSurface.ConversationList) }
+    var messageActionsReturnSurface by remember { mutableStateOf(AppSurface.Chat) }
     var selectedActionMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var pendingForwardMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var searchQuery by remember { mutableStateOf("") }
@@ -2690,6 +2691,7 @@ internal fun SpotChatApp(
     fun playVoiceMessage(message: ChatBubble) {
         val audioBytes = message.voiceAudioBytes
         if (message.kind != ChatMessageKind.Voice || audioBytes == null || message.canRetry()) {
+            messageActionsReturnSurface = appSurface
             selectedActionMessage = message
             appSurface = AppSurface.MessageActions
             return
@@ -3083,6 +3085,7 @@ internal fun SpotChatApp(
                             onSearchAgain = ::openGlobalSearchInput,
                             onOpenResult = { result ->
                                 activeConversationId = result.conversation.id
+                                messageActionsReturnSurface = AppSurface.GlobalSearch
                                 selectedActionMessage = result.message
                                 clearConversationAlerts(result.conversation.id)
                                 markConversationRead(result.conversation.id)
@@ -3241,6 +3244,7 @@ internal fun SpotChatApp(
                             starredMessageIds = starredMessageIds(selectedConversation.id),
                             onNavigateBack = dismissOverlay,
                             onOpenMessage = { message ->
+                                messageActionsReturnSurface = AppSurface.StarredMessages
                                 selectedActionMessage = message
                                 appSurface = AppSurface.MessageActions
                             }
@@ -3263,6 +3267,7 @@ internal fun SpotChatApp(
                             onNavigateBack = dismissOverlay,
                             onSearchAgain = ::openMessageSearchInput,
                             onOpenMessage = { message ->
+                                messageActionsReturnSurface = AppSurface.MessageSearch
                                 selectedActionMessage = message
                                 appSurface = AppSurface.MessageActions
                             }
@@ -3278,7 +3283,8 @@ internal fun SpotChatApp(
                     if (actionMessage != null) {
                         SlideInOverlay(
                             onDismissed = {
-                                appSurface = AppSurface.Chat
+                                selectedActionMessage = null
+                                appSurface = messageActionsReturnSurface
                             }
                         ) { dismissOverlay ->
                             WatchMessageActionsSurface(
