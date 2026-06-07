@@ -200,6 +200,7 @@ private data class ChatBubble(
     val messageId: String? = null,
     val deliveryState: DeliveryState = DeliveryState.Received,
     val kind: ChatMessageKind = ChatMessageKind.Text,
+    val quotedMessage: QuotedMessage? = null,
     val voiceDurationMs: Long? = null,
     val voiceAudioBytes: ByteArray? = null
 )
@@ -223,7 +224,8 @@ private data class PendingOutboundMessage(
     val conversationId: String,
     val text: String,
     val displayMessageId: String,
-    val targetFingerprints: List<String>
+    val targetFingerprints: List<String>,
+    val quotedMessage: QuotedMessage? = null
 )
 
 private data class PendingOutboundVoiceMessage(
@@ -264,12 +266,20 @@ private fun ChatBubble.canRetry(): Boolean =
         }
 
 @Serializable
+private data class QuotedMessage(
+    val messageId: String,
+    val senderName: String,
+    val text: String
+)
+
+@Serializable
 private data class ChatPayload(
     val version: Int = 1,
     val kind: String = CHAT_PAYLOAD_KIND_DIRECT,
     val text: String,
     val groupId: String? = null,
-    val groupName: String? = null
+    val groupName: String? = null,
+    val quote: QuotedMessage? = null
 )
 
 private val defaultAvatars =
@@ -284,6 +294,7 @@ private val defaultAvatars =
 private const val PROFILE_AVATARS_PER_ROW = 3
 private const val CUSTOM_MESSAGE_REMOTE_INPUT_KEY = "spotchat_custom_message"
 private const val MAX_CUSTOM_MESSAGE_CHARS = 280
+private const val MAX_QUOTED_MESSAGE_CHARS = 72
 private const val NEARBY_GROUP_CONVERSATION_ID = "group:nearby"
 private const val NEARBY_GROUP_TITLE = "附近群聊"
 private const val DIRECT_CONVERSATION_PREFIX = "direct:"
@@ -557,6 +568,7 @@ internal fun SpotChatApp(
     if (conversationMessages[activeConversationId] == null) {
         activeConversationId = NEARBY_GROUP_CONVERSATION_ID
     }
+    var pendingQuotedMessage by remember { mutableStateOf<QuotedMessage?>(null) }
     var transportMode by remember { mutableStateOf(TransportMode.Lan) }
     var trustState by remember { mutableStateOf("未配对") }
     var activePeer by remember { mutableStateOf<TransportPeer?>(null) }
@@ -1144,6 +1156,7 @@ internal fun SpotChatApp(
                                             },
                                         senderFingerprint = plain.senderFingerprint,
                                         messageId = plain.messageId,
+                                        quotedMessage = payload.quote,
                                         deliveryState = DeliveryState.Received
                                     )
                                 )
@@ -1387,7 +1400,8 @@ internal fun SpotChatApp(
         text: String,
         displayMessageId: String,
         targets: List<Pair<String, TransportPeer>>,
-        requeueOnFailure: Boolean
+        requeueOnFailure: Boolean,
+        quotedMessage: QuotedMessage?
     ) {
         trustState = "正在加密发送"
         coroutineScope.launch {
@@ -1397,7 +1411,8 @@ internal fun SpotChatApp(
                 val payload =
                     encodeChatPayload(
                         conversation = conversation,
-                        text = text
+                        text = text,
+                        quotedMessage = quotedMessage
                     )
                 val packetResult = runCatching { engine.encryptTextForPeer(peerFingerprint, payload) }
                 if (packetResult.isFailure) {
@@ -1464,7 +1479,8 @@ internal fun SpotChatApp(
                             conversationId = conversation.id,
                             text = text,
                             displayMessageId = displayMessageId,
-                            targetFingerprints = conversation.memberFingerprints
+                            targetFingerprints = conversation.memberFingerprints,
+                            quotedMessage = quotedMessage
                         )
                     updateMessageState(displayMessageId, DeliveryState.Waiting)
                     trustState = "等待对方上线"
@@ -1490,7 +1506,8 @@ internal fun SpotChatApp(
             text = queuedReply.text,
             displayMessageId = queuedReply.displayMessageId,
             targets = targets,
-            requeueOnFailure = true
+            requeueOnFailure = true,
+            quotedMessage = queuedReply.quotedMessage
         )
     }
 
@@ -1672,7 +1689,8 @@ internal fun SpotChatApp(
     fun sendMessageToConversation(
         conversation: ChatConversation,
         text: String,
-        requeueWhenOffline: Boolean = true
+        requeueWhenOffline: Boolean = true,
+        quotedMessage: QuotedMessage? = null
     ) {
         val cleanText = text.trim().take(MAX_CUSTOM_MESSAGE_CHARS)
         if (cleanText.isBlank()) {
@@ -1690,6 +1708,7 @@ internal fun SpotChatApp(
                     encrypted = true,
                     timestamp = nowTime(),
                     messageId = displayMessageId,
+                    quotedMessage = quotedMessage,
                     deliveryState =
                         if (requeueWhenOffline && conversation.memberFingerprints.isNotEmpty()) {
                             DeliveryState.Waiting
@@ -1704,7 +1723,8 @@ internal fun SpotChatApp(
                         conversationId = conversation.id,
                         text = cleanText,
                         displayMessageId = displayMessageId,
-                        targetFingerprints = conversation.memberFingerprints
+                        targetFingerprints = conversation.memberFingerprints,
+                        quotedMessage = quotedMessage
                     )
                 trustState = "等待网络恢复"
             }
@@ -1737,7 +1757,8 @@ internal fun SpotChatApp(
                     encrypted = true,
                     timestamp = nowTime(),
                     messageId = displayMessageId,
-                    deliveryState = DeliveryState.Waiting
+                    deliveryState = DeliveryState.Waiting,
+                    quotedMessage = quotedMessage
                 )
             )
             if (requeueWhenOffline) {
@@ -1746,7 +1767,8 @@ internal fun SpotChatApp(
                         conversationId = conversation.id,
                         text = cleanText,
                         displayMessageId = displayMessageId,
-                        targetFingerprints = conversation.memberFingerprints
+                        targetFingerprints = conversation.memberFingerprints,
+                        quotedMessage = quotedMessage
                     )
             }
             return
@@ -1760,7 +1782,8 @@ internal fun SpotChatApp(
                 encrypted = true,
                 timestamp = nowTime(),
                 messageId = displayMessageId,
-                deliveryState = DeliveryState.Sending
+                deliveryState = DeliveryState.Sending,
+                quotedMessage = quotedMessage
             )
         )
 
@@ -1769,12 +1792,15 @@ internal fun SpotChatApp(
             text = cleanText,
             displayMessageId = displayMessageId,
             targets = targets,
-            requeueOnFailure = requeueWhenOffline
+            requeueOnFailure = requeueWhenOffline,
+            quotedMessage = quotedMessage
         )
     }
 
     fun sendQuickReply(text: String) {
-        sendMessageToConversation(activeConversation(), text)
+        val quote = pendingQuotedMessage
+        pendingQuotedMessage = null
+        sendMessageToConversation(activeConversation(), text, quotedMessage = quote)
     }
 
     fun retryMessage(
@@ -1797,7 +1823,8 @@ internal fun SpotChatApp(
                             conversationId = conversation.id,
                             text = message.text,
                             displayMessageId = displayMessageId,
-                            targetFingerprints = conversation.memberFingerprints
+                            targetFingerprints = conversation.memberFingerprints,
+                            quotedMessage = message.quotedMessage
                         )
 
                 ChatMessageKind.Voice ->
@@ -1820,7 +1847,8 @@ internal fun SpotChatApp(
                     text = message.text,
                     displayMessageId = displayMessageId,
                     targets = targets,
-                    requeueOnFailure = true
+                    requeueOnFailure = true,
+                    quotedMessage = message.quotedMessage
                 )
 
             ChatMessageKind.Voice ->
@@ -2018,7 +2046,15 @@ internal fun SpotChatApp(
             .setInputActionType(EditorInfo.IME_ACTION_SEND)
 
         val inputIntent = RemoteInputIntentHelper.createActionRemoteInputIntent()
-        RemoteInputIntentHelper.putTitleExtra(inputIntent, activeConversation().title)
+        val quotedMessage = pendingQuotedMessage
+        RemoteInputIntentHelper.putTitleExtra(
+            inputIntent,
+            if (quotedMessage == null) {
+                activeConversation().title
+            } else {
+                "回复 ${quotedMessage.senderName}"
+            }
+        )
         RemoteInputIntentHelper.putConfirmLabelExtra(inputIntent, "发送")
         RemoteInputIntentHelper.putCancelLabelExtra(inputIntent, "取消")
         RemoteInputIntentHelper.putRemoteInputsExtra(inputIntent, listOf(remoteInputBuilder.build()))
@@ -2213,12 +2249,19 @@ internal fun SpotChatApp(
                                 message = actionMessage,
                                 onNavigateBack = dismissOverlay,
                                 onOpenCustomMessageInput = {
+                                    pendingQuotedMessage = null
                                     appSurface = AppSurface.Chat
                                     openCustomMessageInput()
                                 },
                                 onSendQuickReply = { reply ->
+                                    pendingQuotedMessage = actionMessage.toQuotedMessage(selectedConversation)
                                     appSurface = AppSurface.Chat
                                     sendQuickReply(reply)
+                                },
+                                onReplyToMessage = {
+                                    pendingQuotedMessage = actionMessage.toQuotedMessage(selectedConversation)
+                                    appSurface = AppSurface.Chat
+                                    openCustomMessageInput()
                                 },
                                 onRetryMessage = {
                                     appSurface = AppSurface.Chat
@@ -3133,6 +3176,7 @@ private fun WatchMessageActionsSurface(
     onNavigateBack: () -> Unit,
     onOpenCustomMessageInput: () -> Unit,
     onSendQuickReply: (String) -> Unit,
+    onReplyToMessage: () -> Unit,
     onRetryMessage: () -> Unit
 ) {
     BoxWithConstraints(
@@ -3202,10 +3246,17 @@ private fun WatchMessageActionsSurface(
                         }
                         MessageActionButton(
                             icon = Icons.Filled.Keyboard,
-                            text = "输入回复",
+                            text = "输入消息",
                             selected = !message.canRetry(),
                             compact = compact,
                             onClick = onOpenCustomMessageInput
+                        )
+                        MessageActionButton(
+                            icon = Icons.AutoMirrored.Filled.Chat,
+                            text = "回复这条",
+                            selected = false,
+                            compact = compact,
+                            onClick = onReplyToMessage
                         )
                         customMessageQuickChoices.take(2).forEach { reply ->
                             MessageActionButton(
@@ -4410,13 +4461,37 @@ private fun MessageCapsule(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            message.quotedMessage?.let { quote ->
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color.Black.copy(alpha = if (message.mine) 0.14f else 0.22f))
+                            .border(1.dp, foreground.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = if (compact) 6.dp else 7.dp, vertical = if (compact) 4.dp else 5.dp),
+                    verticalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
+                    Text(
+                        text = quote.senderName,
+                        color = foreground.copy(alpha = 0.76f),
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = quote.text,
+                        color = foreground.copy(alpha = 0.72f),
+                        fontSize = 9.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
             Text(
                 text =
-                    if (message.kind == ChatMessageKind.Voice) {
-                        "语音 · ${formatDuration(message.voiceDurationMs ?: 0L)}"
-                    } else {
-                        message.text
-                    },
+                    message.previewText(),
                 color = foreground,
                 fontSize = if (compact) 12.sp else 14.sp,
                 lineHeight = if (compact) 15.sp else 17.sp,
@@ -4606,10 +4681,12 @@ private fun conversationPreview(
     lastMessage: ChatBubble?
 ): String =
     lastMessage?.let { message ->
+        val text = message.previewText()
+        val replyPrefix = if (message.quotedMessage == null) "" else "回复 "
         when {
-            message.mine -> "我：${message.text}"
-            message.senderName != null -> "${message.senderName}：${message.text}"
-            else -> message.text
+            message.mine -> "我：$replyPrefix$text"
+            message.senderName != null -> "${message.senderName}：$replyPrefix$text"
+            else -> "$replyPrefix$text"
         }
     } ?: conversation.subtitle
 
@@ -4622,6 +4699,26 @@ private fun formatDuration(durationMs: Long): String {
     val seconds = totalSeconds % 60L
     return "%d:%02d".format(Locale.getDefault(), minutes, seconds)
 }
+
+private fun ChatBubble.previewText(): String =
+    if (kind == ChatMessageKind.Voice) {
+        "语音 · ${formatDuration(voiceDurationMs ?: 0L)}"
+    } else {
+        text
+    }
+
+private fun ChatBubble.toQuotedMessage(conversation: ChatConversation): QuotedMessage =
+    QuotedMessage(
+        messageId = messageId ?: UUID.randomUUID().toString(),
+        senderName =
+            when {
+                mine -> "我"
+                senderName != null -> senderName
+                conversation.kind == ConversationKind.Direct -> conversation.title
+                else -> "SpotChat"
+            },
+        text = previewText().trim().take(MAX_QUOTED_MESSAGE_CHARS)
+    )
 
 private fun deliveryStateRank(state: DeliveryState): Int =
     when (state) {
@@ -4640,7 +4737,8 @@ private fun DeliveryState.isReceiptState(): Boolean =
 
 private fun encodeChatPayload(
     conversation: ChatConversation,
-    text: String
+    text: String,
+    quotedMessage: QuotedMessage?
 ): String =
     chatPayloadJson.encodeToString(
         ChatPayload(
@@ -4662,7 +4760,8 @@ private fun encodeChatPayload(
                     conversation.title
                 } else {
                     null
-                }
+                },
+            quote = quotedMessage
         )
     )
 
