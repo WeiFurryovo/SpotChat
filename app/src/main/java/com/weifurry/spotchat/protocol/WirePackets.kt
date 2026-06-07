@@ -7,6 +7,7 @@ enum class PacketKind {
     HELLO,
     ENCRYPTED_MESSAGE,
     ENCRYPTED_VOICE_MESSAGE,
+    ENCRYPTED_REACTION,
     ENCRYPTED_ACK,
     ACK
 }
@@ -45,6 +46,12 @@ data class VoiceMessagePayload(
     val codec: String,
     val durationMs: Long,
     val audioBase64: String
+)
+
+@Serializable
+data class ReactionPayload(
+    val targetMessageId: String,
+    val emoji: String
 )
 
 @Serializable

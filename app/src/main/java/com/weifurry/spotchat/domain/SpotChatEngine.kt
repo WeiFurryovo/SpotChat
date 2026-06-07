@@ -7,6 +7,7 @@ import com.weifurry.spotchat.protocol.DeliveryReceiptStatus
 import com.weifurry.spotchat.protocol.EncryptedChatMessage
 import com.weifurry.spotchat.protocol.PacketKind
 import com.weifurry.spotchat.protocol.PeerHello
+import com.weifurry.spotchat.protocol.ReactionPayload
 import com.weifurry.spotchat.protocol.VoiceMessagePayload
 import com.weifurry.spotchat.protocol.WirePacket
 import java.security.KeyPair
@@ -61,6 +62,14 @@ data class PlainVoiceMessage(
         return result
     }
 }
+
+data class PlainReaction(
+    val messageId: String,
+    val senderFingerprint: String,
+    val sentAtEpochMillis: Long,
+    val targetMessageId: String,
+    val emoji: String
+)
 
 class DuplicateMessageException(
     val messageId: String,
@@ -160,6 +169,39 @@ class SpotChatEngine(
             )
         return encryptedPayloadPacket(
             kind = PacketKind.ENCRYPTED_VOICE_MESSAGE,
+            messageId = messageId,
+            sentAtEpochMillis = sentAtEpochMillis,
+            frame = frame
+        )
+    }
+
+    fun encryptReactionForPeer(
+        peerFingerprint: String,
+        targetMessageId: String,
+        emoji: String,
+        sentAtEpochMillis: Long = System.currentTimeMillis()
+    ): WirePacket {
+        require(targetMessageId.isNotBlank()) {
+            "Reaction target message id cannot be blank"
+        }
+        require(emoji.isNotBlank()) {
+            "Reaction emoji cannot be blank"
+        }
+        val messageId = UUID.randomUUID().toString()
+        val payload =
+            ReactionPayload(
+                targetMessageId = targetMessageId,
+                emoji = emoji
+            )
+        val frame =
+            encryptPayloadForPeer(
+                peerFingerprint = peerFingerprint,
+                kind = PacketKind.ENCRYPTED_REACTION,
+                messageId = messageId,
+                plaintext = json.encodeToString(payload).toByteArray(Charsets.UTF_8)
+            )
+        return encryptedPayloadPacket(
+            kind = PacketKind.ENCRYPTED_REACTION,
             messageId = messageId,
             sentAtEpochMillis = sentAtEpochMillis,
             frame = frame
@@ -266,6 +308,18 @@ class SpotChatEngine(
             codec = payload.codec,
             durationMs = payload.durationMs,
             audioBytes = Base64.getDecoder().decode(payload.audioBase64)
+        )
+    }
+
+    fun decryptReaction(message: EncryptedChatMessage): PlainReaction {
+        val plaintext = decryptPayload(message, PacketKind.ENCRYPTED_REACTION, rememberReplay = true)
+        val payload = json.decodeFromString<ReactionPayload>(plaintext.toString(Charsets.UTF_8))
+        return PlainReaction(
+            messageId = message.messageId,
+            senderFingerprint = message.senderFingerprint,
+            sentAtEpochMillis = message.sentAtEpochMillis,
+            targetMessageId = payload.targetMessageId,
+            emoji = payload.emoji
         )
     }
 

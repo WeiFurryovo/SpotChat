@@ -229,7 +229,13 @@ private data class ChatBubble(
     val voiceDurationMs: Long? = null,
     val voiceAudioBytes: ByteArray? = null,
     val createdAtEpochMillis: Long = System.currentTimeMillis(),
-    val expiresAtEpochMillis: Long? = null
+    val expiresAtEpochMillis: Long? = null,
+    val reactions: Map<String, String> = emptyMap()
+)
+
+private data class ReactionChoice(
+    val code: String,
+    val label: String
 )
 
 private fun ChatBubble.stableStarId(): String =
@@ -336,6 +342,13 @@ private const val DIRECT_CONVERSATION_PREFIX = "direct:"
 private const val CHAT_PAYLOAD_KIND_DIRECT = "direct"
 private const val CHAT_PAYLOAD_KIND_GROUP = "group"
 private val customMessageQuickChoices = arrayOf("收到", "马上到", "稍后联系")
+private val reactionChoices =
+    listOf(
+        ReactionChoice("like", "赞"),
+        ReactionChoice("love", "爱心"),
+        ReactionChoice("laugh", "笑"),
+        ReactionChoice("ok", "收到")
+    )
 private val chatPayloadJson =
     Json {
         encodeDefaults = true
@@ -1337,6 +1350,22 @@ internal fun SpotChatApp(
         }
     }
 
+    fun applyMessageReaction(
+        conversationId: String,
+        targetMessageId: String,
+        senderFingerprint: String,
+        reactionCode: String
+    ) {
+        conversationMessages[conversationId] =
+            messagesForConversation(conversationId).map { message ->
+                if (message.messageId == targetMessageId) {
+                    message.copy(reactions = message.reactions + (senderFingerprint to reactionCode))
+                } else {
+                    message
+                }
+            }
+    }
+
     fun removeMessageCaches(
         conversationId: String,
         message: ChatBubble
@@ -1671,6 +1700,48 @@ internal fun SpotChatApp(
                             }
                     }
 
+                    PacketKind.ENCRYPTED_REACTION -> {
+                        val encryptedMessage = packet.encryptedMessage ?: return
+                        val storedSender = trustedPeer(encryptedMessage.senderFingerprint)
+                        if (storedSender == null) {
+                            trustState = "拦截未确认回应"
+                            return
+                        }
+                        rememberPeerRoute(encryptedMessage.senderFingerprint, event.peer)
+                        runCatching { engine.decryptReaction(encryptedMessage) }
+                            .onSuccess { reaction ->
+                                val candidateConversationIds =
+                                    listOf(
+                                        directConversationId(reaction.senderFingerprint),
+                                        NEARBY_GROUP_CONVERSATION_ID
+                                    ).distinct()
+                                val targetConversationId =
+                                    candidateConversationIds.firstOrNull { conversationId ->
+                                        messagesForConversation(conversationId)
+                                            .any { message -> message.messageId == reaction.targetMessageId }
+                                    }
+                                if (targetConversationId == null) {
+                                    trustState = "回应目标不存在"
+                                    return@onSuccess
+                                }
+                                applyMessageReaction(
+                                    conversationId = targetConversationId,
+                                    targetMessageId = reaction.targetMessageId,
+                                    senderFingerprint = reaction.senderFingerprint,
+                                    reactionCode = reaction.emoji
+                                )
+                                trustState = "${storedSender.deviceName} 回应了消息"
+                            }
+                            .onFailure { error ->
+                                if (error is DuplicateMessageException) {
+                                    trustState = "重复回应已忽略"
+                                    rememberPeerRoute(error.senderFingerprint, event.peer)
+                                } else {
+                                    trustState = "回应验证失败"
+                                }
+                            }
+                    }
+
                     PacketKind.ENCRYPTED_ACK -> {
                         val encryptedAck = packet.encryptedMessage ?: return
                         if (trustedPeer(encryptedAck.senderFingerprint) == null) {
@@ -1901,6 +1972,52 @@ internal fun SpotChatApp(
             requeueOnFailure = true,
             quotedMessage = queuedReply.quotedMessage
         )
+    }
+
+    fun sendReactionToConversation(
+        conversation: ChatConversation,
+        message: ChatBubble,
+        reactionCode: String
+    ) {
+        val targetMessageId = message.messageId ?: return
+        applyMessageReaction(
+            conversationId = conversation.id,
+            targetMessageId = targetMessageId,
+            senderFingerprint = localFingerprint,
+            reactionCode = reactionCode
+        )
+        val targets = targetsForConversation(conversation)
+        if (targets.isEmpty()) {
+            trustState = "回应已本机保存"
+            return
+        }
+        trustState = "正在发送回应"
+        coroutineScope.launch {
+            var sentCount = 0
+            targets.forEach { (peerFingerprint, peer) ->
+                val packet =
+                    runCatching {
+                        engine.encryptReactionForPeer(
+                            peerFingerprint = peerFingerprint,
+                            targetMessageId = targetMessageId,
+                            emoji = reactionCode
+                        )
+                    }.getOrElse {
+                        return@forEach
+                    }
+                runCatching {
+                    sendPacket(currentTransport(), peer, packet)
+                }.onSuccess {
+                    sentCount += 1
+                }
+            }
+            trustState =
+                if (sentCount > 0) {
+                    "回应已发送"
+                } else {
+                    "回应发送失败"
+                }
+        }
     }
 
     fun sendPreparedVoiceMessage(
@@ -2791,6 +2908,10 @@ internal fun SpotChatApp(
                                 },
                                 onDeleteMessage = {
                                     deleteMessageForMe(selectedConversation, actionMessage)
+                                },
+                                onReactToMessage = { reactionCode ->
+                                    sendReactionToConversation(selectedConversation, actionMessage, reactionCode)
+                                    appSurface = AppSurface.Chat
                                 },
                                 onOpenCustomMessageInput = {
                                     pendingQuotedMessage = null
@@ -3895,6 +4016,7 @@ private fun WatchMessageActionsSurface(
     onNavigateBack: () -> Unit,
     onToggleStarred: () -> Unit,
     onDeleteMessage: () -> Unit,
+    onReactToMessage: (String) -> Unit,
     onOpenCustomMessageInput: () -> Unit,
     onSendQuickReply: (String) -> Unit,
     onReplyToMessage: () -> Unit,
@@ -3973,6 +4095,15 @@ private fun WatchMessageActionsSurface(
                             compact = compact,
                             onClick = onToggleStarred
                         )
+                        reactionChoices.forEach { reaction ->
+                            MessageActionButton(
+                                icon = Icons.AutoMirrored.Filled.Chat,
+                                text = "回应 ${reaction.label}",
+                                selected = false,
+                                compact = compact,
+                                onClick = { onReactToMessage(reaction.code) }
+                            )
+                        }
                         MessageActionButton(
                             icon = Icons.Filled.Keyboard,
                             text = "输入消息",
@@ -5638,6 +5769,16 @@ private fun MessageCapsule(
                         Modifier
                     }
             )
+            if (message.reactions.isNotEmpty()) {
+                Text(
+                    text = reactionSummary(message),
+                    color = foreground.copy(alpha = 0.82f),
+                    fontSize = if (compact) 10.sp else 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }
@@ -5841,6 +5982,18 @@ private fun disappearingActionLabel(mode: DisappearingMessageMode): String =
     } else {
         "限时改为${mode.next().label}"
     }
+
+private fun reactionLabel(reactionCode: String): String =
+    reactionChoices.firstOrNull { reaction -> reaction.code == reactionCode }?.label ?: reactionCode
+
+private fun reactionSummary(message: ChatBubble): String =
+    message.reactions.values
+        .groupingBy(::reactionLabel)
+        .eachCount()
+        .entries
+        .joinToString(separator = " ") { (label, count) ->
+            if (count > 1) "$label x$count" else label
+        }
 
 private fun formatTimeRemaining(expiresAtEpochMillis: Long): String {
     val remainingMs = (expiresAtEpochMillis - System.currentTimeMillis()).coerceAtLeast(0L)

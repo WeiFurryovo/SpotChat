@@ -174,4 +174,31 @@ class SpotChatEngineTest {
         assertEquals(1_250L, plain.durationMs)
         assertArrayEquals(audioBytes, plain.audioBytes)
     }
+
+    @Test
+    fun encryptedReactionPacketsCarryTargetAndEmoji() {
+        val watch = SpotChatEngine("手表", SpotChatCrypto.generateIdentity())
+        val phone = SpotChatEngine("手机", SpotChatCrypto.generateIdentity())
+
+        val trustedPhone =
+            watch.openSession(phone.helloPacket().hello ?: error("missing phone hello"))
+        phone.openSession(watch.helloPacket().hello ?: error("missing watch hello"))
+        val reactionPacket =
+            watch.encryptReactionForPeer(
+                peerFingerprint = trustedPhone.fingerprint,
+                targetMessageId = "message-99",
+                emoji = "like"
+            )
+        val encryptedReaction =
+            ChatCodec
+                .decode(ChatCodec.encode(reactionPacket))
+                .encryptedMessage
+                ?: error("missing encrypted reaction")
+        val plain = phone.decryptReaction(encryptedReaction)
+
+        assertEquals(PacketKind.ENCRYPTED_REACTION, reactionPacket.kind)
+        assertEquals(watch.localFingerprint, plain.senderFingerprint)
+        assertEquals("message-99", plain.targetMessageId)
+        assertEquals("like", plain.emoji)
+    }
 }
