@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.StarRate
 import androidx.compose.material.icons.filled.Stop
@@ -4057,7 +4058,7 @@ private fun WatchMessageActionsSurface(
                     ChatInfoHeader(
                         conversation = conversation,
                         accent = accent,
-                        title = "消息操作",
+                        title = "消息详情",
                         subtitle = conversation.title,
                         surfaceSpec = surfaceSpec,
                         onNavigateBack = onNavigateBack
@@ -4734,7 +4735,7 @@ private fun MessageMetaStrip(
     compact: Boolean,
     surfaceSpec: WatchSurfaceSpec
 ) {
-    Row(
+    Column(
         modifier =
             Modifier
                 .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
@@ -4742,33 +4743,120 @@ private fun MessageMetaStrip(
                 .background(chatSurfaceHigh.copy(alpha = 0.82f))
                 .border(1.dp, chatBlue.copy(alpha = 0.22f), RoundedCornerShape(8.dp))
                 .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 6.dp else 7.dp),
-        horizontalArrangement = Arrangement.Center,
+        verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp)
+    ) {
+        MessageMetaRow(
+            icon =
+                if (message.encrypted) Icons.Filled.Lock else Icons.Filled.DoneAll,
+            label = "安全",
+            value = if (message.encrypted) "E2EE 加密" else "明文",
+            compact = compact
+        )
+        MessageMetaRow(
+            icon = Icons.Filled.DoneAll,
+            label = "状态",
+            value = message.deliveryState.label,
+            compact = compact
+        )
+        MessageMetaRow(
+            icon = Icons.Filled.Schedule,
+            label = "时间",
+            value = message.timestamp,
+            compact = compact
+        )
+        MessageMetaRow(
+            icon =
+                if (message.kind == ChatMessageKind.Voice) {
+                    Icons.Filled.Mic
+                } else {
+                    Icons.AutoMirrored.Filled.Chat
+                },
+            label = "类型",
+            value =
+                if (message.kind == ChatMessageKind.Voice) {
+                    "语音 · ${formatDuration(message.voiceDurationMs ?: 0L)}"
+                } else {
+                    "文字"
+                },
+            compact = compact
+        )
+        message.messageId?.let { messageId ->
+            MessageMetaRow(
+                icon = Icons.Filled.VerifiedUser,
+                label = "消息ID",
+                value = shortMessageId(messageId),
+                compact = compact
+            )
+        }
+        message.senderFingerprint?.let { senderFingerprint ->
+            MessageMetaRow(
+                icon = Icons.Filled.VerifiedUser,
+                label = "发送者",
+                value = SpotChatCrypto.displayFingerprint(senderFingerprint),
+                compact = compact
+            )
+        }
+        message.expiresAtEpochMillis?.let { expiresAt ->
+            MessageMetaRow(
+                icon = Icons.Filled.AutoDelete,
+                label = "限时",
+                value = "剩 ${formatTimeRemaining(expiresAt)}",
+                compact = compact
+            )
+        }
+        if (message.reactions.isNotEmpty()) {
+            MessageMetaRow(
+                icon = Icons.Filled.StarRate,
+                label = "回应",
+                value = reactionSummary(message),
+                compact = compact
+            )
+        }
+        message.quotedMessage?.let { quote ->
+            MessageMetaRow(
+                icon = Icons.AutoMirrored.Filled.Chat,
+                label = "引用",
+                value = "${quote.senderName} · ${quote.text}",
+                compact = compact
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageMetaRow(
+    icon: ImageVector,
+    label: String,
+    value: String,
+    compact: Boolean
+) {
+    Row(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
-            imageVector =
-                if (message.encrypted) {
-                    Icons.Filled.Lock
-                } else {
-                    Icons.Filled.DoneAll
-                },
-            contentDescription =
-                if (message.encrypted) {
-                    "已加密"
-                } else {
-                    "明文"
-                },
+            imageVector = icon,
+            contentDescription = label,
             tint = chatBlue,
             modifier = Modifier.size(if (compact) 12.dp else 14.dp)
         )
-        Spacer(modifier = Modifier.width(5.dp))
+        Spacer(modifier = Modifier.width(if (compact) 5.dp else 6.dp))
         Text(
-            text = "${message.timestamp} · ${if (message.encrypted) "E2EE" else "明文"} · ${message.deliveryState.label}",
+            text = label,
+            color = chatRowMuted,
+            fontSize = if (compact) 9.sp else 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(0.72f)
+        )
+        Text(
+            text = value,
             color = MaterialTheme.colorScheme.onBackground,
             fontSize = if (compact) 9.sp else 10.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1.24f)
         )
     }
 }
@@ -5967,6 +6055,13 @@ private fun conversationPreview(
 
 private fun directConversationId(peerFingerprint: String): String =
     "$DIRECT_CONVERSATION_PREFIX$peerFingerprint"
+
+private fun shortMessageId(messageId: String): String =
+    if (messageId.length <= 12) {
+        messageId
+    } else {
+        "${messageId.take(8)}...${messageId.takeLast(4)}"
+    }
 
 private fun String.shortReachabilityLabel(): String =
     when {
