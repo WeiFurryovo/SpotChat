@@ -11,6 +11,7 @@ data class WearConversationSummary(
     val title: String,
     val subtitle: String,
     val unreadCount: Int,
+    val mentionCount: Int = 0,
     val updatedAtEpochMillis: Long,
     val isPinned: Boolean = false,
     val isMuted: Boolean = false
@@ -27,12 +28,26 @@ data class WearChatSnapshot(
     val totalUnreadCount: Int =
         conversations.sumOf { conversation -> conversation.unreadCount }
 
+    val mentionThreadCount: Int =
+        conversations.count { conversation -> conversation.mentionCount > 0 }
+
+    val totalMentionCount: Int =
+        conversations.sumOf { conversation -> conversation.mentionCount }
+
     val hasUnread: Boolean =
         unreadThreadCount > 0
+
+    val hasMentions: Boolean =
+        mentionThreadCount > 0
 
     val latestUnreadConversation: WearConversationSummary? =
         conversations
             .filter { conversation -> conversation.unreadCount > 0 }
+            .maxByOrNull { conversation -> conversation.updatedAtEpochMillis }
+
+    val latestMentionConversation: WearConversationSummary? =
+        conversations
+            .filter { conversation -> conversation.mentionCount > 0 }
             .maxByOrNull { conversation -> conversation.updatedAtEpochMillis }
 }
 
@@ -63,6 +78,8 @@ class SpotChatWearStateStore(context: Context) {
                         .sortedWith(
                             compareByDescending<WearConversationSummary> { conversation ->
                                 conversation.isPinned
+                            }.thenByDescending { conversation ->
+                                conversation.mentionCount > 0
                             }.thenByDescending { conversation ->
                                 conversation.unreadCount > 0
                             }.thenByDescending { conversation -> conversation.updatedAtEpochMillis }

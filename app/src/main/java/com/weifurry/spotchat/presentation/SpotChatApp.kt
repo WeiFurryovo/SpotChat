@@ -1309,7 +1309,14 @@ internal fun SpotChatApp(
             conversationId = conversationId,
             conversationTitle = conversation.title,
             senderName = senderName,
-            messageText = if (isConversationLocked(conversationId)) "收到新消息" else message.text,
+            messageText =
+                if (isConversationLocked(conversationId)) {
+                    if (messageMentionsMe(message)) "收到提及消息" else "收到新消息"
+                } else if (messageMentionsMe(message)) {
+                    "@提及你 · ${message.text}"
+                } else {
+                    message.text
+                },
             unreadCount = unreadCounts[conversationId] ?: 1
         )
     }
@@ -1553,6 +1560,8 @@ internal fun SpotChatApp(
             }.thenByDescending { conversation ->
                 draftsByConversation[conversation.id] != null
             }.thenByDescending { conversation ->
+                (mentionCounts[conversation.id] ?: 0) > 0
+            }.thenByDescending { conversation ->
                 (unreadCounts[conversation.id] ?: 0) > 0
             }.thenByDescending { conversation ->
                 conversationUpdateOrder[conversation.id] ?: 0L
@@ -1619,8 +1628,9 @@ internal fun SpotChatApp(
                             retryableCount = retryableCount,
                             draft = draftsByConversation[conversation.id],
                             locked = isConversationLocked(conversation.id)
-                        ),
+                    ),
                     unreadCount = unreadCounts[conversation.id] ?: 0,
+                    mentionCount = mentionCounts[conversation.id] ?: 0,
                     updatedAtEpochMillis = conversationUpdateOrder[conversation.id] ?: 0L,
                     isPinned = pinnedConversationIds[conversation.id] == true,
                     isMuted = isConversationMuted(conversation.id)
@@ -1637,6 +1647,7 @@ internal fun SpotChatApp(
     LaunchedEffect(
         conversationMessages.toMap(),
         unreadCounts.toMap(),
+        mentionCounts.toMap(),
         draftsByConversation.toMap(),
         lockedConversationIds.toMap(),
         pinnedConversationIds.toMap(),

@@ -34,6 +34,7 @@ class UnreadThreadsComplicationDataSourceService : ComplicationDataSourceService
                             title = "SpotChat",
                             subtitle = "2 条未读",
                             unreadCount = 2,
+                            mentionCount = 1,
                             updatedAtEpochMillis = System.currentTimeMillis()
                         )
                     ),
@@ -44,21 +45,29 @@ class UnreadThreadsComplicationDataSourceService : ComplicationDataSourceService
     private fun buildComplicationData(snapshot: WearChatSnapshot): ComplicationData {
         val unreadThreadCount = snapshot.unreadThreadCount
         val totalUnreadCount = snapshot.totalUnreadCount
-        val latestUnreadConversation = snapshot.latestUnreadConversation
+        val mentionThreadCount = snapshot.mentionThreadCount
+        val totalMentionCount = snapshot.totalMentionCount
+        val targetConversation =
+            snapshot.latestMentionConversation ?: snapshot.latestUnreadConversation
         val shortText =
-            if (unreadThreadCount > 0) {
+            if (mentionThreadCount > 0) {
+                "@${totalMentionCount.coerceAtMost(99)}"
+            } else if (unreadThreadCount > 0) {
                 unreadThreadCount.coerceAtMost(99).toString()
             } else {
                 "0"
             }
         val title =
             when {
+                mentionThreadCount > 0 -> "$totalMentionCount 条提及"
                 unreadThreadCount <= 0 -> "SpotChat"
                 totalUnreadCount == 1 -> "1 条消息"
                 else -> "$totalUnreadCount 条消息"
             }
         val contentDescription =
-            if (unreadThreadCount > 0) {
+            if (mentionThreadCount > 0) {
+                "SpotChat 有 $mentionThreadCount 个聊天提及你，$totalMentionCount 条提及消息"
+            } else if (unreadThreadCount > 0) {
                 "SpotChat 有 $unreadThreadCount 个未读聊天，$totalUnreadCount 条未读消息"
             } else {
                 "SpotChat 没有未读聊天"
@@ -68,7 +77,7 @@ class UnreadThreadsComplicationDataSourceService : ComplicationDataSourceService
             contentDescription = plainText(contentDescription)
         )
             .setTitle(plainText(title))
-            .setTapAction(openAppPendingIntent(latestUnreadConversation?.id))
+            .setTapAction(openAppPendingIntent(targetConversation?.id))
             .build()
     }
 

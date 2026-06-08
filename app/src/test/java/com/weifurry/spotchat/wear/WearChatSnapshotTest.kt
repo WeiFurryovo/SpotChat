@@ -30,6 +30,7 @@ class WearChatSnapshotTest {
                             title = "Latest",
                             subtitle = "new unread",
                             unreadCount = 1,
+                            mentionCount = 1,
                             updatedAtEpochMillis = 20L
                         )
                     )
@@ -38,6 +39,9 @@ class WearChatSnapshotTest {
         assertTrue(snapshot.hasUnread)
         assertEquals(2, snapshot.unreadThreadCount)
         assertEquals(4, snapshot.totalUnreadCount)
+        assertEquals(1, snapshot.mentionThreadCount)
+        assertEquals(1, snapshot.totalMentionCount)
         assertEquals("latest", snapshot.latestUnreadConversation?.id)
+        assertEquals("latest", snapshot.latestMentionConversation?.id)
     }
 }

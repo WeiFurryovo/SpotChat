@@ -52,6 +52,7 @@ class RecentChatsTileService : TileService() {
                         title = "SpotChat",
                         subtitle = "等待新消息",
                         unreadCount = 0,
+                        mentionCount = 0,
                         updatedAtEpochMillis = 0L
                     )
                 )
@@ -67,7 +68,9 @@ class RecentChatsTileService : TileService() {
                 .addContent(
                     text(
                         value =
-                            if (snapshot.hasUnread) {
+                            if (snapshot.hasMentions) {
+                                "提及 ${snapshot.totalMentionCount}"
+                            } else if (snapshot.hasUnread) {
                                 "未读 ${snapshot.totalUnreadCount}"
                             } else {
                                 "SpotChat"
@@ -117,7 +120,9 @@ class RecentChatsTileService : TileService() {
                 ?.joinToString(separator = " · ", postfix = " · ")
                 .orEmpty()
         val title =
-            if (conversation.unreadCount > 0) {
+            if (conversation.mentionCount > 0) {
+                "$titlePrefix${conversation.title} · @${conversation.mentionCount}"
+            } else if (conversation.unreadCount > 0) {
                 "$titlePrefix${conversation.title} · ${conversation.unreadCount}"
             } else {
                 "$titlePrefix${conversation.title}"
