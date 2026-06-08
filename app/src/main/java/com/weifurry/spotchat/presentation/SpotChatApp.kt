@@ -4369,6 +4369,19 @@ internal fun SpotChatApp(
                                 trustState = "已恢复静音聊天通知"
                             }
                         },
+                        onMuteVisibleGroups = {
+                            val unmutedGroupConversations =
+                                visibleConversationList.filter { conversation ->
+                                    conversation.kind == ConversationKind.Group &&
+                                        !isConversationMuted(conversation.id)
+                                }
+                            unmutedGroupConversations.forEach { conversation ->
+                                setConversationMute(conversation, MutePreset.EightHours)
+                            }
+                            if (unmutedGroupConversations.isNotEmpty()) {
+                                trustState = "群聊已静音8小时"
+                            }
+                        },
                         onUnlockVisible = {
                             val lockedVisibleConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5189,6 +5202,7 @@ private fun WatchConversationListSurface(
     onUnfavoriteVisible: () -> Unit,
     onUnpinVisible: () -> Unit,
     onUnmuteVisible: () -> Unit,
+    onMuteVisibleGroups: () -> Unit,
     onUnlockVisible: () -> Unit,
     onDisableDisappearingVisible: () -> Unit,
     onEnableReadReceiptsVisible: () -> Unit,
@@ -5521,6 +5535,20 @@ private fun WatchConversationListSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onUnmuteVisible
+                            )
+                        }
+                    }
+
+                    if (activeFilter == ChatListFilter.Group && conversations.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.NotificationsOff,
+                                text = "群聊静音8小时",
+                                selected = true,
+                                compact = compact,
+                                onClick = onMuteVisibleGroups
                             )
                         }
                     }
