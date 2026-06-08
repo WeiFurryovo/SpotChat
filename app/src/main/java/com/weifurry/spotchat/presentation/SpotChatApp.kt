@@ -4333,6 +4333,18 @@ internal fun SpotChatApp(
                         onCopyVisibleStarredSummary = {
                             copyStarredSummary(visibleConversationList)
                         },
+                        onUnfavoriteVisible = {
+                            val favoriteConversations =
+                                visibleConversationList.filter { conversation ->
+                                    favoriteConversationIds[conversation.id] == true
+                                }
+                            favoriteConversations.forEach { conversation ->
+                                toggleConversationFavorite(conversation)
+                            }
+                            if (favoriteConversations.isNotEmpty()) {
+                                trustState = "已取消收藏聊天"
+                            }
+                        },
                         onUnpinVisible = {
                             val pinnedConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5162,6 +5174,7 @@ private fun WatchConversationListSurface(
     onRetryVisible: () -> Unit,
     onSendVisibleDrafts: () -> Unit,
     onCopyVisibleStarredSummary: () -> Unit,
+    onUnfavoriteVisible: () -> Unit,
     onUnpinVisible: () -> Unit,
     onUnmuteVisible: () -> Unit,
     onUnlockVisible: () -> Unit,
@@ -5454,6 +5467,20 @@ private fun WatchConversationListSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onCopyVisibleStarredSummary
+                            )
+                        }
+                    }
+
+                    if (activeFilter == ChatListFilter.Favorites && conversations.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.StarRate,
+                                text = "取消全部收藏",
+                                selected = true,
+                                compact = compact,
+                                onClick = onUnfavoriteVisible
                             )
                         }
                     }
