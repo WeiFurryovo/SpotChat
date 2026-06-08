@@ -5571,9 +5571,7 @@ private fun WatchConversationListSurface(
                     if (
                         canMarkVisibleRead
                     ) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
-                        ) {
+                        ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
                             MessageActionButton(
                                 icon = Icons.Filled.DoneAll,
                                 text =
@@ -5599,9 +5597,7 @@ private fun WatchConversationListSurface(
                     }
 
                     if (canRetryVisibleMessages) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
-                        ) {
+                        ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
                             MessageActionButton(
                                 icon = Icons.Filled.Refresh,
                                 text = "全部重发",
@@ -5613,9 +5609,7 @@ private fun WatchConversationListSurface(
                     }
 
                     if (canSendVisibleDrafts) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
-                        ) {
+                        ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
                             MessageActionButton(
                                 icon = Icons.Filled.Keyboard,
                                 text = "发送全部草稿",
@@ -5627,9 +5621,7 @@ private fun WatchConversationListSurface(
                     }
 
                     if (activeFilter == ChatListFilter.Starred && conversations.isNotEmpty()) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
-                        ) {
+                        ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
                             MessageActionButton(
                                 icon = Icons.Filled.StarRate,
                                 text = "复制星标摘要",
@@ -5648,9 +5640,7 @@ private fun WatchConversationListSurface(
                     }
 
                     if (activeFilter == ChatListFilter.Favorites && conversations.isNotEmpty()) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
-                        ) {
+                        ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
                             MessageActionButton(
                                 icon = Icons.Filled.StarRate,
                                 text = "取消全部收藏",
@@ -5669,9 +5659,7 @@ private fun WatchConversationListSurface(
                     }
 
                     if (activeFilter == ChatListFilter.Pinned && conversations.isNotEmpty()) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
-                        ) {
+                        ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
                             MessageActionButton(
                                 icon = Icons.Filled.PushPin,
                                 text = "取消全部置顶",
@@ -5690,9 +5678,7 @@ private fun WatchConversationListSurface(
                     }
 
                     if (activeFilter == ChatListFilter.Muted && conversations.isNotEmpty()) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
-                        ) {
+                        ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
                             MessageActionButton(
                                 icon = Icons.Filled.NotificationsOff,
                                 text = "恢复全部通知",
@@ -5711,9 +5697,7 @@ private fun WatchConversationListSurface(
                     }
 
                     if (canMuteVisibleGroups) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
-                        ) {
+                        ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
                             MessageActionButton(
                                 icon = Icons.Filled.NotificationsOff,
                                 text = "群聊静音8小时",
@@ -5725,9 +5709,7 @@ private fun WatchConversationListSurface(
                     }
 
                     if (canLockVisibleDirects) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
-                        ) {
+                        ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
                             MessageActionButton(
                                 icon = Icons.Filled.Lock,
                                 text = "私聊锁定预览",
@@ -5748,9 +5730,7 @@ private fun WatchConversationListSurface(
                     }
 
                     if (activeFilter == ChatListFilter.Locked && conversations.isNotEmpty()) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
-                        ) {
+                        ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
                             MessageActionButton(
                                 icon = Icons.Filled.Lock,
                                 text = "解锁全部预览",
@@ -5762,9 +5742,7 @@ private fun WatchConversationListSurface(
                     }
 
                     if (activeFilter == ChatListFilter.Disappearing && conversations.isNotEmpty()) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
-                        ) {
+                        ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
                             MessageActionButton(
                                 icon = Icons.Filled.AutoDelete,
                                 text = "关闭全部限时",
@@ -5776,9 +5754,7 @@ private fun WatchConversationListSurface(
                     }
 
                     if (activeFilter == ChatListFilter.ReadReceiptsOff && conversations.isNotEmpty()) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
-                        ) {
+                        ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
                             MessageActionButton(
                                 icon = Icons.Filled.DoneAll,
                                 text = "开启全部回执",
@@ -5841,6 +5817,18 @@ private fun WatchConversationListSurface(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ConversationBulkActionGroup(
+    surfaceSpec: WatchSurfaceSpec,
+    content: @Composable () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+    ) {
+        content()
     }
 }
 
