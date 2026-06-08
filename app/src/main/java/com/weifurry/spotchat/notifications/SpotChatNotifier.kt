@@ -50,6 +50,11 @@ class SpotChatNotifier(context: Context) {
             baseIntent(SpotChatNotificationIntents.ACTION_MARK_READ, conversationId)
         val muteIntent =
             baseIntent(SpotChatNotificationIntents.ACTION_MUTE_8H, conversationId)
+        val dismissedIntent =
+            Intent(appContext, SpotChatNotificationDismissReceiver::class.java)
+                .setAction(SpotChatNotificationIntents.ACTION_NOTIFICATION_DISMISSED)
+                .putExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID, conversationId)
+                .putExtra(SpotChatNotificationIntents.EXTRA_INTENT_TOKEN, tokenStore.token())
         val quickReplyActions =
             SpotChatNotificationIntents.quickReplies
                 .take(MAX_INLINE_QUICK_REPLY_ACTIONS)
@@ -88,6 +93,13 @@ class SpotChatNotifier(context: Context) {
                 appContext,
                 notificationId + MUTE_REQUEST_CODE_OFFSET,
                 muteIntent,
+                pendingIntentFlags(mutable = false)
+            )
+        val dismissedPendingIntent =
+            PendingIntent.getBroadcast(
+                appContext,
+                notificationId + DISMISS_REQUEST_CODE_OFFSET,
+                dismissedIntent,
                 pendingIntentFlags(mutable = false)
             )
         val remoteInput =
@@ -132,6 +144,7 @@ class SpotChatNotifier(context: Context) {
                 .setContentText(notificationText)
                 .setStyle(messageStyle(conversationTitle, senderName, notificationText))
                 .setContentIntent(openPendingIntent)
+                .setDeleteIntent(dismissedPendingIntent)
                 .setAutoCancel(true)
                 .setCategory(Notification.CATEGORY_MESSAGE)
                 .setNumber(unreadCount)
@@ -261,6 +274,7 @@ class SpotChatNotifier(context: Context) {
         private const val MARK_READ_REQUEST_CODE_OFFSET = 20_000
         private const val MUTE_REQUEST_CODE_OFFSET = 30_000
         private const val QUICK_REPLY_REQUEST_CODE_OFFSET = 40_000
+        private const val DISMISS_REQUEST_CODE_OFFSET = 50_000
         private const val MAX_INLINE_QUICK_REPLY_ACTIONS = 2
         private const val MAX_NOTIFICATION_MESSAGE_CHARS = 160
     }

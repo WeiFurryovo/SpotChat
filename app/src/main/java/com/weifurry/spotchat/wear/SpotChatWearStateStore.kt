@@ -2,6 +2,7 @@ package com.weifurry.spotchat.wear
 
 import android.content.ComponentName
 import android.content.Context
+import androidx.wear.tiles.TileService
 import androidx.wear.watchface.complications.datasource.ComplicationDataSourceUpdateRequester
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -94,7 +95,45 @@ class SpotChatWearStateStore(context: Context) {
             return
         }
         prefs.edit().putString(KEY_SNAPSHOT, encodedSnapshot).apply()
+        requestTileUpdates()
         requestUnreadComplicationUpdate()
+    }
+
+    fun clearConversationAlerts(conversationId: String) {
+        val snapshot = load()
+        var changed = false
+        val updatedConversations =
+            snapshot.conversations.map { conversation ->
+                if (
+                    conversation.id == conversationId &&
+                    (conversation.unreadCount > 0 || conversation.mentionCount > 0)
+                ) {
+                    changed = true
+                    conversation.copy(
+                        unreadCount = 0,
+                        mentionCount = 0
+                    )
+                } else {
+                    conversation
+                }
+            }
+        if (!changed) {
+            return
+        }
+        save(
+            snapshot.copy(
+                conversations = updatedConversations,
+                updatedAtEpochMillis = System.currentTimeMillis()
+            )
+        )
+    }
+
+    private fun requestTileUpdates() {
+        runCatching {
+            val updater = TileService.getUpdater(appContext)
+            updater.requestUpdate(RecentChatsTileService::class.java)
+            updater.requestUpdate(QuickVoiceTileService::class.java)
+        }
     }
 
     private fun requestUnreadComplicationUpdate() {

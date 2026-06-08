@@ -6,6 +6,7 @@ object SpotChatNotificationIntents {
     const val ACTION_QUICK_REPLY = "com.weifurry.spotchat.action.QUICK_REPLY"
     const val ACTION_MARK_READ = "com.weifurry.spotchat.action.MARK_READ"
     const val ACTION_MUTE_8H = "com.weifurry.spotchat.action.MUTE_8H"
+    const val ACTION_NOTIFICATION_DISMISSED = "com.weifurry.spotchat.action.NOTIFICATION_DISMISSED"
     const val EXTRA_CONVERSATION_ID = "conversation_id"
     const val EXTRA_REMOTE_REPLY = "remote_reply"
     const val EXTRA_QUICK_REPLY_TEXT = "quick_reply_text"
@@ -19,5 +20,6 @@ object SpotChatNotificationIntents {
             action == ACTION_REPLY ||
             action == ACTION_QUICK_REPLY ||
             action == ACTION_MARK_READ ||
-            action == ACTION_MUTE_8H
+            action == ACTION_MUTE_8H ||
+            action == ACTION_NOTIFICATION_DISMISSED
 }

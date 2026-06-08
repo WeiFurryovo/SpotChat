@@ -52,6 +52,10 @@
             </intent-filter>
         </activity>
 
+        <receiver
+            android:name=".notifications.SpotChatNotificationDismissReceiver"
+            android:exported="false" />
+
         <service
             android:name=".wear.RecentChatsTileService"
             android:exported="true"

@@ -4806,6 +4806,10 @@ internal fun SpotChatApp(
             return
         }
         clearConversationAlerts(conversation.id)
+        if (intent.action == SpotChatNotificationIntents.ACTION_NOTIFICATION_DISMISSED) {
+            trustState = "已清除 ${conversation.title} 的通知"
+            return
+        }
         if (intent.action == SpotChatNotificationIntents.ACTION_MARK_READ) {
             markConversationRead(conversation.id)
             trustState = "已标为已读"
