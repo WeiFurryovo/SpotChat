@@ -1544,15 +1544,18 @@ internal fun SpotChatApp(
         }
     }
 
-    fun markArchivedChatsRead(conversations: List<ChatConversation>) {
-        val unreadArchivedConversations =
+    fun markConversationsRead(
+        conversations: List<ChatConversation>,
+        statusText: String
+    ) {
+        val unreadConversations =
             conversations.filter { conversation -> (unreadCounts[conversation.id] ?: 0) > 0 }
-        unreadArchivedConversations.forEach { conversation ->
+        unreadConversations.forEach { conversation ->
             clearConversationAlerts(conversation.id)
             markConversationRead(conversation.id)
         }
-        if (unreadArchivedConversations.isNotEmpty()) {
-            trustState = "归档聊天已读"
+        if (unreadConversations.isNotEmpty()) {
+            trustState = statusText
         }
     }
 
@@ -3052,6 +3055,12 @@ internal fun SpotChatApp(
                         onOpenArchivedChats = {
                             appSurface = AppSurface.ArchivedChats
                         },
+                        onMarkVisibleRead = {
+                            markConversationsRead(
+                                conversations = visibleConversationList,
+                                statusText = "未读聊天已读"
+                            )
+                        },
                         onOpenProfile = {
                             appSurface = AppSurface.Profile
                         },
@@ -3100,7 +3109,10 @@ internal fun SpotChatApp(
                             isConversationMuted = ::isConversationMuted,
                             onNavigateBack = dismissOverlay,
                             onMarkAllRead = {
-                                markArchivedChatsRead(archivedConversationList)
+                                markConversationsRead(
+                                    conversations = archivedConversationList,
+                                    statusText = "归档聊天已读"
+                                )
                             },
                             onOpenConversation = ::openConversation
                         )
@@ -3569,6 +3581,7 @@ private fun WatchConversationListSurface(
     onSelectFilter: (ChatListFilter) -> Unit,
     onOpenGlobalSearch: () -> Unit,
     onOpenArchivedChats: () -> Unit,
+    onMarkVisibleRead: () -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
 ) {
@@ -3683,6 +3696,20 @@ private fun WatchConversationListSurface(
                         surfaceSpec = surfaceSpec,
                         onClick = onOpenGlobalSearch
                     )
+
+                    if (activeFilter == ChatListFilter.Unread && conversations.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.DoneAll,
+                                text = "全部标为已读",
+                                selected = true,
+                                compact = compact,
+                                onClick = onMarkVisibleRead
+                            )
+                        }
+                    }
 
                     if (pendingPeer != null) {
                         PairingPrompt(
