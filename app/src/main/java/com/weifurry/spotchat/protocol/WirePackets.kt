@@ -16,6 +16,7 @@ enum class PacketKind {
 data class PeerHello(
     val deviceName: String,
     val publicKey: String,
+    val about: String = "",
     val transports: List<String> = emptyList()
 )
 

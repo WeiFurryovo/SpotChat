@@ -11,7 +11,8 @@ data class StoredTrustedPeer(
     val fingerprint: String,
     val publicKey: String,
     val pairingCode: String,
-    val trustedAtEpochMillis: Long
+    val trustedAtEpochMillis: Long,
+    val about: String = ""
 )
 
 class TrustedPeerStore(context: Context) {
@@ -44,7 +45,8 @@ class TrustedPeerStore(context: Context) {
                 fingerprint = peer.fingerprint,
                 publicKey = peer.publicKey,
                 pairingCode = peer.pairingCode,
-                trustedAtEpochMillis = System.currentTimeMillis()
+                trustedAtEpochMillis = System.currentTimeMillis(),
+                about = peer.about
             )
         val updatedPeers =
             all()

@@ -22,7 +22,8 @@ data class TrustedPeer(
     val deviceName: String,
     val fingerprint: String,
     val publicKey: String,
-    val pairingCode: String
+    val pairingCode: String,
+    val about: String = ""
 )
 
 data class PlainChatMessage(
@@ -90,13 +91,17 @@ class SpotChatEngine(
             ignoreUnknownKeys = true
         }
 
-    fun helloPacket(transports: List<String> = listOf("lan", "bluetooth")): WirePacket =
+    fun helloPacket(
+        transports: List<String> = listOf("lan", "bluetooth"),
+        about: String = ""
+    ): WirePacket =
         WirePacket(
             kind = PacketKind.HELLO,
             hello =
                 PeerHello(
                     deviceName = localDeviceName,
                     publicKey = SpotChatCrypto.encodePublicKey(localIdentity.public),
+                    about = about,
                     transports = transports
                 )
         )
@@ -110,6 +115,7 @@ class SpotChatEngine(
             deviceName = hello.deviceName,
             fingerprint = fingerprint,
             publicKey = hello.publicKey,
+            about = hello.about,
             pairingCode =
                 SpotChatCrypto.pairingCode(
                     localPublicKey = localIdentity.public,

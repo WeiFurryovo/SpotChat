@@ -1142,7 +1142,7 @@ internal fun SpotChatApp(
             id = directConversationId(peer.fingerprint),
             kind = ConversationKind.Direct,
             title = peer.deviceName,
-            subtitle = "私聊 · ${peerReachabilityText(peer.fingerprint)}",
+            subtitle = "${peerAbout(peer)} · ${peerReachabilityText(peer.fingerprint)}",
             peerFingerprint = peer.fingerprint,
             memberFingerprints = listOf(peer.fingerprint)
         )
@@ -1361,7 +1361,7 @@ internal fun SpotChatApp(
         peer: TransportPeer
     ) {
         runCatching {
-            sendPacket(transport, peer, engine.helloPacket(transportHints()))
+            sendPacket(transport, peer, engine.helloPacket(transportHints(), about = profile.about))
         }.onFailure { error ->
             trustState = "握手失败"
             appendMessage(
@@ -1596,7 +1596,7 @@ internal fun SpotChatApp(
                         id = directConversationId(peer.fingerprint),
                         kind = ConversationKind.Direct,
                         title = peer.deviceName,
-                        subtitle = "私聊 · ${peerReachabilityText(peer.fingerprint)}",
+                        subtitle = "${peerAbout(peer)} · ${peerReachabilityText(peer.fingerprint)}",
                         peerFingerprint = peer.fingerprint,
                         memberFingerprints = listOf(peer.fingerprint)
                     )
@@ -7301,7 +7301,7 @@ private fun GroupMemberRow(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = "${peerReachabilityShortLabel(reachability)} · ${SpotChatCrypto.displayFingerprint(peer.fingerprint)}",
+                text = "${peerReachabilityShortLabel(reachability)} · ${peerAbout(peer)}",
                 color = chatRowMuted,
                 fontSize = if (compact) 9.sp else 10.sp,
                 maxLines = 1,
@@ -9602,6 +9602,9 @@ private fun statusColor(trustState: String): Color =
         else -> chatGreen
     }
 
+private fun peerAbout(peer: StoredTrustedPeer): String =
+    peer.about.ifBlank { ProfileStore.DEFAULT_ABOUT }
+
 private fun trustedPeerSubtitle(peer: StoredTrustedPeer): String {
     val trustedAt =
         if (peer.trustedAtEpochMillis <= 0L) {
@@ -9610,11 +9613,11 @@ private fun trustedPeerSubtitle(peer: StoredTrustedPeer): String {
             SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
                 .format(Date(peer.trustedAtEpochMillis))
         }
-    return "${SpotChatCrypto.displayFingerprint(peer.fingerprint)} · $trustedAt"
+    return "${peerAbout(peer)} · $trustedAt"
 }
 
 private fun safetyPeerSummary(peer: StoredTrustedPeer): String =
-    "${SpotChatCrypto.displayFingerprint(peer.fingerprint)} · 校验 ${peer.pairingCode}"
+    "${peerAbout(peer)} · 校验 ${peer.pairingCode}"
 
 private fun avatarFor(avatarId: String): DefaultAvatar =
     defaultAvatars.firstOrNull { avatar -> avatar.id == avatarId } ?: defaultAvatars.first()

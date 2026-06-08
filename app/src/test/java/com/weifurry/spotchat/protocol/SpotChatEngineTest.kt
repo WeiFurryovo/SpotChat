@@ -39,6 +39,19 @@ class SpotChatEngineTest {
     }
 
     @Test
+    fun helloPacketsCarryProfileAboutText() {
+        val watch = SpotChatEngine("手表", SpotChatCrypto.generateIdentity())
+        val phone = SpotChatEngine("手机", SpotChatCrypto.generateIdentity())
+        val phoneHello =
+            phone.helloPacket(about = "今天方便聊天").hello ?: error("missing phone hello")
+
+        val trustedPhone = watch.openSession(phoneHello)
+
+        assertEquals("今天方便聊天", phoneHello.about)
+        assertEquals("今天方便聊天", trustedPhone.about)
+    }
+
+    @Test
     fun duplicateEncryptedMessagesAreRejected() {
         val watch = SpotChatEngine("手表", SpotChatCrypto.generateIdentity())
         val phone = SpotChatEngine("手机", SpotChatCrypto.generateIdentity())
