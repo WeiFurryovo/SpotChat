@@ -323,7 +323,9 @@ private data class GlobalSearchResult(
 private data class MessageReceiptSummary(
     val expectedCount: Int,
     val deliveredCount: Int,
-    val readCount: Int
+    val readCount: Int,
+    val deliveredNames: List<String>,
+    val readNames: List<String>
 )
 
 private data class OutgoingMessageRef(
@@ -892,6 +894,19 @@ internal fun SpotChatApp(
             return null
         }
         val expectedCount = conversation.memberFingerprints.size.coerceAtLeast(1)
+        val trustedByFingerprint = trustedPeers.associateBy { peer -> peer.fingerprint }
+        val memberNames =
+            conversation.memberFingerprints.map { fingerprint ->
+                trustedByFingerprint[fingerprint]?.deviceName ?: fingerprint.take(6)
+            }
+        val deliveredReceiptNames =
+            deliveredReceiptsByMessage[messageId]
+                .orEmpty()
+                .map { fingerprint -> trustedByFingerprint[fingerprint]?.deviceName ?: fingerprint.take(6) }
+        val readReceiptNames =
+            readReceiptsByMessage[messageId]
+                .orEmpty()
+                .map { fingerprint -> trustedByFingerprint[fingerprint]?.deviceName ?: fingerprint.take(6) }
         val deliveredCount =
             maxOf(
                 deliveredCounts[messageId] ?: 0,
@@ -913,7 +928,19 @@ internal fun SpotChatApp(
         return MessageReceiptSummary(
             expectedCount = expectedCount,
             deliveredCount = deliveredCount,
-            readCount = readCount
+            readCount = readCount,
+            deliveredNames =
+                if (deliveredCount >= expectedCount) {
+                    memberNames
+                } else {
+                    deliveredReceiptNames
+                },
+            readNames =
+                if (readCount >= expectedCount) {
+                    memberNames
+                } else {
+                    readReceiptNames
+                }
         )
     }
 
@@ -6222,6 +6249,22 @@ private fun MessageMetaStrip(
                 value = receiptProgressLabel(summary.readCount, summary.expectedCount),
                 compact = compact
             )
+            if (summary.deliveredNames.isNotEmpty()) {
+                MessageMetaRow(
+                    icon = Icons.Filled.VerifiedUser,
+                    label = "送达者",
+                    value = receiptNamesLabel(summary.deliveredNames),
+                    compact = compact
+                )
+            }
+            if (summary.readNames.isNotEmpty()) {
+                MessageMetaRow(
+                    icon = Icons.Filled.VerifiedUser,
+                    label = "已读者",
+                    value = receiptNamesLabel(summary.readNames),
+                    compact = compact
+                )
+            }
         }
         MessageMetaRow(
             icon = Icons.Filled.Schedule,
@@ -7637,6 +7680,18 @@ private fun receiptProgressLabel(
     } else {
         "${currentCount.coerceAtMost(expectedCount)}/$expectedCount"
     }
+
+private fun receiptNamesLabel(names: List<String>): String =
+    names
+        .distinct()
+        .let { uniqueNames ->
+            val visibleNames = uniqueNames.take(2).joinToString(separator = "、")
+            if (uniqueNames.size > 2) {
+                "$visibleNames 等 ${uniqueNames.size} 人"
+            } else {
+                visibleNames
+            }
+        }
 
 private fun formatTimeRemaining(expiresAtEpochMillis: Long): String {
     val remainingMs = (expiresAtEpochMillis - System.currentTimeMillis()).coerceAtLeast(0L)
