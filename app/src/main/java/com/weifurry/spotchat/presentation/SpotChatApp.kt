@@ -2528,6 +2528,32 @@ internal fun SpotChatApp(
         trustState = "已复制阻止摘要"
     }
 
+    fun copyArchivedSummary(conversations: List<ChatConversation>) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            archivedSummaryText(
+                conversations = conversations,
+                messagesByConversation = conversationMessages,
+                unreadCounts = unreadCounts,
+                draftsByConversation = draftsByConversation,
+                isConversationMuted = ::isConversationMuted,
+                lockedConversationIds = lockedConversationIds
+            )
+        if (summary.isBlank()) {
+            trustState = "没有归档摘要"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat archived summary", summary)
+        )
+        trustState = "已复制归档摘要"
+    }
+
     fun applyMessageReaction(
         conversationId: String,
         targetMessageId: String,
@@ -4915,6 +4941,9 @@ internal fun SpotChatApp(
                                 if (unmutedArchivedConversations.isNotEmpty()) {
                                     trustState = "归档聊天已静音"
                                 }
+                            },
+                            onCopyArchivedSummary = {
+                                copyArchivedSummary(archivedConversationList)
                             },
                             onOpenConversation = ::openConversation
                         )
@@ -7422,6 +7451,7 @@ private fun WatchArchivedChatsSurface(
     onMarkAllRead: () -> Unit,
     onUnarchiveAll: () -> Unit,
     onMuteArchived: () -> Unit,
+    onCopyArchivedSummary: () -> Unit,
     onOpenConversation: (ChatConversation) -> Unit
 ) {
     BoxWithConstraints(
@@ -7497,6 +7527,13 @@ private fun WatchArchivedChatsSurface(
                         Column(
                             modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
                         ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Keyboard,
+                                text = "复制归档摘要",
+                                selected = true,
+                                compact = compact,
+                                onClick = onCopyArchivedSummary
+                            )
                             if (conversations.any { conversation -> !isConversationMuted(conversation.id) }) {
                                 MessageActionButton(
                                     icon = Icons.Filled.NotificationsOff,
@@ -12656,6 +12693,52 @@ private fun retryableSummaryText(
             messages.forEach { message ->
                 appendLine("   [${message.timestamp}] ${message.deliveryState.label}：${message.copyText()}")
             }
+        }
+    }.trim()
+}
+
+private fun archivedSummaryText(
+    conversations: List<ChatConversation>,
+    messagesByConversation: Map<String, List<ChatBubble>>,
+    unreadCounts: Map<String, Int>,
+    draftsByConversation: Map<String, ConversationDraft>,
+    isConversationMuted: (String) -> Boolean,
+    lockedConversationIds: Map<String, Boolean>
+): String {
+    if (conversations.isEmpty()) {
+        return ""
+    }
+    val unreadConversationCount = conversations.count { conversation -> (unreadCounts[conversation.id] ?: 0) > 0 }
+    val mutedConversationCount = conversations.count { conversation -> isConversationMuted(conversation.id) }
+    return buildString {
+        appendLine("SpotChat 归档摘要")
+        appendLine("聊天：${conversations.size} 个")
+        appendLine("未读：$unreadConversationCount 个")
+        appendLine("静音：$mutedConversationCount 个")
+        appendLine()
+        conversations.forEachIndexed { index, conversation ->
+            val messages = messagesByConversation[conversation.id].orEmpty()
+            val lastMessage =
+                messages.lastOrNull { message -> message.deliveryState != DeliveryState.System }
+            val stateLabels =
+                buildList {
+                    val unreadCount = unreadCounts[conversation.id] ?: 0
+                    if (unreadCount > 0) {
+                        add("未读 $unreadCount")
+                    }
+                    if (isConversationMuted(conversation.id)) {
+                        add("静音")
+                    }
+                    if (draftsByConversation[conversation.id] != null) {
+                        add("有草稿")
+                    }
+                    if (lockedConversationIds[conversation.id] == true) {
+                        add("锁定")
+                    }
+                }.ifEmpty { listOf("静默") }
+            appendLine("${index + 1}. ${conversation.title}")
+            appendLine("   状态：${stateLabels.joinToString(separator = " · ")}")
+            appendLine("   最新：${lastMessage?.copyText() ?: "没有消息"}")
         }
     }.trim()
 }
