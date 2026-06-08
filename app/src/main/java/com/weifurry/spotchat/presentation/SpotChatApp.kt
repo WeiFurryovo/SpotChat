@@ -187,6 +187,7 @@ private enum class AppSurface {
     MessageActions,
     MessageSearch,
     MuteSettings,
+    DisappearingSettings,
     GroupMembers,
     ChatContentMessages,
     GlobalSearch,
@@ -1736,20 +1737,27 @@ internal fun SpotChatApp(
         }
     }
 
-    fun toggleDisappearingMessages(conversation: ChatConversation) {
-        val nextMode =
-            (disappearingModesByConversation[conversation.id] ?: DisappearingMessageMode.Off).next()
-        if (nextMode == DisappearingMessageMode.Off) {
+    fun setDisappearingMessages(
+        conversation: ChatConversation,
+        mode: DisappearingMessageMode
+    ) {
+        if (mode == DisappearingMessageMode.Off) {
             disappearingModesByConversation.remove(conversation.id)
         } else {
-            disappearingModesByConversation[conversation.id] = nextMode
+            disappearingModesByConversation[conversation.id] = mode
         }
         appendSystemMessage(
-            text = "限时消息：${nextMode.label}",
+            text = "限时消息：${mode.label}",
             encrypted = true,
             conversationId = conversation.id
         )
-        trustState = "限时消息${nextMode.label}"
+        trustState = "限时消息${mode.label}"
+    }
+
+    fun toggleDisappearingMessages(conversation: ChatConversation) {
+        val nextMode =
+            (disappearingModesByConversation[conversation.id] ?: DisappearingMessageMode.Off).next()
+        setDisappearingMessages(conversation, nextMode)
     }
 
     fun toggleMessageStarred(
@@ -3564,7 +3572,7 @@ internal fun SpotChatApp(
                                 retryConversationMessages(selectedConversation)
                             },
                             onToggleDisappearingMessages = {
-                                toggleDisappearingMessages(selectedConversation)
+                                appSurface = AppSurface.DisappearingSettings
                             },
                             onClearConversation = {
                                 clearConversation(selectedConversation)
@@ -3608,6 +3616,27 @@ internal fun SpotChatApp(
                             onNavigateBack = dismissOverlay,
                             onSelectMutePreset = { preset ->
                                 setConversationMute(selectedConversation, preset)
+                                appSurface = AppSurface.ChatInfo
+                            }
+                        )
+                    }
+                }
+
+                if (appSurface == AppSurface.DisappearingSettings) {
+                    SlideInOverlay(
+                        onDismissed = {
+                            appSurface = AppSurface.ChatInfo
+                        }
+                    ) { dismissOverlay ->
+                        WatchDisappearingSettingsSurface(
+                            isRoundScreen = isRoundScreen,
+                            conversation = selectedConversation,
+                            currentMode =
+                                disappearingModesByConversation[selectedConversation.id]
+                                    ?: DisappearingMessageMode.Off,
+                            onNavigateBack = dismissOverlay,
+                            onSelectMode = { mode ->
+                                setDisappearingMessages(selectedConversation, mode)
                                 appSurface = AppSurface.ChatInfo
                             }
                         )
@@ -5668,6 +5697,80 @@ private fun WatchMuteSettingsSurface(
                             compact = compact,
                             onClick = { onSelectMutePreset(null) }
                         )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WatchDisappearingSettingsSurface(
+    isRoundScreen: Boolean,
+    conversation: ChatConversation,
+    currentMode: DisappearingMessageMode,
+    onNavigateBack: () -> Unit,
+    onSelectMode: (DisappearingMessageMode) -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
+        val accent = conversationAccentColor(conversation)
+        val scrollState = rememberScrollState()
+
+        WatchFrame(
+            surfaceSpec = surfaceSpec,
+            accent = accent,
+            modifier = Modifier.padding(horizontal = surfaceSpec.chatHorizontalPadding)
+        ) {
+            ScreenScaffold(
+                scrollState = scrollState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(),
+                scrollIndicator = {}
+            ) { scaffoldPadding ->
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .padding(scaffoldPadding)
+                            .padding(
+                                top = surfaceSpec.chatTopPadding,
+                                bottom = surfaceSpec.chatBottomPadding
+                            ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp)
+                ) {
+                    ChatInfoHeader(
+                        conversation = conversation,
+                        accent = accent,
+                        title = "限时消息",
+                        subtitle = conversation.title,
+                        surfaceSpec = surfaceSpec,
+                        onNavigateBack = onNavigateBack
+                    )
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
+                        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
+                    ) {
+                        DisappearingMessageMode.entries.forEach { mode ->
+                            MessageActionButton(
+                                icon = Icons.Filled.AutoDelete,
+                                text =
+                                    if (mode == DisappearingMessageMode.Off) {
+                                        "关闭限时"
+                                    } else {
+                                        "限时${mode.label}"
+                                    },
+                                selected = currentMode == mode,
+                                compact = compact,
+                                onClick = { onSelectMode(mode) }
+                            )
+                        }
                     }
                 }
             }
@@ -8636,7 +8739,7 @@ private fun disappearingActionLabel(mode: DisappearingMessageMode): String =
     if (mode == DisappearingMessageMode.Off) {
         "开启限时消息"
     } else {
-        "限时改为${mode.next().label}"
+        "限时消息${mode.label}"
     }
 
 private fun conversationContentSummary(messages: List<ChatBubble>): ConversationContentSummary {
