@@ -197,6 +197,11 @@ private enum class AppSurface {
     Profile
 }
 
+private data class ConversationDraft(
+    val text: String,
+    val updatedAtEpochMillis: Long = System.currentTimeMillis()
+)
+
 private enum class ConversationKind(
     val label: String
 ) {
@@ -736,6 +741,7 @@ internal fun SpotChatApp(
     val favoriteConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val mutedConversations = remember { mutableStateMapOf<String, MutedConversation>() }
     val archivedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
+    val draftsByConversation = remember { mutableStateMapOf<String, ConversationDraft>() }
     val blockedPeerFingerprints = remember { mutableStateMapOf<String, Boolean>() }
     val readReceiptsDisabledByConversation = remember { mutableStateMapOf<String, Boolean>() }
     val starredMessageIdsByConversation = remember { mutableStateMapOf<String, Set<String>>() }
@@ -769,6 +775,7 @@ internal fun SpotChatApp(
     var selectedActionMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var selectedSecurityPeerFingerprint by remember { mutableStateOf<String?>(null) }
     var pendingForwardMessage by remember { mutableStateOf<ChatBubble?>(null) }
+    var draftSaveConversationId by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var searchTargetSurface by remember { mutableStateOf(AppSurface.MessageSearch) }
     var chatListFilter by remember { mutableStateOf(ChatListFilter.All) }
@@ -1398,6 +1405,7 @@ internal fun SpotChatApp(
             readReceiptsByMessage.remove(messageId)
         }
         unreadCounts.remove(conversationId)
+        draftsByConversation.remove(conversationId)
         starredMessageIdsByConversation.remove(conversationId)
         pinnedMessageIdsByConversation.remove(conversationId)
         readReceiptsDisabledByConversation.remove(conversationId)
@@ -1492,6 +1500,8 @@ internal fun SpotChatApp(
             }.thenByDescending { conversation ->
                 hasRetryableMessages(conversation.id)
             }.thenByDescending { conversation ->
+                draftsByConversation[conversation.id] != null
+            }.thenByDescending { conversation ->
                 (unreadCounts[conversation.id] ?: 0) > 0
             }.thenByDescending { conversation ->
                 conversationUpdateOrder[conversation.id] ?: 0L
@@ -1551,7 +1561,13 @@ internal fun SpotChatApp(
                 WearConversationSummary(
                     id = conversation.id,
                     title = conversation.title,
-                    subtitle = conversationPreview(conversation, lastMessage, retryableCount),
+                    subtitle =
+                        conversationPreview(
+                            conversation = conversation,
+                            lastMessage = lastMessage,
+                            retryableCount = retryableCount,
+                            draft = draftsByConversation[conversation.id]
+                        ),
                     unreadCount = unreadCounts[conversation.id] ?: 0,
                     updatedAtEpochMillis = conversationUpdateOrder[conversation.id] ?: 0L,
                     isPinned = pinnedConversationIds[conversation.id] == true,
@@ -1569,6 +1585,7 @@ internal fun SpotChatApp(
     LaunchedEffect(
         conversationMessages.toMap(),
         unreadCounts.toMap(),
+        draftsByConversation.toMap(),
         pinnedConversationIds.toMap(),
         favoriteConversationIds.toMap(),
         mutedConversations.toMap(),
@@ -2985,6 +3002,8 @@ internal fun SpotChatApp(
             return
         }
 
+        draftsByConversation.remove(conversation.id)
+
         if (isConversationBlocked(conversation)) {
             trustState = "已阻止此联系人"
             appendSystemMessage(
@@ -3116,7 +3135,40 @@ internal fun SpotChatApp(
     fun sendQuickReply(text: String) {
         val quote = pendingQuotedMessage
         pendingQuotedMessage = null
-        sendMessageToConversation(activeConversation(), text, quotedMessage = quote)
+        val conversation = activeConversation()
+        draftsByConversation.remove(conversation.id)
+        sendMessageToConversation(conversation, text, quotedMessage = quote)
+    }
+
+    fun saveDraft(
+        conversation: ChatConversation,
+        text: String
+    ) {
+        val draftText = text.trim().take(MAX_CUSTOM_MESSAGE_CHARS)
+        if (draftText.isBlank()) {
+            draftsByConversation.remove(conversation.id)
+            trustState = "草稿已清除"
+            return
+        }
+        draftsByConversation[conversation.id] = ConversationDraft(draftText)
+        conversationUpdateSequence += 1
+        conversationUpdateOrder[conversation.id] = conversationUpdateSequence
+        trustState = "草稿已保存"
+    }
+
+    fun sendDraft(conversation: ChatConversation) {
+        val draft = draftsByConversation[conversation.id] ?: return
+        draftsByConversation.remove(conversation.id)
+        activeConversationId = conversation.id
+        sendMessageToConversation(conversation, draft.text)
+    }
+
+    fun clearDraft(conversation: ChatConversation) {
+        if (draftsByConversation.remove(conversation.id) != null) {
+            conversationUpdateSequence += 1
+            conversationUpdateOrder[conversation.id] = conversationUpdateSequence
+            trustState = "草稿已清除"
+        }
     }
 
     fun forwardMessageToConversation(
@@ -3401,6 +3453,7 @@ internal fun SpotChatApp(
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
             if (result.resultCode != Activity.RESULT_OK) {
+                draftSaveConversationId = null
                 if (pendingDirectReply != null) {
                     pendingDirectReply = null
                     pendingQuotedMessage = null
@@ -3416,6 +3469,17 @@ internal fun SpotChatApp(
                     ?.trim()
                     ?.take(MAX_CUSTOM_MESSAGE_CHARS)
                     .orEmpty()
+
+            val draftConversationId = draftSaveConversationId
+            draftSaveConversationId = null
+            if (draftConversationId != null) {
+                conversationById(draftConversationId)?.let { conversation ->
+                    saveDraft(conversation, message)
+                }
+                pendingDirectReply = null
+                pendingQuotedMessage = null
+                return@rememberLauncherForActivityResult
+            }
 
             if (message.isNotBlank()) {
                 val directReply = pendingDirectReply
@@ -3466,10 +3530,12 @@ internal fun SpotChatApp(
             appSurface = searchTargetSurface
         }
 
-    fun openCustomMessageInput() {
+    fun openCustomMessageInput(saveAsDraft: Boolean = false) {
+        val conversation = activeConversation()
+        draftSaveConversationId = if (saveAsDraft) conversation.id else null
         val remoteInputBuilder =
             RemoteInput.Builder(CUSTOM_MESSAGE_REMOTE_INPUT_KEY)
-                .setLabel("输入消息")
+                .setLabel(if (saveAsDraft) "保存草稿" else "输入消息")
                 .setChoices(customMessageQuickChoices)
                 .setAllowFreeFormInput(true)
         WearableRemoteInputExtender(remoteInputBuilder)
@@ -3481,13 +3547,15 @@ internal fun SpotChatApp(
         val directReply = pendingDirectReply
         RemoteInputIntentHelper.putTitleExtra(
             inputIntent,
-            when {
+            if (saveAsDraft) {
+                "草稿 ${conversation.title}"
+            } else when {
                 directReply != null && quotedMessage != null -> "私聊回复 ${directReply.title}"
                 quotedMessage != null -> "回复 ${quotedMessage.senderName}"
-                else -> activeConversation().title
+                else -> conversation.title
             }
         )
-        RemoteInputIntentHelper.putConfirmLabelExtra(inputIntent, "发送")
+        RemoteInputIntentHelper.putConfirmLabelExtra(inputIntent, if (saveAsDraft) "保存" else "发送")
         RemoteInputIntentHelper.putCancelLabelExtra(inputIntent, "取消")
         RemoteInputIntentHelper.putRemoteInputsExtra(inputIntent, listOf(remoteInputBuilder.build()))
 
@@ -3634,6 +3702,7 @@ internal fun SpotChatApp(
                         pinnedConversationIds = pinnedConversationIds,
                         isConversationMuted = ::isConversationMuted,
                         messagesByConversation = conversationMessages,
+                        draftsByConversation = draftsByConversation,
                         transportMode = transportMode,
                         trustState = trustState,
                         fingerprint = localFingerprint,
@@ -3717,6 +3786,7 @@ internal fun SpotChatApp(
                             unreadCounts = unreadCounts,
                             pinnedConversationIds = pinnedConversationIds,
                             isConversationMuted = ::isConversationMuted,
+                            draftsByConversation = draftsByConversation,
                             onNavigateBack = dismissOverlay,
                             onMarkAllRead = {
                                 markConversationsRead(
@@ -3783,12 +3853,22 @@ internal fun SpotChatApp(
                             messages = messagesForConversation(selectedConversation.id),
                             pinnedMessage = pinnedMessage(selectedConversation.id),
                             starredMessageIds = starredMessageIds(selectedConversation.id),
+                            draft = draftsByConversation[selectedConversation.id],
                             isBlocked = isConversationBlocked(selectedConversation),
                             onSelectMode = ::selectMode,
                             onConfirmPairing = ::confirmPairing,
                             onRejectPairing = ::rejectPairing,
                             onSendQuickReply = ::sendQuickReply,
                             onOpenCustomMessageInput = ::openCustomMessageInput,
+                            onOpenDraftInput = {
+                                openCustomMessageInput(saveAsDraft = true)
+                            },
+                            onSendDraft = {
+                                sendDraft(selectedConversation)
+                            },
+                            onClearDraft = {
+                                clearDraft(selectedConversation)
+                            },
                             onToggleVoiceRecording = ::toggleVoiceRecording,
                             isRecordingVoice = isRecordingVoice,
                             voicePlaybackSpeed = voicePlaybackSpeed,
@@ -4310,6 +4390,7 @@ private fun WatchConversationListSurface(
     pinnedConversationIds: Map<String, Boolean>,
     isConversationMuted: (String) -> Boolean,
     messagesByConversation: Map<String, List<ChatBubble>>,
+    draftsByConversation: Map<String, ConversationDraft>,
     transportMode: TransportMode,
     trustState: String,
     fingerprint: String,
@@ -4509,6 +4590,7 @@ private fun WatchConversationListSurface(
                             lastMessage = lastMessage,
                             unreadCount = unreadCounts[conversation.id] ?: 0,
                             retryableCount = conversationMessages.count { message -> message.canRetry() },
+                            draft = draftsByConversation[conversation.id],
                             isPinned = pinnedConversationIds[conversation.id] == true,
                             isMuted = isConversationMuted(conversation.id),
                             featured = conversation.id == NEARBY_GROUP_CONVERSATION_ID,
@@ -5139,6 +5221,7 @@ private fun ConversationCapsule(
     lastMessage: ChatBubble?,
     unreadCount: Int,
     retryableCount: Int,
+    draft: ConversationDraft? = null,
     isPinned: Boolean,
     isMuted: Boolean,
     featured: Boolean,
@@ -5147,7 +5230,7 @@ private fun ConversationCapsule(
 ) {
     val compact = surfaceSpec.compact
     val accent = conversationAccentColor(conversation)
-    val preview = conversationPreview(conversation, lastMessage, retryableCount)
+    val preview = conversationPreview(conversation, lastMessage, retryableCount, draft)
     val width =
         if (surfaceSpec.isRound) {
             if (featured) 0.86f else 0.82f
@@ -5356,6 +5439,7 @@ private fun WatchArchivedChatsSurface(
     unreadCounts: Map<String, Int>,
     pinnedConversationIds: Map<String, Boolean>,
     isConversationMuted: (String) -> Boolean,
+    draftsByConversation: Map<String, ConversationDraft>,
     onNavigateBack: () -> Unit,
     onMarkAllRead: () -> Unit,
     onOpenConversation: (ChatConversation) -> Unit
@@ -5446,6 +5530,7 @@ private fun WatchArchivedChatsSurface(
                                 lastMessage = lastMessage,
                                 unreadCount = unreadCounts[conversation.id] ?: 0,
                                 retryableCount = conversationMessages.count { message -> message.canRetry() },
+                                draft = draftsByConversation[conversation.id],
                                 isPinned = pinnedConversationIds[conversation.id] == true,
                                 isMuted = isConversationMuted(conversation.id),
                                 featured = false,
@@ -8401,12 +8486,16 @@ private fun WatchChatSurface(
     messages: List<ChatBubble>,
     pinnedMessage: ChatBubble?,
     starredMessageIds: Set<String>,
+    draft: ConversationDraft?,
     isBlocked: Boolean,
     onSelectMode: (TransportMode) -> Unit,
     onConfirmPairing: () -> Unit,
     onRejectPairing: () -> Unit,
     onSendQuickReply: (String) -> Unit,
     onOpenCustomMessageInput: () -> Unit,
+    onOpenDraftInput: () -> Unit,
+    onSendDraft: () -> Unit,
+    onClearDraft: () -> Unit,
     onToggleVoiceRecording: () -> Unit,
     isRecordingVoice: Boolean,
     voicePlaybackSpeed: VoicePlaybackSpeed,
@@ -8509,8 +8598,12 @@ private fun WatchChatSurface(
                         ReplyDock(
                             quickReplyHeight = quickReplyHeight,
                             surfaceSpec = surfaceSpec,
+                            draft = draft,
                             onSendQuickReply = onSendQuickReply,
                             onOpenCustomMessageInput = onOpenCustomMessageInput,
+                            onOpenDraftInput = onOpenDraftInput,
+                            onSendDraft = onSendDraft,
+                            onClearDraft = onClearDraft,
                             onToggleVoiceRecording = onToggleVoiceRecording,
                             isRecordingVoice = isRecordingVoice
                         )
@@ -8875,8 +8968,12 @@ private fun PinnedMessageBanner(
 private fun ReplyDock(
     quickReplyHeight: Dp,
     surfaceSpec: WatchSurfaceSpec,
+    draft: ConversationDraft?,
     onSendQuickReply: (String) -> Unit,
     onOpenCustomMessageInput: () -> Unit,
+    onOpenDraftInput: () -> Unit,
+    onSendDraft: () -> Unit,
+    onClearDraft: () -> Unit,
     onToggleVoiceRecording: () -> Unit,
     isRecordingVoice: Boolean
 ) {
@@ -8894,17 +8991,31 @@ private fun ReplyDock(
         horizontalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        customMessageQuickChoices.take(1).forEach { reply ->
+        if (draft != null) {
             QuickReplyChip(
-                text = reply,
+                text = "草稿：${draft.text}",
                 height = quickReplyHeight - 6.dp,
                 modifier = Modifier.weight(1f),
-                onClick = { onSendQuickReply(reply) }
+                onClick = onSendDraft
             )
+        } else {
+            customMessageQuickChoices.take(1).forEach { reply ->
+                QuickReplyChip(
+                    text = reply,
+                    height = quickReplyHeight - 6.dp,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSendQuickReply(reply) }
+                )
+            }
         }
         InputButton(
             height = quickReplyHeight - 6.dp,
             onClick = onOpenCustomMessageInput
+        )
+        DraftButton(
+            height = quickReplyHeight - 6.dp,
+            hasDraft = draft != null,
+            onClick = if (draft == null) onOpenDraftInput else onClearDraft
         )
         VoiceButton(
             height = quickReplyHeight - 6.dp,
@@ -8997,6 +9108,30 @@ private fun InputButton(
 }
 
 @Composable
+private fun DraftButton(
+    height: Dp,
+    hasDraft: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier =
+            Modifier
+                .size(height)
+                .clip(CircleShape)
+                .background(if (hasDraft) chatAmber.copy(alpha = 0.9f) else chatSurfaceHigh.copy(alpha = 0.88f))
+                .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = if (hasDraft) Icons.Filled.Delete else Icons.Filled.Keyboard,
+            contentDescription = if (hasDraft) "清除草稿" else "保存草稿",
+            tint = if (hasDraft) Color(0xFF241600) else Color.White,
+            modifier = Modifier.size(15.dp)
+        )
+    }
+}
+
+@Composable
 private fun VoiceButton(
     height: Dp,
     recording: Boolean,
@@ -9071,7 +9206,8 @@ private fun conversationAccentColor(conversation: ChatConversation): Color {
 private fun conversationPreview(
     conversation: ChatConversation,
     lastMessage: ChatBubble?,
-    retryableCount: Int = 0
+    retryableCount: Int = 0,
+    draft: ConversationDraft? = null
 ): String {
     val basePreview = lastMessage?.let { message ->
         val text = message.previewText()
@@ -9083,10 +9219,12 @@ private fun conversationPreview(
             else -> "$forwardPrefix$replyPrefix$text"
         }
     } ?: conversation.subtitle
+    val draftPreview = draft?.text?.takeIf { text -> text.isNotBlank() }?.let { text -> "草稿：$text" }
+    val preview = draftPreview ?: basePreview
     return if (retryableCount > 0) {
-        "未发送 $retryableCount 条 · $basePreview"
+        "未发送 $retryableCount 条 · $preview"
     } else {
-        basePreview
+        preview
     }
 }
 
