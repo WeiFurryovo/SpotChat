@@ -222,6 +222,7 @@ private enum class ChatListFilter(
     Mentions("提及"),
     Retryable("未发送"),
     Locked("锁定"),
+    Muted("静音"),
     Direct("私聊"),
     Group("群聊")
 }
@@ -253,6 +254,7 @@ private fun ChatConversation.matchesFilter(
     mentionCounts: Map<String, Int>,
     favoriteConversationIds: Map<String, Boolean>,
     lockedConversationIds: Map<String, Boolean>,
+    isConversationMuted: (String) -> Boolean,
     hasRetryableMessages: (String) -> Boolean
 ): Boolean =
     when (filter) {
@@ -262,6 +264,7 @@ private fun ChatConversation.matchesFilter(
         ChatListFilter.Mentions -> (mentionCounts[id] ?: 0) > 0
         ChatListFilter.Retryable -> hasRetryableMessages(id)
         ChatListFilter.Locked -> lockedConversationIds[id] == true
+        ChatListFilter.Muted -> isConversationMuted(id)
         ChatListFilter.Direct -> kind == ConversationKind.Direct
         ChatListFilter.Group -> kind == ConversationKind.Group
     }
@@ -4171,6 +4174,7 @@ internal fun SpotChatApp(
                             mentionCounts = mentionCounts,
                             favoriteConversationIds = favoriteConversationIds,
                             lockedConversationIds = lockedConversationIds,
+                            isConversationMuted = ::isConversationMuted,
                             hasRetryableMessages = ::hasRetryableMessages
                         )
                     }
@@ -5109,6 +5113,10 @@ private fun WatchConversationListSurface(
                             allVisibleConversations.count { conversation ->
                                 lockedConversationIds[conversation.id] == true
                             },
+                        mutedCount =
+                            allVisibleConversations.count { conversation ->
+                                isConversationMuted(conversation.id)
+                            },
                         directCount =
                             allVisibleConversations.count { conversation ->
                                 conversation.kind == ConversationKind.Direct
@@ -5452,6 +5460,7 @@ private fun ChatFilterStrip(
     mentionCount: Int,
     retryableCount: Int,
     lockedCount: Int,
+    mutedCount: Int,
     directCount: Int,
     groupCount: Int,
     compact: Boolean,
@@ -5493,6 +5502,7 @@ private fun ChatFilterStrip(
                         ChatListFilter.Mentions -> mentionCount
                         ChatListFilter.Retryable -> retryableCount
                         ChatListFilter.Locked -> lockedCount
+                        ChatListFilter.Muted -> mutedCount
                         ChatListFilter.Direct -> directCount
                         ChatListFilter.Group -> groupCount
                     },
@@ -5526,6 +5536,7 @@ private fun FilterSegment(
                 ChatListFilter.Retryable -> 54.dp
                 ChatListFilter.Mentions -> 48.dp
                 ChatListFilter.Locked -> 48.dp
+                ChatListFilter.Muted -> 48.dp
                 else -> 45.dp
             }
         } else {
@@ -5533,6 +5544,7 @@ private fun FilterSegment(
                 ChatListFilter.Retryable -> 60.dp
                 ChatListFilter.Mentions -> 54.dp
                 ChatListFilter.Locked -> 54.dp
+                ChatListFilter.Muted -> 54.dp
                 else -> 50.dp
             }
         }
@@ -5754,6 +5766,7 @@ private fun EmptyFilterCapsule(
                     ChatListFilter.Mentions -> "没有提及你的聊天"
                     ChatListFilter.Retryable -> "没有未发送消息"
                     ChatListFilter.Locked -> "没有锁定聊天"
+                    ChatListFilter.Muted -> "没有静音聊天"
                     ChatListFilter.Direct -> "没有私聊"
                     ChatListFilter.Group -> "没有群聊"
                 },
