@@ -186,6 +186,7 @@ private enum class AppSurface {
     ChatInfo,
     MessageActions,
     MessageSearch,
+    MuteSettings,
     GroupMembers,
     ChatContentMessages,
     GlobalSearch,
@@ -1648,6 +1649,30 @@ internal fun SpotChatApp(
         )
     }
 
+    fun setConversationMute(
+        conversation: ChatConversation,
+        preset: MutePreset?
+    ) {
+        if (preset == null) {
+            mutedConversations.remove(conversation.id)
+            trustState = "已恢复通知"
+        } else {
+            val nowEpochMillis = System.currentTimeMillis()
+            mutedConversations[conversation.id] =
+                MutedConversation(
+                    preset = preset,
+                    untilEpochMillis = preset.durationMs?.let { duration -> nowEpochMillis + duration }
+                )
+            notifier.clearConversation(conversation.id)
+            trustState = "静音${preset.label}"
+        }
+        appendSystemMessage(
+            text = preset?.let { mutePreset -> "已静音${mutePreset.label}" } ?: "已恢复通知",
+            encrypted = true,
+            conversationId = conversation.id
+        )
+    }
+
     fun toggleConversationMuted(conversation: ChatConversation) {
         val currentPreset = muteState(conversation.id)?.preset
         val nextPreset =
@@ -1657,24 +1682,7 @@ internal fun SpotChatApp(
                 MutePreset.OneWeek -> MutePreset.Always
                 MutePreset.Always -> null
             }
-        if (nextPreset == null) {
-            mutedConversations.remove(conversation.id)
-            trustState = "已恢复通知"
-        } else {
-            val nowEpochMillis = System.currentTimeMillis()
-            mutedConversations[conversation.id] =
-                MutedConversation(
-                    preset = nextPreset,
-                    untilEpochMillis = nextPreset.durationMs?.let { duration -> nowEpochMillis + duration }
-                )
-            notifier.clearConversation(conversation.id)
-            trustState = "静音${nextPreset.label}"
-        }
-        appendSystemMessage(
-            text = nextPreset?.let { preset -> "已静音${preset.label}" } ?: "已恢复通知",
-            encrypted = true,
-            conversationId = conversation.id
-        )
+        setConversationMute(conversation, nextPreset)
     }
 
     fun toggleConversationArchived(conversation: ChatConversation) {
@@ -3540,7 +3548,7 @@ internal fun SpotChatApp(
                                 toggleConversationFavorite(selectedConversation)
                             },
                             onToggleMuted = {
-                                toggleConversationMuted(selectedConversation)
+                                appSurface = AppSurface.MuteSettings
                             },
                             onToggleArchived = {
                                 val wasArchived = archivedConversationIds[selectedConversation.id] == true
@@ -3583,6 +3591,25 @@ internal fun SpotChatApp(
                             selectedPeerFingerprint = selectedSecurityPeerFingerprint,
                             onCopySafetyCode = ::copySafetyCode,
                             onNavigateBack = dismissOverlay
+                        )
+                    }
+                }
+
+                if (appSurface == AppSurface.MuteSettings) {
+                    SlideInOverlay(
+                        onDismissed = {
+                            appSurface = AppSurface.ChatInfo
+                        }
+                    ) { dismissOverlay ->
+                        WatchMuteSettingsSurface(
+                            isRoundScreen = isRoundScreen,
+                            conversation = selectedConversation,
+                            currentMute = muteState(selectedConversation.id),
+                            onNavigateBack = dismissOverlay,
+                            onSelectMutePreset = { preset ->
+                                setConversationMute(selectedConversation, preset)
+                                appSurface = AppSurface.ChatInfo
+                            }
                         )
                     }
                 }
@@ -5565,6 +5592,82 @@ private fun WatchChatInfoSurface(
                                 onClick = onForgetPeer
                             )
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WatchMuteSettingsSurface(
+    isRoundScreen: Boolean,
+    conversation: ChatConversation,
+    currentMute: MutedConversation?,
+    onNavigateBack: () -> Unit,
+    onSelectMutePreset: (MutePreset?) -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
+        val accent = conversationAccentColor(conversation)
+        val scrollState = rememberScrollState()
+
+        WatchFrame(
+            surfaceSpec = surfaceSpec,
+            accent = accent,
+            modifier = Modifier.padding(horizontal = surfaceSpec.chatHorizontalPadding)
+        ) {
+            ScreenScaffold(
+                scrollState = scrollState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(),
+                scrollIndicator = {}
+            ) { scaffoldPadding ->
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .padding(scaffoldPadding)
+                            .padding(
+                                top = surfaceSpec.chatTopPadding,
+                                bottom = surfaceSpec.chatBottomPadding
+                            ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp)
+                ) {
+                    ChatInfoHeader(
+                        conversation = conversation,
+                        accent = accent,
+                        title = "通知静音",
+                        subtitle = conversation.title,
+                        surfaceSpec = surfaceSpec,
+                        onNavigateBack = onNavigateBack
+                    )
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
+                        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
+                    ) {
+                        MutePreset.entries.forEach { preset ->
+                            MessageActionButton(
+                                icon = Icons.Filled.NotificationsOff,
+                                text = "静音${preset.label}",
+                                selected = currentMute?.preset == preset,
+                                compact = compact,
+                                onClick = { onSelectMutePreset(preset) }
+                            )
+                        }
+                        MessageActionButton(
+                            icon = Icons.Filled.NotificationsOff,
+                            text = "恢复通知",
+                            selected = currentMute == null,
+                            compact = compact,
+                            onClick = { onSelectMutePreset(null) }
+                        )
                     }
                 }
             }
