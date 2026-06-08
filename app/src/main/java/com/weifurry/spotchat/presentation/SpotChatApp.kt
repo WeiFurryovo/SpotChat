@@ -4382,6 +4382,19 @@ internal fun SpotChatApp(
                                 trustState = "群聊已静音8小时"
                             }
                         },
+                        onLockVisibleDirects = {
+                            val unlockedDirectConversations =
+                                visibleConversationList.filter { conversation ->
+                                    conversation.kind == ConversationKind.Direct &&
+                                        !isConversationLocked(conversation.id)
+                                }
+                            unlockedDirectConversations.forEach { conversation ->
+                                toggleConversationLocked(conversation)
+                            }
+                            if (unlockedDirectConversations.isNotEmpty()) {
+                                trustState = "私聊预览已锁定"
+                            }
+                        },
                         onUnlockVisible = {
                             val lockedVisibleConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5203,6 +5216,7 @@ private fun WatchConversationListSurface(
     onUnpinVisible: () -> Unit,
     onUnmuteVisible: () -> Unit,
     onMuteVisibleGroups: () -> Unit,
+    onLockVisibleDirects: () -> Unit,
     onUnlockVisible: () -> Unit,
     onDisableDisappearingVisible: () -> Unit,
     onEnableReadReceiptsVisible: () -> Unit,
@@ -5549,6 +5563,20 @@ private fun WatchConversationListSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onMuteVisibleGroups
+                            )
+                        }
+                    }
+
+                    if (activeFilter == ChatListFilter.Direct && conversations.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Lock,
+                                text = "私聊锁定预览",
+                                selected = true,
+                                compact = compact,
+                                onClick = onLockVisibleDirects
                             )
                         }
                     }
