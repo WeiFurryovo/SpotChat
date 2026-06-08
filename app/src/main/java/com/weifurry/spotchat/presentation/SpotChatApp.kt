@@ -2250,6 +2250,34 @@ internal fun SpotChatApp(
         trustState = "已复制星标摘要"
     }
 
+    fun copyAttentionSummary(
+        conversations: List<ChatConversation>,
+        mentionsOnly: Boolean
+    ) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            attentionSummaryText(
+                conversations = conversations,
+                messagesByConversation = conversationMessages,
+                unreadCounts = unreadCounts,
+                mentionCounts = mentionCounts,
+                mentionsOnly = mentionsOnly
+            )
+        if (summary.isBlank()) {
+            trustState = if (mentionsOnly) "没有提及摘要" else "没有未读摘要"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat attention summary", summary)
+        )
+        trustState = if (mentionsOnly) "已复制提及摘要" else "已复制未读摘要"
+    }
+
     fun copyConversationContentSummary(conversation: ChatConversation) {
         val clipboardManager =
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -4508,6 +4536,12 @@ internal fun SpotChatApp(
                         onCopyVisibleStarredSummary = {
                             copyStarredSummary(visibleConversationList)
                         },
+                        onCopyAttentionSummary = {
+                            copyAttentionSummary(
+                                conversations = visibleConversationList,
+                                mentionsOnly = chatListFilter == ChatListFilter.Mentions
+                            )
+                        },
                         onFavoriteStarredVisible = {
                             val starredUnfavoriteConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5477,6 +5511,7 @@ private fun WatchConversationListSurface(
     onSendVisibleDrafts: () -> Unit,
     onClearVisibleDrafts: () -> Unit,
     onCopyVisibleStarredSummary: () -> Unit,
+    onCopyAttentionSummary: () -> Unit,
     onFavoriteStarredVisible: () -> Unit,
     onUnfavoriteVisible: () -> Unit,
     onPinFavoriteVisible: () -> Unit,
@@ -5767,6 +5802,23 @@ private fun WatchConversationListSurface(
                                     selected = true,
                                     compact = compact,
                                     onClick = onFavoriteMentionedVisible
+                                )
+                            }
+                            if (
+                                activeFilter == ChatListFilter.Unread ||
+                                activeFilter == ChatListFilter.Mentions
+                            ) {
+                                MessageActionButton(
+                                    icon = Icons.Filled.Keyboard,
+                                    text =
+                                        if (activeFilter == ChatListFilter.Mentions) {
+                                            "复制提及摘要"
+                                        } else {
+                                            "复制未读摘要"
+                                        },
+                                    selected = true,
+                                    compact = compact,
+                                    onClick = onCopyAttentionSummary
                                 )
                             }
                         }
@@ -12255,6 +12307,50 @@ private fun conversationTranscript(
                     ?.joinToString(separator = " · ", prefix = " [", postfix = "]")
                     .orEmpty()
             appendLine("[${message.timestamp}] $sender$prefix：${message.copyText()}")
+        }
+    }.trim()
+}
+
+private fun attentionSummaryText(
+    conversations: List<ChatConversation>,
+    messagesByConversation: Map<String, List<ChatBubble>>,
+    unreadCounts: Map<String, Int>,
+    mentionCounts: Map<String, Int>,
+    mentionsOnly: Boolean
+): String {
+    val targetConversations =
+        conversations.filter { conversation ->
+            if (mentionsOnly) {
+                (mentionCounts[conversation.id] ?: 0) > 0
+            } else {
+                (unreadCounts[conversation.id] ?: 0) > 0
+            }
+        }
+    if (targetConversations.isEmpty()) {
+        return ""
+    }
+    return buildString {
+        appendLine(if (mentionsOnly) "SpotChat 提及摘要" else "SpotChat 未读摘要")
+        appendLine("聊天：${targetConversations.size} 个")
+        appendLine()
+        targetConversations.forEachIndexed { index, conversation ->
+            val messages =
+                messagesByConversation[conversation.id]
+                    .orEmpty()
+                    .filter { message ->
+                        !message.mine && message.deliveryState != DeliveryState.System
+                    }
+            val latestMessage = messages.lastOrNull()
+            val unreadCount = unreadCounts[conversation.id] ?: 0
+            val mentionCount = mentionCounts[conversation.id] ?: 0
+            appendLine("${index + 1}. ${conversation.title}")
+            appendLine("   状态：未读 $unreadCount · 提及 $mentionCount")
+            if (latestMessage != null) {
+                val sender = latestMessage.senderName ?: conversation.title
+                appendLine("   最新：$sender：${latestMessage.copyText()}")
+            } else {
+                appendLine("   最新：没有可显示消息")
+            }
         }
     }.trim()
 }
