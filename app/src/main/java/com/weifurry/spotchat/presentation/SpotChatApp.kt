@@ -4327,7 +4327,12 @@ internal fun SpotChatApp(
                                 sendDraft(conversation)
                             }
                             if (draftConversations.isNotEmpty()) {
-                                trustState = "已发送草稿聊天"
+                                trustState =
+                                    if (chatListFilter == ChatListFilter.All) {
+                                        "全部草稿已发送"
+                                    } else {
+                                        "已发送草稿聊天"
+                                    }
                             }
                         },
                         onCopyVisibleStarredSummary = {
@@ -5455,6 +5460,9 @@ private fun WatchConversationListSurface(
                                 conversations.any { conversation -> (mentionCounts[conversation.id] ?: 0) > 0 }
                             else -> false
                         }
+                    val canSendVisibleDrafts =
+                        (activeFilter == ChatListFilter.All || activeFilter == ChatListFilter.Drafts) &&
+                            conversations.any { conversation -> draftsByConversation[conversation.id] != null }
 
                     if (
                         canMarkVisibleRead
@@ -5491,7 +5499,7 @@ private fun WatchConversationListSurface(
                         }
                     }
 
-                    if (activeFilter == ChatListFilter.Drafts && conversations.isNotEmpty()) {
+                    if (canSendVisibleDrafts) {
                         Column(
                             modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
                         ) {
