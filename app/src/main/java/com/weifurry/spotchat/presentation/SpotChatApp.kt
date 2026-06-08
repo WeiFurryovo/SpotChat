@@ -2100,15 +2100,17 @@ internal fun SpotChatApp(
 
     fun markConversationsRead(
         conversations: List<ChatConversation>,
-        statusText: String
+        statusText: String,
+        shouldMark: (ChatConversation) -> Boolean = { conversation ->
+            (unreadCounts[conversation.id] ?: 0) > 0
+        }
     ) {
-        val unreadConversations =
-            conversations.filter { conversation -> (unreadCounts[conversation.id] ?: 0) > 0 }
-        unreadConversations.forEach { conversation ->
+        val targetConversations = conversations.filter(shouldMark)
+        targetConversations.forEach { conversation ->
             clearConversationAlerts(conversation.id)
             markConversationRead(conversation.id)
         }
-        if (unreadConversations.isNotEmpty()) {
+        if (targetConversations.isNotEmpty()) {
             trustState = statusText
         }
     }
@@ -4253,7 +4255,18 @@ internal fun SpotChatApp(
                         onMarkVisibleRead = {
                             markConversationsRead(
                                 conversations = visibleConversationList,
-                                statusText = "未读聊天已读"
+                                statusText =
+                                    if (chatListFilter == ChatListFilter.Mentions) {
+                                        "提及聊天已读"
+                                    } else {
+                                        "未读聊天已读"
+                                    },
+                                shouldMark = { conversation ->
+                                    when (chatListFilter) {
+                                        ChatListFilter.Mentions -> (mentionCounts[conversation.id] ?: 0) > 0
+                                        else -> (unreadCounts[conversation.id] ?: 0) > 0
+                                    }
+                                }
                             )
                         },
                         onRetryVisible = {
@@ -5259,13 +5272,21 @@ private fun WatchConversationListSurface(
                         onClick = onOpenGlobalSearch
                     )
 
-                    if (activeFilter == ChatListFilter.Unread && conversations.isNotEmpty()) {
+                    if (
+                        (activeFilter == ChatListFilter.Unread || activeFilter == ChatListFilter.Mentions) &&
+                        conversations.isNotEmpty()
+                    ) {
                         Column(
                             modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
                         ) {
                             MessageActionButton(
                                 icon = Icons.Filled.DoneAll,
-                                text = "全部标为已读",
+                                text =
+                                    if (activeFilter == ChatListFilter.Mentions) {
+                                        "提及标为已读"
+                                    } else {
+                                        "全部标为已读"
+                                    },
                                 selected = true,
                                 compact = compact,
                                 onClick = onMarkVisibleRead
