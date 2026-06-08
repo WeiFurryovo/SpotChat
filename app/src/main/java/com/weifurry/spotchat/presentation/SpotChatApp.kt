@@ -478,6 +478,7 @@ private const val MAX_SEARCH_QUERY_CHARS = 48
 private const val MAX_SEARCH_RESULTS = 12
 private const val MAX_GLOBAL_SEARCH_RESULTS = 20
 private const val MAX_STARRED_RESULTS = 24
+private const val MAX_TRANSCRIPT_MESSAGES = 80
 private const val MAX_QUOTED_MESSAGE_CHARS = 72
 private const val DISAPPEARING_SWEEP_INTERVAL_MS = 15_000L
 private const val MUTE_SWEEP_INTERVAL_MS = 60_000L
@@ -2014,6 +2015,28 @@ internal fun SpotChatApp(
             ClipData.newPlainText("SpotChat message", copyText)
         )
         trustState = "已复制消息"
+    }
+
+    fun copyConversationTranscript(conversation: ChatConversation) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val transcript =
+            conversationTranscript(
+                conversation = conversation,
+                messages = messagesForConversation(conversation.id)
+            )
+        if (transcript.isBlank()) {
+            trustState = "没有可导出的消息"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat transcript", transcript)
+        )
+        trustState = "已复制聊天记录"
     }
 
     fun copySafetyCode(peer: StoredTrustedPeer) {
@@ -4213,6 +4236,9 @@ internal fun SpotChatApp(
                             onToggleDisappearingMessages = {
                                 appSurface = AppSurface.DisappearingSettings
                             },
+                            onCopyTranscript = {
+                                copyConversationTranscript(selectedConversation)
+                            },
                             onClearKeepingStarred = {
                                 clearConversationKeepingStarred(selectedConversation)
                                 appSurface = AppSurface.Chat
@@ -5974,6 +6000,7 @@ private fun WatchChatInfoSurface(
     onToggleUnread: () -> Unit,
     onRetryFailedMessages: () -> Unit,
     onToggleDisappearingMessages: () -> Unit,
+    onCopyTranscript: () -> Unit,
     onClearKeepingStarred: () -> Unit,
     onClearConversation: () -> Unit,
     onForgetPeer: () -> Unit
@@ -6337,6 +6364,13 @@ private fun WatchChatInfoSurface(
                             selected = false,
                             compact = compact,
                             onClick = onSearchMessages
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.Keyboard,
+                            text = "复制聊天记录",
+                            selected = messageCount > 0,
+                            compact = compact,
+                            onClick = onCopyTranscript
                         )
                         if (starredCount > 0) {
                             MessageActionButton(
@@ -9762,6 +9796,58 @@ private fun ChatBubble.forwardText(): String =
     } else {
         text
     }
+
+private fun conversationTranscript(
+    conversation: ChatConversation,
+    messages: List<ChatBubble>
+): String {
+    val exportableMessages =
+        messages
+            .filter { message -> message.deliveryState != DeliveryState.System }
+            .takeLast(MAX_TRANSCRIPT_MESSAGES)
+    if (exportableMessages.isEmpty()) {
+        return ""
+    }
+    val omittedCount =
+        messages.count { message -> message.deliveryState != DeliveryState.System } -
+            exportableMessages.size
+    return buildString {
+        appendLine("SpotChat 聊天记录")
+        appendLine("聊天：${conversation.title}")
+        appendLine("类型：${conversation.kind.label}")
+        if (omittedCount > 0) {
+            appendLine("范围：最近 ${exportableMessages.size} 条，已省略 $omittedCount 条更早消息")
+        } else {
+            appendLine("范围：${exportableMessages.size} 条消息")
+        }
+        appendLine()
+        exportableMessages.forEach { message ->
+            val sender =
+                when {
+                    message.mine -> "我"
+                    message.senderName != null -> message.senderName
+                    conversation.kind == ConversationKind.Direct -> conversation.title
+                    else -> "SpotChat"
+                }
+            val prefix =
+                buildList {
+                    if (message.forwarded) {
+                        add("转发")
+                    }
+                    message.quotedMessage?.let { quote ->
+                        add("回复 ${quote.senderName}")
+                    }
+                    if (message.expiresAtEpochMillis != null) {
+                        add("限时")
+                    }
+                }
+                    .takeIf { labels -> labels.isNotEmpty() }
+                    ?.joinToString(separator = " · ", prefix = " [", postfix = "]")
+                    .orEmpty()
+            appendLine("[${message.timestamp}] $sender$prefix：${message.copyText()}")
+        }
+    }.trim()
+}
 
 private fun ChatBubble.searchText(): String =
     buildList {
