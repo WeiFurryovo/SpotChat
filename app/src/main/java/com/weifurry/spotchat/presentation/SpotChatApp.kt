@@ -938,6 +938,9 @@ internal fun SpotChatApp(
     ): Boolean =
         pinnedMessageIdsByConversation[conversationId] == message.stableStarId()
 
+    fun hasLocalReaction(message: ChatBubble): Boolean =
+        localFingerprint in message.reactions
+
     fun messageReceiptSummary(
         conversation: ChatConversation,
         message: ChatBubble
@@ -1916,6 +1919,29 @@ internal fun SpotChatApp(
             }
     }
 
+    fun removeMessageReaction(
+        conversationId: String,
+        targetMessageId: String,
+        senderFingerprint: String
+    ) {
+        conversationMessages[conversationId] =
+            messagesForConversation(conversationId).map { message ->
+                if (message.messageId == targetMessageId) {
+                    message.copy(reactions = message.reactions - senderFingerprint)
+                } else {
+                    message
+                }
+            }
+        selectedActionMessage =
+            selectedActionMessage?.let { actionMessage ->
+                if (actionMessage.messageId == targetMessageId) {
+                    actionMessage.copy(reactions = actionMessage.reactions - senderFingerprint)
+                } else {
+                    actionMessage
+                }
+            }
+    }
+
     fun removeMessageCaches(
         conversationId: String,
         message: ChatBubble
@@ -2629,6 +2655,23 @@ internal fun SpotChatApp(
                     "回应发送失败"
                 }
         }
+    }
+
+    fun removeLocalReactionFromMessage(
+        conversation: ChatConversation,
+        message: ChatBubble
+    ) {
+        val targetMessageId = message.messageId
+        if (targetMessageId == null || localFingerprint !in message.reactions) {
+            trustState = "没有我的回应"
+            return
+        }
+        removeMessageReaction(
+            conversationId = conversation.id,
+            targetMessageId = targetMessageId,
+            senderFingerprint = localFingerprint
+        )
+        trustState = "已取消我的回应"
     }
 
     fun sendPreparedVoiceMessage(
@@ -3937,6 +3980,7 @@ internal fun SpotChatApp(
                                 message = actionMessage,
                                 isStarred = isMessageStarred(selectedConversation.id, actionMessage),
                                 isPinned = isMessagePinned(selectedConversation.id, actionMessage),
+                                hasLocalReaction = hasLocalReaction(actionMessage),
                                 voicePlaybackSpeed = voicePlaybackSpeed,
                                 hasQuotedMessageTarget = quotedTarget != null,
                                 canReplyPrivately =
@@ -3982,6 +4026,9 @@ internal fun SpotChatApp(
                                 onReactToMessage = { reactionCode ->
                                     sendReactionToConversation(selectedConversation, actionMessage, reactionCode)
                                     appSurface = AppSurface.Chat
+                                },
+                                onRemoveReaction = {
+                                    removeLocalReactionFromMessage(selectedConversation, actionMessage)
                                 },
                                 onOpenCustomMessageInput = {
                                     pendingQuotedMessage = null
@@ -5966,6 +6013,7 @@ private fun WatchMessageActionsSurface(
     message: ChatBubble,
     isStarred: Boolean,
     isPinned: Boolean,
+    hasLocalReaction: Boolean,
     voicePlaybackSpeed: VoicePlaybackSpeed,
     hasQuotedMessageTarget: Boolean,
     canReplyPrivately: Boolean,
@@ -5981,6 +6029,7 @@ private fun WatchMessageActionsSurface(
     onOpenQuotedMessage: () -> Unit,
     onDeleteMessage: () -> Unit,
     onReactToMessage: (String) -> Unit,
+    onRemoveReaction: () -> Unit,
     onOpenCustomMessageInput: () -> Unit,
     onSendQuickReply: (String) -> Unit,
     onReplyToMessage: () -> Unit,
@@ -6114,6 +6163,16 @@ private fun WatchMessageActionsSurface(
                                 selected = false,
                                 compact = compact,
                                 onClick = { onReactToMessage(reaction.code) }
+                            )
+                        }
+                        if (hasLocalReaction) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Delete,
+                                text = "取消我的回应",
+                                selected = true,
+                                destructive = true,
+                                compact = compact,
+                                onClick = onRemoveReaction
                             )
                         }
                         MessageActionButton(
