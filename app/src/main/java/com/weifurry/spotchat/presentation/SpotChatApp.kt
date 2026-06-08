@@ -221,11 +221,21 @@ private data class WearEntryRecoveryState(
     val actionLabel: String
 )
 
+private enum class WearEntryAction(
+    val label: String,
+    val ctaLabel: String
+) {
+    OpenChat("打开聊天", "知道了"),
+    Reply("回复", "输入"),
+    QuickReply("快捷回复", "输入"),
+    Voice("开始语音", "录音")
+}
+
 private data class WearEntryContext(
     val id: Long,
     val conversationId: String,
     val source: String,
-    val actionLabel: String
+    val action: WearEntryAction
 )
 
 private data class WatchActionConfirmation(
@@ -3450,7 +3460,7 @@ internal fun SpotChatApp(
     fun openConversationFromWearEntry(
         conversation: ChatConversation,
         source: String,
-        actionLabel: String
+        action: WearEntryAction
     ) {
         openConversation(conversation)
         wearEntryContextId += 1
@@ -3459,7 +3469,7 @@ internal fun SpotChatApp(
                 id = wearEntryContextId,
                 conversationId = conversation.id,
                 source = source,
-                actionLabel = actionLabel
+                action = action
             )
     }
 
@@ -5003,16 +5013,16 @@ internal fun SpotChatApp(
             trustState = "已标为已读"
             return
         }
-        val notificationActionLabel =
+        val notificationAction =
             when (intent.action) {
-                SpotChatNotificationIntents.ACTION_REPLY -> "回复"
-                SpotChatNotificationIntents.ACTION_QUICK_REPLY -> "快捷回复"
-                else -> "打开聊天"
+                SpotChatNotificationIntents.ACTION_REPLY -> WearEntryAction.Reply
+                SpotChatNotificationIntents.ACTION_QUICK_REPLY -> WearEntryAction.QuickReply
+                else -> WearEntryAction.OpenChat
             }
         openConversationFromWearEntry(
             conversation = conversation,
             source = "通知",
-            actionLabel = notificationActionLabel
+            action = notificationAction
         )
 
         if (intent.action == SpotChatNotificationIntents.ACTION_QUICK_REPLY) {
@@ -5062,7 +5072,7 @@ internal fun SpotChatApp(
         openConversationFromWearEntry(
             conversation = conversation,
             source = "最近聊天 Tile",
-            actionLabel = "打开聊天"
+            action = WearEntryAction.OpenChat
         )
     }
 
@@ -5089,7 +5099,7 @@ internal fun SpotChatApp(
         openConversationFromWearEntry(
             conversation = conversation,
             source = "语音 Tile",
-            actionLabel = "开始语音"
+            action = WearEntryAction.Voice
         )
         trustState = "点麦克风开始语音"
     }
@@ -5124,7 +5134,7 @@ internal fun SpotChatApp(
         openConversationFromWearEntry(
             conversation = conversation,
             source = "快捷回复 Tile",
-            actionLabel = "快捷回复"
+            action = WearEntryAction.QuickReply
         )
         val replyText =
             intent
@@ -6107,6 +6117,24 @@ internal fun SpotChatApp(
                                     openVoicePlayback(message)
                                 } else {
                                     playVoiceMessage(message)
+                                }
+                            },
+                            onPerformWearEntryAction = { context ->
+                                when (context.action) {
+                                    WearEntryAction.Voice -> {
+                                        wearEntryContext = null
+                                        if (!isRecordingVoice) {
+                                            toggleVoiceRecording()
+                                        }
+                                    }
+                                    WearEntryAction.Reply,
+                                    WearEntryAction.QuickReply -> {
+                                        wearEntryContext = null
+                                        openCustomMessageInput()
+                                    }
+                                    WearEntryAction.OpenChat -> {
+                                        wearEntryContext = null
+                                    }
                                 }
                             },
                             onDismissWearEntryContext = {
@@ -13814,6 +13842,7 @@ private fun WatchChatSurface(
     voicePlaybackSpeed: VoicePlaybackSpeed,
     onOpenChatInfo: () -> Unit,
     onOpenMessageActions: (ChatBubble) -> Unit,
+    onPerformWearEntryAction: (WearEntryContext) -> Unit,
     onDismissWearEntryContext: () -> Unit,
     onNavigateBack: () -> Unit
 ) {
@@ -13877,6 +13906,9 @@ private fun WatchChatSurface(
                             context = context,
                             compact = compact,
                             surfaceSpec = surfaceSpec,
+                            onPerformAction = {
+                                onPerformWearEntryAction(context)
+                            },
                             onDismiss = onDismissWearEntryContext
                         )
                     }
@@ -14030,25 +14062,31 @@ private fun WearEntryContextBanner(
     context: WearEntryContext,
     compact: Boolean,
     surfaceSpec: WatchSurfaceSpec,
+    onPerformAction: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val icon =
-        when {
-            context.source.contains("语音") -> Icons.Filled.Mic
-            context.source.contains("快捷回复") -> Icons.Filled.Keyboard
-            context.source.contains("Tile") -> Icons.AutoMirrored.Filled.Chat
-            else -> Icons.Filled.MarkChatUnread
+        when (context.action) {
+            WearEntryAction.Voice -> Icons.Filled.Mic
+            WearEntryAction.Reply,
+            WearEntryAction.QuickReply -> Icons.Filled.Keyboard
+            WearEntryAction.OpenChat ->
+                if (context.source.contains("Tile")) {
+                    Icons.AutoMirrored.Filled.Chat
+                } else {
+                    Icons.Filled.MarkChatUnread
+                }
         }
     Row(
         modifier =
             Modifier
                 .fillMaxWidth(if (surfaceSpec.isRound) 0.86f else 0.94f)
-                .height(if (compact) 34.dp else 38.dp)
+                .height(if (compact) 38.dp else 42.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(chatBlue.copy(alpha = 0.16f))
                 .border(1.dp, chatBlue.copy(alpha = 0.42f), RoundedCornerShape(8.dp))
-                .clickable(onClick = onDismiss)
-                .padding(horizontal = if (compact) 8.dp else 10.dp),
+                .clickable(onClick = onPerformAction)
+                .padding(horizontal = if (compact) 8.dp else 9.dp),
         horizontalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -14071,7 +14109,7 @@ private fun WearEntryContextBanner(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = context.actionLabel,
+                text = context.action.label,
                 color = MaterialTheme.colorScheme.onBackground,
                 fontSize = if (compact) 10.sp else 11.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -14079,6 +14117,30 @@ private fun WearEntryContextBanner(
                 overflow = TextOverflow.Ellipsis
             )
         }
+        Text(
+            text = context.action.ctaLabel,
+            color = Color.Black,
+            fontSize = if (compact) 9.sp else 10.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            modifier =
+                Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(chatBlue)
+                    .padding(horizontal = if (compact) 6.dp else 7.dp, vertical = 4.dp)
+        )
+        Text(
+            text = "X",
+            color = chatRowMuted,
+            fontSize = if (compact) 13.sp else 14.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            modifier =
+                Modifier
+                    .clip(CircleShape)
+                    .clickable(onClick = onDismiss)
+                    .padding(horizontal = 3.dp, vertical = 1.dp)
+        )
     }
 }
 
