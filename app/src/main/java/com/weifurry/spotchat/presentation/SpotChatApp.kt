@@ -25,6 +25,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -5233,6 +5234,19 @@ internal fun SpotChatApp(
                         onConfirmPairing = ::confirmPairing,
                         onRejectPairing = ::rejectPairing,
                         onOpenConversation = ::openConversation,
+                        onToggleConversationPinned = ::toggleConversationPinned,
+                        onToggleConversationMuted = { conversation ->
+                            setConversationMute(
+                                conversation = conversation,
+                                preset =
+                                    if (isConversationMuted(conversation.id)) {
+                                        null
+                                    } else {
+                                        MutePreset.EightHours
+                                    }
+                            )
+                        },
+                        onToggleConversationArchived = ::toggleConversationArchived,
                         onSelectFilter = { filter ->
                             chatListFilter = filter
                         },
@@ -6363,6 +6377,9 @@ private fun WatchConversationListSurface(
     onConfirmPairing: () -> Unit,
     onRejectPairing: () -> Unit,
     onOpenConversation: (ChatConversation) -> Unit,
+    onToggleConversationPinned: (ChatConversation) -> Unit,
+    onToggleConversationMuted: (ChatConversation) -> Unit,
+    onToggleConversationArchived: (ChatConversation) -> Unit,
     onSelectFilter: (ChatListFilter) -> Unit,
     onOpenGlobalSearch: () -> Unit,
     onOpenArchivedChats: () -> Unit,
@@ -6434,6 +6451,7 @@ private fun WatchConversationListSurface(
         val compact = maxWidth < 260.dp || maxHeight < 260.dp
         val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
         val listScrollState = rememberScrollState()
+        var expandedConversationActionsId by remember { mutableStateOf<String?>(null) }
 
         WatchFrame(
             surfaceSpec = surfaceSpec,
@@ -7019,6 +7037,7 @@ private fun WatchConversationListSurface(
                         val lastMessage =
                             conversationMessages
                                 .lastOrNull { message -> message.deliveryState != DeliveryState.System }
+                        val quickActionsExpanded = expandedConversationActionsId == conversation.id
                         ConversationCapsule(
                             conversation = conversation,
                             lastMessage = lastMessage,
@@ -7032,9 +7051,39 @@ private fun WatchConversationListSurface(
                             featured = conversation.id == NEARBY_GROUP_CONVERSATION_ID,
                             surfaceSpec = surfaceSpec,
                             onClick = {
+                                expandedConversationActionsId = null
                                 onOpenConversation(conversation)
+                            },
+                            onLongPress = {
+                                expandedConversationActionsId =
+                                    if (quickActionsExpanded) {
+                                        null
+                                    } else {
+                                        conversation.id
+                                    }
                             }
                         )
+                        if (quickActionsExpanded) {
+                            ConversationQuickActions(
+                                conversation = conversation,
+                                isPinned = pinnedConversationIds[conversation.id] == true,
+                                isMuted = isConversationMuted(conversation.id),
+                                compact = compact,
+                                surfaceSpec = surfaceSpec,
+                                onTogglePinned = {
+                                    onToggleConversationPinned(conversation)
+                                    expandedConversationActionsId = null
+                                },
+                                onToggleMuted = {
+                                    onToggleConversationMuted(conversation)
+                                    expandedConversationActionsId = null
+                                },
+                                onToggleArchived = {
+                                    onToggleConversationArchived(conversation)
+                                    expandedConversationActionsId = null
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -8003,7 +8052,8 @@ private fun ConversationCapsule(
     isMuted: Boolean,
     featured: Boolean,
     surfaceSpec: WatchSurfaceSpec,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongPress: (() -> Unit)? = null
 ) {
     val compact = surfaceSpec.compact
     val accent = conversationAccentColor(conversation)
@@ -8042,7 +8092,18 @@ private fun ConversationCapsule(
                     color = if (featured) accent.copy(alpha = 0.28f) else chatDivider.copy(alpha = 0.55f),
                     shape = RoundedCornerShape(8.dp)
                 )
-                .clickable(onClick = onClick)
+                .then(
+                    if (onLongPress != null) {
+                        Modifier.pointerInput(onClick, onLongPress) {
+                            detectTapGestures(
+                                onTap = { onClick() },
+                                onLongPress = { onLongPress() }
+                            )
+                        }
+                    } else {
+                        Modifier.clickable(onClick = onClick)
+                    }
+                )
                 .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -8126,6 +8187,96 @@ private fun ConversationCapsule(
             Spacer(modifier = Modifier.width(6.dp))
             UnreadBadge(count = unreadCount)
         }
+    }
+}
+
+@Composable
+private fun ConversationQuickActions(
+    conversation: ChatConversation,
+    isPinned: Boolean,
+    isMuted: Boolean,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    onTogglePinned: () -> Unit,
+    onToggleMuted: () -> Unit,
+    onToggleArchived: () -> Unit
+) {
+    val accent = conversationAccentColor(conversation)
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                .height(if (compact) 30.dp else 34.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.78f))
+                .border(1.dp, accent.copy(alpha = 0.36f), RoundedCornerShape(8.dp))
+                .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CompactConversationActionButton(
+            icon = Icons.Filled.PushPin,
+            label = if (isPinned) "取消" else "置顶",
+            selected = isPinned,
+            compact = compact,
+            modifier = Modifier.weight(1f),
+            onClick = onTogglePinned
+        )
+        CompactConversationActionButton(
+            icon = Icons.Filled.NotificationsOff,
+            label = if (isMuted) "恢复" else "静音",
+            selected = isMuted,
+            compact = compact,
+            modifier = Modifier.weight(1f),
+            onClick = onToggleMuted
+        )
+        CompactConversationActionButton(
+            icon = Icons.Filled.Archive,
+            label = "归档",
+            selected = false,
+            compact = compact,
+            modifier = Modifier.weight(1f),
+            onClick = onToggleArchived
+        )
+    }
+}
+
+@Composable
+private fun CompactConversationActionButton(
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    compact: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val foreground = if (selected) Color(0xFF001F1B) else MaterialTheme.colorScheme.onBackground
+    Row(
+        modifier =
+            modifier
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(7.dp))
+                .background(if (selected) chatGreen else Color.Black.copy(alpha = 0.18f))
+                .clickable(onClick = onClick)
+                .padding(horizontal = if (compact) 3.dp else 5.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = foreground,
+            modifier = Modifier.size(if (compact) 11.dp else 13.dp)
+        )
+        Spacer(modifier = Modifier.width(if (compact) 3.dp else 4.dp))
+        Text(
+            text = label,
+            color = foreground,
+            fontSize = if (compact) 9.sp else 10.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
