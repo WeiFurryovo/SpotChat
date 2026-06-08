@@ -219,6 +219,7 @@ private enum class ChatListFilter(
     All("全部"),
     Favorites("收藏"),
     Unread("未读"),
+    Pinned("置顶"),
     Starred("星标"),
     Drafts("草稿"),
     Mentions("提及"),
@@ -257,6 +258,7 @@ private fun ChatConversation.matchesFilter(
     unreadCounts: Map<String, Int>,
     mentionCounts: Map<String, Int>,
     favoriteConversationIds: Map<String, Boolean>,
+    pinnedConversationIds: Map<String, Boolean>,
     starredMessageIdsByConversation: Map<String, Set<String>>,
     draftsByConversation: Map<String, ConversationDraft>,
     lockedConversationIds: Map<String, Boolean>,
@@ -269,6 +271,7 @@ private fun ChatConversation.matchesFilter(
         ChatListFilter.All -> true
         ChatListFilter.Favorites -> favoriteConversationIds[id] == true
         ChatListFilter.Unread -> (unreadCounts[id] ?: 0) > 0
+        ChatListFilter.Pinned -> pinnedConversationIds[id] == true
         ChatListFilter.Starred -> starredMessageIdsByConversation[id].orEmpty().isNotEmpty()
         ChatListFilter.Drafts -> draftsByConversation[id] != null
         ChatListFilter.Mentions -> (mentionCounts[id] ?: 0) > 0
@@ -4186,6 +4189,7 @@ internal fun SpotChatApp(
                             unreadCounts = unreadCounts,
                             mentionCounts = mentionCounts,
                             favoriteConversationIds = favoriteConversationIds,
+                            pinnedConversationIds = pinnedConversationIds,
                             starredMessageIdsByConversation = starredMessageIdsByConversation,
                             draftsByConversation = draftsByConversation,
                             lockedConversationIds = lockedConversationIds,
@@ -5122,6 +5126,10 @@ private fun WatchConversationListSurface(
                         allVisibleConversations.count { conversation ->
                             (unreadCounts[conversation.id] ?: 0) > 0
                         }
+                    val pinnedCount =
+                        allVisibleConversations.count { conversation ->
+                            pinnedConversationIds[conversation.id] == true
+                        }
                     val starredCount =
                         allVisibleConversations.count { conversation ->
                             starredMessageIdsByConversation[conversation.id].orEmpty().isNotEmpty()
@@ -5182,6 +5190,7 @@ private fun WatchConversationListSurface(
                         activeFilter = activeFilter,
                         favoriteCount = favoriteCount,
                         unreadCount = unreadCount,
+                        pinnedCount = pinnedCount,
                         starredCount = starredCount,
                         draftCount = draftCount,
                         mentionCount = mentionCount,
@@ -5535,6 +5544,7 @@ private fun ChatFilterStrip(
     activeFilter: ChatListFilter,
     favoriteCount: Int,
     unreadCount: Int,
+    pinnedCount: Int,
     starredCount: Int,
     draftCount: Int,
     mentionCount: Int,
@@ -5581,6 +5591,7 @@ private fun ChatFilterStrip(
                         ChatListFilter.All -> directCount + groupCount
                         ChatListFilter.Favorites -> favoriteCount
                         ChatListFilter.Unread -> unreadCount
+                        ChatListFilter.Pinned -> pinnedCount
                         ChatListFilter.Starred -> starredCount
                         ChatListFilter.Drafts -> draftCount
                         ChatListFilter.Mentions -> mentionCount
@@ -5620,6 +5631,7 @@ private fun FilterSegment(
         if (compact) {
             when (filter) {
                 ChatListFilter.Retryable -> 54.dp
+                ChatListFilter.Pinned -> 48.dp
                 ChatListFilter.Starred -> 48.dp
                 ChatListFilter.Drafts -> 48.dp
                 ChatListFilter.Mentions -> 48.dp
@@ -5632,6 +5644,7 @@ private fun FilterSegment(
         } else {
             when (filter) {
                 ChatListFilter.Retryable -> 60.dp
+                ChatListFilter.Pinned -> 54.dp
                 ChatListFilter.Starred -> 54.dp
                 ChatListFilter.Drafts -> 54.dp
                 ChatListFilter.Mentions -> 54.dp
@@ -5959,6 +5972,7 @@ private fun EmptyFilterCapsule(
                     ChatListFilter.All -> "还没有聊天"
                     ChatListFilter.Favorites -> "没有收藏聊天"
                     ChatListFilter.Unread -> "没有未读聊天"
+                    ChatListFilter.Pinned -> "没有置顶聊天"
                     ChatListFilter.Starred -> "没有星标聊天"
                     ChatListFilter.Drafts -> "没有草稿聊天"
                     ChatListFilter.Mentions -> "没有提及你的聊天"
