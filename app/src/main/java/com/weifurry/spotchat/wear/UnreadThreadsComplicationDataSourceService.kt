@@ -9,6 +9,7 @@ import androidx.wear.watchface.complications.data.PlainComplicationText
 import androidx.wear.watchface.complications.data.ShortTextComplicationData
 import androidx.wear.watchface.complications.datasource.ComplicationDataSourceService
 import androidx.wear.watchface.complications.datasource.ComplicationRequest
+import com.weifurry.spotchat.notifications.SpotChatNotificationIntents
 import com.weifurry.spotchat.presentation.MainActivity
 
 class UnreadThreadsComplicationDataSourceService : ComplicationDataSourceService() {
@@ -41,36 +42,51 @@ class UnreadThreadsComplicationDataSourceService : ComplicationDataSourceService
         )
 
     private fun buildComplicationData(snapshot: WearChatSnapshot): ComplicationData {
-        val count = snapshot.totalUnreadCount
+        val unreadThreadCount = snapshot.unreadThreadCount
+        val totalUnreadCount = snapshot.totalUnreadCount
+        val latestUnreadConversation = snapshot.latestUnreadConversation
         val shortText =
-            if (count > 0) {
-                count.coerceAtMost(99).toString()
+            if (unreadThreadCount > 0) {
+                unreadThreadCount.coerceAtMost(99).toString()
             } else {
                 "0"
             }
+        val title =
+            when {
+                unreadThreadCount <= 0 -> "SpotChat"
+                totalUnreadCount == 1 -> "1 条消息"
+                else -> "$totalUnreadCount 条消息"
+            }
         val contentDescription =
-            if (count > 0) {
-                "SpotChat 有 $count 条未读消息"
+            if (unreadThreadCount > 0) {
+                "SpotChat 有 $unreadThreadCount 个未读聊天，$totalUnreadCount 条未读消息"
             } else {
-                "SpotChat 没有未读消息"
+                "SpotChat 没有未读聊天"
             }
         return ShortTextComplicationData.Builder(
             text = plainText(shortText),
             contentDescription = plainText(contentDescription)
         )
-            .setTitle(plainText("SpotChat"))
-            .setTapAction(openAppPendingIntent())
+            .setTitle(plainText(title))
+            .setTapAction(openAppPendingIntent(latestUnreadConversation?.id))
             .build()
     }
 
     private fun plainText(text: String): PlainComplicationText =
         PlainComplicationText.Builder(text).build()
 
-    private fun openAppPendingIntent(): PendingIntent =
+    private fun openAppPendingIntent(conversationId: String?): PendingIntent =
         PendingIntent.getActivity(
             this,
             COMPLICATION_OPEN_REQUEST_CODE,
-            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(RecentChatsTileService.EXTRA_TILE_OPEN, conversationId != null)
+                .apply {
+                    if (conversationId != null) {
+                        putExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID, conversationId)
+                    }
+                },
             pendingIntentFlags()
         )
 

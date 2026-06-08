@@ -21,11 +21,19 @@ data class WearChatSnapshot(
     val conversations: List<WearConversationSummary> = emptyList(),
     val updatedAtEpochMillis: Long = 0L
 ) {
+    val unreadThreadCount: Int =
+        conversations.count { conversation -> conversation.unreadCount > 0 }
+
     val totalUnreadCount: Int =
         conversations.sumOf { conversation -> conversation.unreadCount }
 
     val hasUnread: Boolean =
-        totalUnreadCount > 0
+        unreadThreadCount > 0
+
+    val latestUnreadConversation: WearConversationSummary? =
+        conversations
+            .filter { conversation -> conversation.unreadCount > 0 }
+            .maxByOrNull { conversation -> conversation.updatedAtEpochMillis }
 }
 
 class SpotChatWearStateStore(context: Context) {
@@ -59,7 +67,6 @@ class SpotChatWearStateStore(context: Context) {
                                 conversation.unreadCount > 0
                             }.thenByDescending { conversation -> conversation.updatedAtEpochMillis }
                         )
-                        .take(MAX_TILE_CONVERSATIONS)
             )
         prefs.edit().putString(KEY_SNAPSHOT, json.encodeToString(normalized)).apply()
     }
