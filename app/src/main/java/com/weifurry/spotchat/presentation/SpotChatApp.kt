@@ -5477,6 +5477,12 @@ private fun WatchConversationListSurface(
                                 conversation.kind == ConversationKind.Group &&
                                     !isConversationMuted(conversation.id)
                             }
+                    val canLockVisibleDirects =
+                        (activeFilter == ChatListFilter.All || activeFilter == ChatListFilter.Direct) &&
+                            conversations.any { conversation ->
+                                conversation.kind == ConversationKind.Direct &&
+                                    lockedConversationIds[conversation.id] != true
+                            }
 
                     if (
                         canMarkVisibleRead
@@ -5597,7 +5603,7 @@ private fun WatchConversationListSurface(
                         }
                     }
 
-                    if (activeFilter == ChatListFilter.Direct && conversations.isNotEmpty()) {
+                    if (canLockVisibleDirects) {
                         Column(
                             modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
                         ) {
