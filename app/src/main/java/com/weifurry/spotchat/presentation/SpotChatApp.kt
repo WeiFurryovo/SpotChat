@@ -746,6 +746,7 @@ internal fun SpotChatApp(
     val favoriteConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val mutedConversations = remember { mutableStateMapOf<String, MutedConversation>() }
     val archivedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
+    val lockedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val draftsByConversation = remember { mutableStateMapOf<String, ConversationDraft>() }
     val blockedPeerFingerprints = remember { mutableStateMapOf<String, Boolean>() }
     val readReceiptsDisabledByConversation = remember { mutableStateMapOf<String, Boolean>() }
@@ -761,6 +762,10 @@ internal fun SpotChatApp(
     val pendingOutboundMessages = remember { mutableStateMapOf<String, PendingOutboundMessage>() }
     val pendingOutboundVoiceMessages = remember { mutableStateMapOf<String, PendingOutboundVoiceMessage>() }
     val conversationUpdateOrder = remember { mutableStateMapOf<String, Long>() }
+
+    fun isConversationLocked(conversationId: String): Boolean =
+        lockedConversationIds[conversationId] == true
+
     var conversationUpdateSequence by remember { mutableStateOf(0L) }
     var activeConversationId by remember { mutableStateOf(NEARBY_GROUP_CONVERSATION_ID) }
     if (conversationMessages[activeConversationId] == null) {
@@ -1271,7 +1276,7 @@ internal fun SpotChatApp(
             conversationId = conversationId,
             conversationTitle = conversation.title,
             senderName = senderName,
-            messageText = message.text,
+            messageText = if (isConversationLocked(conversationId)) "收到新消息" else message.text,
             unreadCount = unreadCounts[conversationId] ?: 1
         )
     }
@@ -1459,6 +1464,7 @@ internal fun SpotChatApp(
         mutedConversations.remove(conversation.id)
         archivedConversationIds.remove(conversation.id)
         blockedPeerFingerprints.remove(storedPeer.fingerprint)
+        lockedConversationIds.remove(conversation.id)
         pinnedMessageIdsByConversation.remove(conversation.id)
         disappearingModesByConversation.remove(conversation.id)
         readReceiptsDisabledByConversation.remove(conversation.id)
@@ -1574,7 +1580,8 @@ internal fun SpotChatApp(
                             conversation = conversation,
                             lastMessage = lastMessage,
                             retryableCount = retryableCount,
-                            draft = draftsByConversation[conversation.id]
+                            draft = draftsByConversation[conversation.id],
+                            locked = isConversationLocked(conversation.id)
                         ),
                     unreadCount = unreadCounts[conversation.id] ?: 0,
                     updatedAtEpochMillis = conversationUpdateOrder[conversation.id] ?: 0L,
@@ -1594,6 +1601,7 @@ internal fun SpotChatApp(
         conversationMessages.toMap(),
         unreadCounts.toMap(),
         draftsByConversation.toMap(),
+        lockedConversationIds.toMap(),
         pinnedConversationIds.toMap(),
         favoriteConversationIds.toMap(),
         mutedConversations.toMap(),
@@ -1806,6 +1814,22 @@ internal fun SpotChatApp(
         }
         appendSystemMessage(
             text = if (isBlocked) "已解除阻止 $peerName" else "已阻止 $peerName 的消息",
+            encrypted = true,
+            conversationId = conversation.id
+        )
+    }
+
+    fun toggleConversationLocked(conversation: ChatConversation) {
+        val isLocked = isConversationLocked(conversation.id)
+        if (isLocked) {
+            lockedConversationIds.remove(conversation.id)
+            trustState = "已解锁聊天预览"
+        } else {
+            lockedConversationIds[conversation.id] = true
+            trustState = "已锁定聊天预览"
+        }
+        appendSystemMessage(
+            text = if (isLocked) "聊天预览已解锁" else "聊天预览已锁定",
             encrypted = true,
             conversationId = conversation.id
         )
@@ -3841,6 +3865,7 @@ internal fun SpotChatApp(
                         isConversationMuted = ::isConversationMuted,
                         messagesByConversation = conversationMessages,
                         draftsByConversation = draftsByConversation,
+                        lockedConversationIds = lockedConversationIds,
                         transportMode = transportMode,
                         trustState = trustState,
                         fingerprint = localFingerprint,
@@ -3925,6 +3950,7 @@ internal fun SpotChatApp(
                             pinnedConversationIds = pinnedConversationIds,
                             isConversationMuted = ::isConversationMuted,
                             draftsByConversation = draftsByConversation,
+                            lockedConversationIds = lockedConversationIds,
                             onNavigateBack = dismissOverlay,
                             onMarkAllRead = {
                                 markConversationsRead(
@@ -4048,6 +4074,7 @@ internal fun SpotChatApp(
                             muteAction = muteActionLabel(selectedConversation.id),
                             isArchived = archivedConversationIds[selectedConversation.id] == true,
                             isBlocked = isConversationBlocked(selectedConversation),
+                            isLocked = isConversationLocked(selectedConversation.id),
                             readReceiptsEnabled = areReadReceiptsEnabled(selectedConversation.id),
                             unreadCount = unreadCounts[selectedConversation.id] ?: 0,
                             starredCount = starredMessageIds(selectedConversation.id).size,
@@ -4093,6 +4120,9 @@ internal fun SpotChatApp(
                             },
                             onToggleBlocked = {
                                 toggleConversationBlocked(selectedConversation)
+                            },
+                            onToggleLocked = {
+                                toggleConversationLocked(selectedConversation)
                             },
                             onToggleReadReceipts = {
                                 toggleConversationReadReceipts(selectedConversation)
@@ -4535,6 +4565,7 @@ private fun WatchConversationListSurface(
     isConversationMuted: (String) -> Boolean,
     messagesByConversation: Map<String, List<ChatBubble>>,
     draftsByConversation: Map<String, ConversationDraft>,
+    lockedConversationIds: Map<String, Boolean>,
     transportMode: TransportMode,
     trustState: String,
     fingerprint: String,
@@ -4735,6 +4766,7 @@ private fun WatchConversationListSurface(
                             unreadCount = unreadCounts[conversation.id] ?: 0,
                             retryableCount = conversationMessages.count { message -> message.canRetry() },
                             draft = draftsByConversation[conversation.id],
+                            locked = lockedConversationIds[conversation.id] == true,
                             isPinned = pinnedConversationIds[conversation.id] == true,
                             isMuted = isConversationMuted(conversation.id),
                             featured = conversation.id == NEARBY_GROUP_CONVERSATION_ID,
@@ -5366,6 +5398,7 @@ private fun ConversationCapsule(
     unreadCount: Int,
     retryableCount: Int,
     draft: ConversationDraft? = null,
+    locked: Boolean = false,
     isPinned: Boolean,
     isMuted: Boolean,
     featured: Boolean,
@@ -5374,7 +5407,7 @@ private fun ConversationCapsule(
 ) {
     val compact = surfaceSpec.compact
     val accent = conversationAccentColor(conversation)
-    val preview = conversationPreview(conversation, lastMessage, retryableCount, draft)
+    val preview = conversationPreview(conversation, lastMessage, retryableCount, draft, locked)
     val width =
         if (surfaceSpec.isRound) {
             if (featured) 0.86f else 0.82f
@@ -5584,6 +5617,7 @@ private fun WatchArchivedChatsSurface(
     pinnedConversationIds: Map<String, Boolean>,
     isConversationMuted: (String) -> Boolean,
     draftsByConversation: Map<String, ConversationDraft>,
+    lockedConversationIds: Map<String, Boolean>,
     onNavigateBack: () -> Unit,
     onMarkAllRead: () -> Unit,
     onOpenConversation: (ChatConversation) -> Unit
@@ -5675,6 +5709,7 @@ private fun WatchArchivedChatsSurface(
                                 unreadCount = unreadCounts[conversation.id] ?: 0,
                                 retryableCount = conversationMessages.count { message -> message.canRetry() },
                                 draft = draftsByConversation[conversation.id],
+                                locked = lockedConversationIds[conversation.id] == true,
                                 isPinned = pinnedConversationIds[conversation.id] == true,
                                 isMuted = isConversationMuted(conversation.id),
                                 featured = false,
@@ -5790,6 +5825,7 @@ private fun WatchChatInfoSurface(
     muteAction: String,
     isArchived: Boolean,
     isBlocked: Boolean,
+    isLocked: Boolean,
     readReceiptsEnabled: Boolean,
     unreadCount: Int,
     starredCount: Int,
@@ -5806,6 +5842,7 @@ private fun WatchChatInfoSurface(
     onToggleMuted: () -> Unit,
     onToggleArchived: () -> Unit,
     onToggleBlocked: () -> Unit,
+    onToggleLocked: () -> Unit,
     onToggleReadReceipts: () -> Unit,
     onToggleUnread: () -> Unit,
     onRetryFailedMessages: () -> Unit,
@@ -5964,8 +6001,8 @@ private fun WatchChatInfoSurface(
                             modifier = Modifier.weight(1f)
                         )
                         InfoMetricPill(
-                            label = "状态",
-                            value = if (retryableCount > 0) "需处理" else "正常",
+                            label = "锁定",
+                            value = if (isLocked) "是" else "否",
                             compact = compact,
                             modifier = Modifier.weight(1f)
                         )
@@ -6113,6 +6150,13 @@ private fun WatchChatInfoSurface(
                             selected = !readReceiptsEnabled,
                             compact = compact,
                             onClick = onToggleReadReceipts
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.Lock,
+                            text = if (isLocked) "解锁聊天预览" else "锁定聊天预览",
+                            selected = isLocked,
+                            compact = compact,
+                            onClick = onToggleLocked
                         )
                         if (retryableCount > 0) {
                             MessageActionButton(
@@ -9361,7 +9405,8 @@ private fun conversationPreview(
     conversation: ChatConversation,
     lastMessage: ChatBubble?,
     retryableCount: Int = 0,
-    draft: ConversationDraft? = null
+    draft: ConversationDraft? = null,
+    locked: Boolean = false
 ): String {
     val basePreview = lastMessage?.let { message ->
         val text = message.previewText()
@@ -9374,7 +9419,7 @@ private fun conversationPreview(
         }
     } ?: conversation.subtitle
     val draftPreview = draft?.text?.takeIf { text -> text.isNotBlank() }?.let { text -> "草稿：$text" }
-    val preview = draftPreview ?: basePreview
+    val preview = if (locked) "已锁定聊天" else draftPreview ?: basePreview
     return if (retryableCount > 0) {
         "未发送 $retryableCount 条 · $preview"
     } else {
