@@ -737,6 +737,7 @@ internal fun SpotChatApp(
     val mutedConversations = remember { mutableStateMapOf<String, MutedConversation>() }
     val archivedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val blockedPeerFingerprints = remember { mutableStateMapOf<String, Boolean>() }
+    val readReceiptsDisabledByConversation = remember { mutableStateMapOf<String, Boolean>() }
     val starredMessageIdsByConversation = remember { mutableStateMapOf<String, Set<String>>() }
     val pinnedMessageIdsByConversation = remember { mutableStateMapOf<String, String>() }
     val disappearingModesByConversation = remember { mutableStateMapOf<String, DisappearingMessageMode>() }
@@ -1359,6 +1360,9 @@ internal fun SpotChatApp(
         conversation.kind == ConversationKind.Direct &&
             conversation.peerFingerprint?.let(::isPeerBlocked) == true
 
+    fun areReadReceiptsEnabled(conversationId: String): Boolean =
+        readReceiptsDisabledByConversation[conversationId] != true
+
     fun removeTrustedPeer(storedPeer: StoredTrustedPeer) {
         trustedPeers.removeAll { existing ->
             existing.fingerprint == storedPeer.fingerprint || existing.publicKey == storedPeer.publicKey
@@ -1396,6 +1400,7 @@ internal fun SpotChatApp(
         unreadCounts.remove(conversationId)
         starredMessageIdsByConversation.remove(conversationId)
         pinnedMessageIdsByConversation.remove(conversationId)
+        readReceiptsDisabledByConversation.remove(conversationId)
         notifier.clearConversation(conversationId)
     }
 
@@ -1441,6 +1446,7 @@ internal fun SpotChatApp(
         blockedPeerFingerprints.remove(storedPeer.fingerprint)
         pinnedMessageIdsByConversation.remove(conversation.id)
         disappearingModesByConversation.remove(conversation.id)
+        readReceiptsDisabledByConversation.remove(conversation.id)
         selectedActionMessage = null
         selectedSecurityPeerFingerprint = null
         pendingQuotedMessage = null
@@ -1568,6 +1574,7 @@ internal fun SpotChatApp(
         mutedConversations.toMap(),
         archivedConversationIds.toMap(),
         blockedPeerFingerprints.toMap(),
+        readReceiptsDisabledByConversation.toMap(),
         disappearingModesByConversation.toMap(),
         trustedPeers.size,
         knownPeersByFingerprint.toMap(),
@@ -1601,10 +1608,15 @@ internal fun SpotChatApp(
     }
 
     fun sendReadReceipt(
+        conversationId: String,
         senderFingerprint: String,
         messageId: String,
         peer: TransportPeer? = routeForPeer(senderFingerprint)
     ) {
+        if (!areReadReceiptsEnabled(conversationId)) {
+            trustState = "已读回执已关闭"
+            return
+        }
         val replyPeer = peer ?: return
         val receiptKey = "$senderFingerprint:$messageId"
         if (!sentReadReceipts.add(receiptKey)) {
@@ -1632,6 +1644,7 @@ internal fun SpotChatApp(
             }
             .forEach { message ->
                 sendReadReceipt(
+                    conversationId = conversationId,
                     senderFingerprint = message.senderFingerprint ?: return@forEach,
                     messageId = message.messageId ?: return@forEach
                 )
@@ -1768,6 +1781,29 @@ internal fun SpotChatApp(
         }
         appendSystemMessage(
             text = if (isBlocked) "已解除阻止 $peerName" else "已阻止 $peerName 的消息",
+            encrypted = true,
+            conversationId = conversation.id
+        )
+    }
+
+    fun toggleConversationReadReceipts(conversation: ChatConversation) {
+        val enabled = areReadReceiptsEnabled(conversation.id)
+        if (enabled) {
+            readReceiptsDisabledByConversation[conversation.id] = true
+            sentReadReceipts.removeAll { receiptKey ->
+                messagesForConversation(conversation.id).any { message ->
+                    message.messageId != null &&
+                        message.senderFingerprint != null &&
+                        receiptKey == "${message.senderFingerprint}:${message.messageId}"
+                }
+            }
+            trustState = "已关闭已读回执"
+        } else {
+            readReceiptsDisabledByConversation.remove(conversation.id)
+            trustState = "已开启已读回执"
+        }
+        appendSystemMessage(
+            text = if (enabled) "已读回执已关闭" else "已读回执已开启",
             encrypted = true,
             conversationId = conversation.id
         )
@@ -2251,6 +2287,7 @@ internal fun SpotChatApp(
                                 )
                                 if (appSurface == AppSurface.Chat && activeConversationId == conversationId) {
                                     sendReadReceipt(
+                                        conversationId = conversationId,
                                         senderFingerprint = plain.senderFingerprint,
                                         messageId = plain.messageId,
                                         peer = replyPeer
@@ -2329,6 +2366,7 @@ internal fun SpotChatApp(
                                 )
                                 if (appSurface == AppSurface.Chat && activeConversationId == conversationId) {
                                     sendReadReceipt(
+                                        conversationId = conversationId,
                                         senderFingerprint = plain.senderFingerprint,
                                         messageId = plain.messageId,
                                         peer = replyPeer
@@ -3792,6 +3830,7 @@ internal fun SpotChatApp(
                             muteAction = muteActionLabel(selectedConversation.id),
                             isArchived = archivedConversationIds[selectedConversation.id] == true,
                             isBlocked = isConversationBlocked(selectedConversation),
+                            readReceiptsEnabled = areReadReceiptsEnabled(selectedConversation.id),
                             unreadCount = unreadCounts[selectedConversation.id] ?: 0,
                             starredCount = starredMessageIds(selectedConversation.id).size,
                             retryableCount =
@@ -3836,6 +3875,9 @@ internal fun SpotChatApp(
                             },
                             onToggleBlocked = {
                                 toggleConversationBlocked(selectedConversation)
+                            },
+                            onToggleReadReceipts = {
+                                toggleConversationReadReceipts(selectedConversation)
                             },
                             onToggleUnread = {
                                 toggleConversationUnread(selectedConversation)
@@ -5519,6 +5561,7 @@ private fun WatchChatInfoSurface(
     muteAction: String,
     isArchived: Boolean,
     isBlocked: Boolean,
+    readReceiptsEnabled: Boolean,
     unreadCount: Int,
     starredCount: Int,
     retryableCount: Int,
@@ -5534,6 +5577,7 @@ private fun WatchChatInfoSurface(
     onToggleMuted: () -> Unit,
     onToggleArchived: () -> Unit,
     onToggleBlocked: () -> Unit,
+    onToggleReadReceipts: () -> Unit,
     onToggleUnread: () -> Unit,
     onRetryFailedMessages: () -> Unit,
     onToggleDisappearingMessages: () -> Unit,
@@ -5697,8 +5741,8 @@ private fun WatchChatInfoSurface(
                             modifier = Modifier.weight(1f)
                         )
                         InfoMetricPill(
-                            label = "阻止",
-                            value = if (isBlocked) "是" else "否",
+                            label = "回执",
+                            value = if (readReceiptsEnabled) "开" else "关",
                             compact = compact,
                             modifier = Modifier.weight(1f)
                         )
@@ -5833,6 +5877,13 @@ private fun WatchChatInfoSurface(
                             selected = unreadCount > 0,
                             compact = compact,
                             onClick = onToggleUnread
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.VerifiedUser,
+                            text = if (readReceiptsEnabled) "关闭已读回执" else "开启已读回执",
+                            selected = !readReceiptsEnabled,
+                            compact = compact,
+                            onClick = onToggleReadReceipts
                         )
                         if (retryableCount > 0) {
                             MessageActionButton(
