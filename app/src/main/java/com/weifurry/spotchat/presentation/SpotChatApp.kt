@@ -2554,6 +2554,39 @@ internal fun SpotChatApp(
         trustState = "已复制归档摘要"
     }
 
+    fun copyChatListOverview(conversations: List<ChatConversation>) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            chatListOverviewText(
+                conversations = conversations,
+                messagesByConversation = conversationMessages,
+                unreadCounts = unreadCounts,
+                mentionCounts = mentionCounts,
+                draftsByConversation = draftsByConversation,
+                favoriteConversationIds = favoriteConversationIds,
+                pinnedConversationIds = pinnedConversationIds,
+                archivedConversationIds = archivedConversationIds,
+                lockedConversationIds = lockedConversationIds,
+                disappearingModesByConversation = disappearingModesByConversation,
+                readReceiptsDisabledByConversation = readReceiptsDisabledByConversation,
+                isConversationMuted = ::isConversationMuted,
+                hasRetryableMessages = ::hasRetryableMessages
+            )
+        if (summary.isBlank()) {
+            trustState = "没有聊天总览"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat chat list overview", summary)
+        )
+        trustState = "已复制聊天总览"
+    }
+
     fun copyMutedSummary(conversations: List<ChatConversation>) {
         val clipboardManager =
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -4815,6 +4848,9 @@ internal fun SpotChatApp(
                         onOpenArchivedChats = {
                             appSurface = AppSurface.ArchivedChats
                         },
+                        onCopyChatListOverview = {
+                            copyChatListOverview(visibleConversationList)
+                        },
                         onMarkVisibleRead = {
                             markConversationsRead(
                                 conversations = visibleConversationList,
@@ -5920,6 +5956,7 @@ private fun WatchConversationListSurface(
     onSelectFilter: (ChatListFilter) -> Unit,
     onOpenGlobalSearch: () -> Unit,
     onOpenArchivedChats: () -> Unit,
+    onCopyChatListOverview: () -> Unit,
     onMarkVisibleRead: () -> Unit,
     onFavoriteMentionedVisible: () -> Unit,
     onRetryVisible: () -> Unit,
@@ -6186,6 +6223,8 @@ private fun WatchConversationListSurface(
                                 conversations.any { conversation -> (mentionCounts[conversation.id] ?: 0) > 0 }
                             else -> false
                         }
+                    val canCopyChatListOverview =
+                        activeFilter == ChatListFilter.All && conversations.isNotEmpty()
                     val canSendVisibleDrafts =
                         (activeFilter == ChatListFilter.All || activeFilter == ChatListFilter.Drafts) &&
                             conversations.any { conversation -> draftsByConversation[conversation.id] != null }
@@ -6217,22 +6256,31 @@ private fun WatchConversationListSurface(
                                     lockedConversationIds[conversation.id] != true
                             }
 
-                    if (
-                        canMarkVisibleRead
-                    ) {
+                    if (canCopyChatListOverview || canMarkVisibleRead) {
                         ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
-                            MessageActionButton(
-                                icon = Icons.Filled.DoneAll,
-                                text =
-                                    if (activeFilter == ChatListFilter.Mentions) {
-                                        "提及标为已读"
-                                    } else {
-                                        "全部标为已读"
-                                    },
-                                selected = true,
-                                compact = compact,
-                                onClick = onMarkVisibleRead
-                            )
+                            if (canCopyChatListOverview) {
+                                MessageActionButton(
+                                    icon = Icons.Filled.Keyboard,
+                                    text = "复制聊天总览",
+                                    selected = true,
+                                    compact = compact,
+                                    onClick = onCopyChatListOverview
+                                )
+                            }
+                            if (canMarkVisibleRead) {
+                                MessageActionButton(
+                                    icon = Icons.Filled.DoneAll,
+                                    text =
+                                        if (activeFilter == ChatListFilter.Mentions) {
+                                            "提及标为已读"
+                                        } else {
+                                            "全部标为已读"
+                                        },
+                                    selected = true,
+                                    compact = compact,
+                                    onClick = onMarkVisibleRead
+                                )
+                            }
                             if (activeFilter == ChatListFilter.Mentions) {
                                 MessageActionButton(
                                     icon = Icons.Filled.StarRate,
@@ -13063,6 +13111,122 @@ private fun archivedSummaryText(
                     }
                 }.ifEmpty { listOf("静默") }
             appendLine("${index + 1}. ${conversation.title}")
+            appendLine("   状态：${stateLabels.joinToString(separator = " · ")}")
+            appendLine("   最新：${lastMessage?.copyText() ?: "没有消息"}")
+        }
+    }.trim()
+}
+
+private fun chatListOverviewText(
+    conversations: List<ChatConversation>,
+    messagesByConversation: Map<String, List<ChatBubble>>,
+    unreadCounts: Map<String, Int>,
+    mentionCounts: Map<String, Int>,
+    draftsByConversation: Map<String, ConversationDraft>,
+    favoriteConversationIds: Map<String, Boolean>,
+    pinnedConversationIds: Map<String, Boolean>,
+    archivedConversationIds: Map<String, Boolean>,
+    lockedConversationIds: Map<String, Boolean>,
+    disappearingModesByConversation: Map<String, DisappearingMessageMode>,
+    readReceiptsDisabledByConversation: Map<String, Boolean>,
+    isConversationMuted: (String) -> Boolean,
+    hasRetryableMessages: (String) -> Boolean
+): String {
+    if (conversations.isEmpty()) {
+        return ""
+    }
+    val directCount =
+        conversations.count { conversation -> conversation.kind == ConversationKind.Direct }
+    val groupCount =
+        conversations.count { conversation -> conversation.kind == ConversationKind.Group }
+    val unreadConversationCount =
+        conversations.count { conversation -> (unreadCounts[conversation.id] ?: 0) > 0 }
+    val mentionConversationCount =
+        conversations.count { conversation -> (mentionCounts[conversation.id] ?: 0) > 0 }
+    val draftConversationCount =
+        conversations.count { conversation -> draftsByConversation[conversation.id] != null }
+    val retryableConversationCount =
+        conversations.count { conversation -> hasRetryableMessages(conversation.id) }
+    val favoriteConversationCount =
+        conversations.count { conversation -> favoriteConversationIds[conversation.id] == true }
+    val pinnedConversationCount =
+        conversations.count { conversation -> pinnedConversationIds[conversation.id] == true }
+    val mutedConversationCount =
+        conversations.count { conversation -> isConversationMuted(conversation.id) }
+    val lockedConversationCount =
+        conversations.count { conversation -> lockedConversationIds[conversation.id] == true }
+    val disappearingConversationCount =
+        conversations.count { conversation ->
+            (
+                disappearingModesByConversation[conversation.id]
+                    ?: DisappearingMessageMode.Off
+            ) != DisappearingMessageMode.Off
+        }
+    val receiptOffConversationCount =
+        conversations.count { conversation -> readReceiptsDisabledByConversation[conversation.id] == true }
+    return buildString {
+        appendLine("SpotChat 聊天总览")
+        appendLine("聊天：${conversations.size} 个")
+        appendLine("私聊：$directCount 个")
+        appendLine("群聊：$groupCount 个")
+        appendLine("未读：$unreadConversationCount 个")
+        appendLine("提及：$mentionConversationCount 个")
+        appendLine("草稿：$draftConversationCount 个")
+        appendLine("未发送：$retryableConversationCount 个")
+        appendLine("收藏：$favoriteConversationCount 个")
+        appendLine("置顶：$pinnedConversationCount 个")
+        appendLine("静音：$mutedConversationCount 个")
+        appendLine("锁定：$lockedConversationCount 个")
+        appendLine("限时：$disappearingConversationCount 个")
+        appendLine("回执关闭：$receiptOffConversationCount 个")
+        appendLine()
+        conversations.forEachIndexed { index, conversation ->
+            val messages = messagesByConversation[conversation.id].orEmpty()
+            val lastMessage =
+                messages.lastOrNull { message -> message.deliveryState != DeliveryState.System }
+            val disappearingMode =
+                disappearingModesByConversation[conversation.id]
+                    ?: DisappearingMessageMode.Off
+            val stateLabels =
+                buildList {
+                    val unreadCount = unreadCounts[conversation.id] ?: 0
+                    if (unreadCount > 0) {
+                        add("未读 $unreadCount")
+                    }
+                    val mentionCount = mentionCounts[conversation.id] ?: 0
+                    if (mentionCount > 0) {
+                        add("提及 $mentionCount")
+                    }
+                    if (draftsByConversation[conversation.id] != null) {
+                        add("有草稿")
+                    }
+                    if (hasRetryableMessages(conversation.id)) {
+                        add("有未发送")
+                    }
+                    if (favoriteConversationIds[conversation.id] == true) {
+                        add("收藏")
+                    }
+                    if (pinnedConversationIds[conversation.id] == true) {
+                        add("置顶")
+                    }
+                    if (isConversationMuted(conversation.id)) {
+                        add("静音")
+                    }
+                    if (archivedConversationIds[conversation.id] == true) {
+                        add("已归档")
+                    }
+                    if (lockedConversationIds[conversation.id] == true) {
+                        add("锁定")
+                    }
+                    if (disappearingMode != DisappearingMessageMode.Off) {
+                        add("限时 ${disappearingMode.label}")
+                    }
+                    if (readReceiptsDisabledByConversation[conversation.id] == true) {
+                        add("回执关闭")
+                    }
+                }.ifEmpty { listOf("正常") }
+            appendLine("${index + 1}. ${conversation.title}")
+            appendLine("   类型：${conversation.kind.label}")
             appendLine("   状态：${stateLabels.joinToString(separator = " · ")}")
             appendLine("   最新：${lastMessage?.copyText() ?: "没有消息"}")
         }
