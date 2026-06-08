@@ -4764,6 +4764,7 @@ internal fun SpotChatApp(
                             transportMode = transportMode,
                             trustState = trustState,
                             trustedPeers = trustedPeers,
+                            blockedPeerFingerprints = blockedPeerFingerprints.toMap(),
                             onNavigateBack = dismissOverlay,
                             onProfileChange = ::updateProfile
                         )
@@ -8470,6 +8471,7 @@ private fun WatchProfileSurface(
     transportMode: TransportMode,
     trustState: String,
     trustedPeers: List<StoredTrustedPeer>,
+    blockedPeerFingerprints: Map<String, Boolean>,
     onNavigateBack: () -> Unit,
     onProfileChange: (ProfileSettings) -> Unit
 ) {
@@ -8483,6 +8485,8 @@ private fun WatchProfileSurface(
             remember(avatars) {
                 avatars.chunked(PROFILE_AVATARS_PER_ROW)
             }
+        val blockedPeers =
+            trustedPeers.filter { peer -> blockedPeerFingerprints[peer.fingerprint] == true }
         val listState =
             rememberScalingLazyListState(
                 initialCenterItemIndex = 1
@@ -8608,6 +8612,20 @@ private fun WatchProfileSurface(
                                 )
                             }
                         }
+                    }
+
+                    item {
+                        ProfileSectionLabel(
+                            text = "隐私",
+                            compact = compact
+                        )
+                    }
+
+                    item {
+                        ProfilePrivacyPanel(
+                            blockedPeers = blockedPeers,
+                            surfaceSpec = surfaceSpec
+                        )
                     }
 
                     item {
@@ -8939,6 +8957,54 @@ private fun ProfileSecurityPanel(
             label = "信任状态",
             value = "$trustState · $trustedPeerCount 台",
             accent = chatAmber,
+            compact = compact
+        )
+    }
+}
+
+@Composable
+private fun ProfilePrivacyPanel(
+    blockedPeers: List<StoredTrustedPeer>,
+    surfaceSpec: WatchSurfaceSpec
+) {
+    val compact = surfaceSpec.compact
+    val blockedSummary =
+        if (blockedPeers.isEmpty()) {
+            "没有阻止联系人"
+        } else {
+            blockedPeers
+                .take(2)
+                .joinToString(separator = "、") { peer -> peerDisplayName(peer) }
+                .let { names ->
+                    if (blockedPeers.size > 2) {
+                        "$names 等 ${blockedPeers.size} 人"
+                    } else {
+                        names
+                    }
+                }
+        }
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth(surfaceSpec.profileSummaryWidth)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.82f))
+                .border(1.dp, chatRose.copy(alpha = 0.22f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 9.dp),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
+    ) {
+        ProfileInfoRow(
+            icon = Icons.Filled.PersonRemove,
+            label = "已阻止",
+            value = blockedPeers.size.coerceAtMost(99).toString(),
+            accent = chatRose,
+            compact = compact
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.Lock,
+            label = "屏蔽名单",
+            value = blockedSummary,
+            accent = if (blockedPeers.isEmpty()) chatGreen else chatRose,
             compact = compact
         )
     }
