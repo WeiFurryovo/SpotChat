@@ -190,6 +190,7 @@ private enum class AppSurface {
     Chat,
     ChatInfo,
     MessageActions,
+    ReactionUsers,
     MessageSearch,
     MuteSettings,
     DisappearingSettings,
@@ -396,6 +397,7 @@ private data class MessageReceiptSummary(
 )
 
 private data class ReactionDetail(
+    val senderFingerprint: String,
     val senderName: String,
     val reactionLabel: String
 )
@@ -1126,6 +1128,7 @@ internal fun SpotChatApp(
         val trustedByFingerprint = trustedPeers.associateBy { peer -> peer.fingerprint }
         return message.reactions.map { (senderFingerprint, reactionCode) ->
             ReactionDetail(
+                senderFingerprint = senderFingerprint,
                 senderName =
                     when {
                         senderFingerprint == localFingerprint -> "我"
@@ -5674,6 +5677,7 @@ internal fun SpotChatApp(
                     appSurface == AppSurface.Chat ||
                     appSurface == AppSurface.ChatInfo ||
                     appSurface == AppSurface.MessageActions ||
+                    appSurface == AppSurface.ReactionUsers ||
                     appSurface == AppSurface.MessageSearch ||
                     appSurface == AppSurface.StarredMessages ||
                     appSurface == AppSurface.ForwardMessage ||
@@ -6126,6 +6130,9 @@ internal fun SpotChatApp(
                                 onRemoveReaction = {
                                     removeLocalReactionFromMessage(selectedConversation, actionMessage)
                                 },
+                                onOpenReactionUsers = {
+                                    appSurface = AppSurface.ReactionUsers
+                                },
                                 onOpenCustomMessageInput = {
                                     pendingQuotedMessage = null
                                     appSurface = AppSurface.Chat
@@ -6160,6 +6167,26 @@ internal fun SpotChatApp(
                                     appSurface = AppSurface.Chat
                                     retryMessage(selectedConversation, actionMessage)
                                 }
+                            )
+                        }
+                    }
+                }
+
+                if (appSurface == AppSurface.ReactionUsers) {
+                    val actionMessage = selectedActionMessage
+                    if (actionMessage != null) {
+                        SlideInOverlay(
+                            onDismissed = {
+                                appSurface = AppSurface.MessageActions
+                            },
+                            animationKey = "reaction-users:${actionMessage.stableStarId()}"
+                        ) { dismissOverlay ->
+                            WatchReactionUsersSurface(
+                                isRoundScreen = isRoundScreen,
+                                conversation = selectedConversation,
+                                message = actionMessage,
+                                reactionDetails = reactionDetails(actionMessage),
+                                onNavigateBack = dismissOverlay
                             )
                         }
                     }
@@ -9491,6 +9518,7 @@ private fun WatchMessageActionsSurface(
     onDeleteMessage: () -> Unit,
     onReactToMessage: (String) -> Unit,
     onRemoveReaction: () -> Unit,
+    onOpenReactionUsers: () -> Unit,
     onOpenCustomMessageInput: () -> Unit,
     onSendQuickReply: (String) -> Unit,
     onReplyToMessage: () -> Unit,
@@ -9506,6 +9534,7 @@ private fun WatchMessageActionsSurface(
         val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
         val accent = conversationAccentColor(conversation)
         val scrollState = rememberScrollState()
+        val reactionUserCount = reactionDetails.distinctBy { detail -> detail.senderFingerprint }.size
 
         WatchFrame(
             surfaceSpec = surfaceSpec,
@@ -9653,6 +9682,15 @@ private fun WatchMessageActionsSurface(
                                 onClick = onRemoveReaction
                             )
                         }
+                        if (reactionUserCount > 0) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Group,
+                                text = "回应者 ${reactionUserCount}人",
+                                selected = true,
+                                compact = compact,
+                                onClick = onOpenReactionUsers
+                            )
+                        }
                         MessageActionButton(
                             icon = Icons.Filled.Keyboard,
                             text = "输入消息",
@@ -9712,6 +9750,237 @@ private fun WatchMessageActionsSurface(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun WatchReactionUsersSurface(
+    isRoundScreen: Boolean,
+    conversation: ChatConversation,
+    message: ChatBubble,
+    reactionDetails: List<ReactionDetail>,
+    onNavigateBack: () -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
+        val accent = conversationAccentColor(conversation)
+        val scrollState = rememberScrollState()
+        val uniqueDetails = reactionDetails.distinctBy { detail -> detail.senderFingerprint }
+        val subtitle =
+            if (uniqueDetails.isEmpty()) {
+                "暂无回应"
+            } else {
+                "${uniqueDetails.size} 位回应者 · ${reactionSummary(message)}"
+            }
+
+        WatchFrame(
+            surfaceSpec = surfaceSpec,
+            accent = accent,
+            modifier = Modifier.padding(horizontal = surfaceSpec.chatHorizontalPadding)
+        ) {
+            ScreenScaffold(
+                scrollState = scrollState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(),
+                scrollIndicator = {}
+            ) { scaffoldPadding ->
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .padding(scaffoldPadding)
+                            .padding(
+                                top = surfaceSpec.chatTopPadding,
+                                bottom = surfaceSpec.chatBottomPadding
+                            ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp)
+                ) {
+                    ChatInfoHeader(
+                        conversation = conversation,
+                        accent = accent,
+                        title = "回应者",
+                        subtitle = subtitle,
+                        surfaceSpec = surfaceSpec,
+                        onNavigateBack = onNavigateBack
+                    )
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
+                        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp)
+                    ) {
+                        MessageCapsule(
+                            message = message,
+                            compact = compact,
+                            accent = accent
+                        )
+                    }
+
+                    ReactionUsersSummaryCard(
+                        reactionSummary = reactionSummary(message).ifBlank { "暂无回应" },
+                        userCount = uniqueDetails.size,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec
+                    )
+
+                    if (uniqueDetails.isEmpty()) {
+                        SearchEmptyState(
+                            text = "这条消息还没有回应",
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
+                        )
+                    } else {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
+                            verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
+                        ) {
+                            uniqueDetails.forEachIndexed { index, detail ->
+                                ReactionUserCapsule(
+                                    detail = detail,
+                                    index = index,
+                                    accent = accent,
+                                    compact = compact
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReactionUsersSummaryCard(
+    reactionSummary: String,
+    userCount: Int,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec
+) {
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                .height(if (compact) 38.dp else 42.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.82f))
+                .border(1.dp, chatBlue.copy(alpha = 0.24f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 8.dp else 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.StarRate,
+            contentDescription = "回应总览",
+            tint = chatBlue,
+            modifier = Modifier.size(if (compact) 13.dp else 15.dp)
+        )
+        Spacer(modifier = Modifier.width(if (compact) 6.dp else 8.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "回应总览",
+                color = chatRowMuted,
+                fontSize = if (compact) 9.sp else 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = reactionSummary,
+                color = MaterialTheme.colorScheme.onBackground,
+                fontSize = if (compact) 11.sp else 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(modifier = Modifier.width(if (compact) 6.dp else 8.dp))
+        Text(
+            text = "${userCount}人",
+            color = chatGreen,
+            fontSize = if (compact) 11.sp else 12.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun ReactionUserCapsule(
+    detail: ReactionDetail,
+    index: Int,
+    accent: Color,
+    compact: Boolean
+) {
+    val avatarColor =
+        when (index % 3) {
+            0 -> chatGreen
+            1 -> accent
+            else -> chatAmber
+        }
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .height(if (compact) 42.dp else 46.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.88f))
+                .border(1.dp, chatDivider.copy(alpha = 0.58f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 8.dp else 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .size(if (compact) 26.dp else 30.dp)
+                    .clip(CircleShape)
+                    .background(avatarColor.copy(alpha = 0.22f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = detail.senderName.take(1).ifBlank { "?" },
+                color = avatarColor,
+                fontSize = if (compact) 12.sp else 13.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                textAlign = TextAlign.Center
+            )
+        }
+        Spacer(modifier = Modifier.width(if (compact) 8.dp else 10.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = detail.senderName,
+                color = MaterialTheme.colorScheme.onBackground,
+                fontSize = if (compact) 11.sp else 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = "回应 ${detail.reactionLabel}",
+                color = chatRowMuted,
+                fontSize = if (compact) 9.sp else 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Text(
+            text = detail.reactionLabel,
+            color = chatGreen,
+            fontSize = if (compact) 11.sp else 12.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.End
+        )
     }
 }
 
