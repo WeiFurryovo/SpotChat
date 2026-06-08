@@ -186,6 +186,7 @@ private enum class AppSurface {
     ChatInfo,
     MessageActions,
     MessageSearch,
+    ChatContentMessages,
     GlobalSearch,
     StarredMessages,
     ForwardMessage,
@@ -342,7 +343,10 @@ private data class ConversationContentSummary(
     val quotedCount: Int,
     val reactedCount: Int,
     val disappearingCount: Int
-)
+) {
+    val hasContent: Boolean
+        get() = voiceCount + forwardedCount + quotedCount + reactedCount + disappearingCount > 0
+}
 
 private data class OutgoingMessageRef(
     val conversationId: String,
@@ -3474,6 +3478,9 @@ internal fun SpotChatApp(
                             onOpenStarredMessages = {
                                 appSurface = AppSurface.StarredMessages
                             },
+                            onOpenContentMessages = {
+                                appSurface = AppSurface.ChatContentMessages
+                            },
                             onSearchMessages = {
                                 appSurface = AppSurface.MessageSearch
                                 openMessageSearchInput()
@@ -3545,6 +3552,28 @@ internal fun SpotChatApp(
                             onOpenMessage = { message ->
                                 messageActionsBackStack.clear()
                                 messageActionsReturnSurface = AppSurface.StarredMessages
+                                selectedActionMessage = message
+                                appSurface = AppSurface.MessageActions
+                            }
+                        )
+                    }
+                }
+
+                if (appSurface == AppSurface.ChatContentMessages) {
+                    SlideInOverlay(
+                        onDismissed = {
+                            appSurface = AppSurface.ChatInfo
+                        }
+                    ) { dismissOverlay ->
+                        WatchChatContentMessagesSurface(
+                            isRoundScreen = isRoundScreen,
+                            conversation = selectedConversation,
+                            messages = contentMessages(messagesForConversation(selectedConversation.id)),
+                            starredMessageIds = starredMessageIds(selectedConversation.id),
+                            onNavigateBack = dismissOverlay,
+                            onOpenMessage = { message ->
+                                messageActionsBackStack.clear()
+                                messageActionsReturnSurface = AppSurface.ChatContentMessages
                                 selectedActionMessage = message
                                 appSurface = AppSurface.MessageActions
                             }
@@ -5084,6 +5113,7 @@ private fun WatchChatInfoSurface(
     onNavigateBack: () -> Unit,
     onOpenSecurityCheck: () -> Unit,
     onOpenStarredMessages: () -> Unit,
+    onOpenContentMessages: () -> Unit,
     onSearchMessages: () -> Unit,
     onTogglePinned: () -> Unit,
     onToggleFavorite: () -> Unit,
@@ -5403,6 +5433,13 @@ private fun WatchChatInfoSurface(
                             selected = starredCount > 0,
                             compact = compact,
                             onClick = onOpenStarredMessages
+                        )
+                        MessageActionButton(
+                            icon = Icons.AutoMirrored.Filled.Chat,
+                            text = "内容消息",
+                            selected = contentSummary.hasContent,
+                            compact = compact,
+                            onClick = onOpenContentMessages
                         )
                         MessageActionButton(
                             icon = Icons.Filled.AutoDelete,
@@ -5988,6 +6025,94 @@ private fun WatchStarredMessagesSurface(
                         ) {
                             Text(
                                 text = "${messages.size} 条星标",
+                                color = chatRowMuted,
+                                fontSize = if (compact) 9.sp else 10.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            messages.forEach { message ->
+                                MessageCapsule(
+                                    message = message,
+                                    compact = compact,
+                                    accent = accent,
+                                    isStarred = message.stableStarId() in starredMessageIds,
+                                    onClick = { onOpenMessage(message) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WatchChatContentMessagesSurface(
+    isRoundScreen: Boolean,
+    conversation: ChatConversation,
+    messages: List<ChatBubble>,
+    starredMessageIds: Set<String>,
+    onNavigateBack: () -> Unit,
+    onOpenMessage: (ChatBubble) -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
+        val accent = conversationAccentColor(conversation)
+        val scrollState = rememberScrollState()
+        val contentSummary = conversationContentSummary(messages)
+
+        WatchFrame(
+            surfaceSpec = surfaceSpec,
+            accent = accent,
+            modifier = Modifier.padding(horizontal = surfaceSpec.chatHorizontalPadding)
+        ) {
+            ScreenScaffold(
+                scrollState = scrollState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(),
+                scrollIndicator = {}
+            ) { scaffoldPadding ->
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .padding(scaffoldPadding)
+                            .padding(
+                                top = surfaceSpec.chatTopPadding,
+                                bottom = surfaceSpec.chatBottomPadding
+                            ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp)
+                ) {
+                    ChatInfoHeader(
+                        conversation = conversation,
+                        accent = accent,
+                        title = "内容消息",
+                        subtitle = conversation.title,
+                        surfaceSpec = surfaceSpec,
+                        onNavigateBack = onNavigateBack
+                    )
+
+                    if (messages.isEmpty()) {
+                        SearchEmptyState(
+                            text = "还没有内容消息",
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
+                        )
+                    } else {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.86f else 0.94f),
+                            verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 7.dp)
+                        ) {
+                            Text(
+                                text = "${messages.size} 条 · ${contentSummary.summaryLabel()}",
                                 color = chatRowMuted,
                                 fontSize = if (compact) 9.sp else 10.sp,
                                 maxLines = 1,
@@ -7903,6 +8028,18 @@ private fun conversationContentSummary(messages: List<ChatBubble>): Conversation
         disappearingCount = userMessages.count { message -> message.expiresAtEpochMillis != null }
     )
 }
+
+private fun contentMessages(messages: List<ChatBubble>): List<ChatBubble> =
+    messages.filter { message ->
+        message.deliveryState != DeliveryState.System &&
+            (
+                message.kind == ChatMessageKind.Voice ||
+                    message.forwarded ||
+                    message.quotedMessage != null ||
+                    message.reactions.isNotEmpty() ||
+                    message.expiresAtEpochMillis != null
+            )
+    }
 
 private fun ConversationContentSummary.summaryLabel(): String {
     val parts =
