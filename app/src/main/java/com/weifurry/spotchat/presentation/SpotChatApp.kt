@@ -2580,6 +2580,34 @@ internal fun SpotChatApp(
         trustState = "已复制静音摘要"
     }
 
+    fun copyGroupListSummary(conversations: List<ChatConversation>) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            groupListSummaryText(
+                conversations = conversations,
+                messagesByConversation = conversationMessages,
+                unreadCounts = unreadCounts,
+                draftsByConversation = draftsByConversation,
+                archivedConversationIds = archivedConversationIds,
+                pinnedConversationIds = pinnedConversationIds,
+                readReceiptsDisabledByConversation = readReceiptsDisabledByConversation,
+                isConversationMuted = ::isConversationMuted
+            )
+        if (summary.isBlank()) {
+            trustState = "没有群聊摘要"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat group chats summary", summary)
+        )
+        trustState = "已复制群聊摘要"
+    }
+
     fun copyLockedSummary(conversations: List<ChatConversation>) {
         val clipboardManager =
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -4906,6 +4934,9 @@ internal fun SpotChatApp(
                                 trustState = "群聊已静音8小时"
                             }
                         },
+                        onCopyGroupListSummary = {
+                            copyGroupListSummary(visibleConversationList)
+                        },
                         onLockVisibleDirects = {
                             val unlockedDirectConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5814,6 +5845,7 @@ private fun WatchConversationListSurface(
     onArchiveMutedVisible: () -> Unit,
     onCopyMutedSummary: () -> Unit,
     onMuteVisibleGroups: () -> Unit,
+    onCopyGroupListSummary: () -> Unit,
     onLockVisibleDirects: () -> Unit,
     onDisableDirectReceiptsVisible: () -> Unit,
     onUnlockVisible: () -> Unit,
@@ -6069,6 +6101,9 @@ private fun WatchConversationListSurface(
                                 conversation.kind == ConversationKind.Group &&
                                     !isConversationMuted(conversation.id)
                             }
+                    val canCopyGroupListSummary =
+                        activeFilter == ChatListFilter.Group &&
+                            conversations.any { conversation -> conversation.kind == ConversationKind.Group }
                     val canLockVisibleDirects =
                         (activeFilter == ChatListFilter.All || activeFilter == ChatListFilter.Direct) &&
                             conversations.any { conversation ->
@@ -6262,15 +6297,26 @@ private fun WatchConversationListSurface(
                         }
                     }
 
-                    if (canMuteVisibleGroups) {
+                    if (canCopyGroupListSummary || canMuteVisibleGroups) {
                         ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
-                            MessageActionButton(
-                                icon = Icons.Filled.NotificationsOff,
-                                text = "群聊静音8小时",
-                                selected = true,
-                                compact = compact,
-                                onClick = onMuteVisibleGroups
-                            )
+                            if (canCopyGroupListSummary) {
+                                MessageActionButton(
+                                    icon = Icons.Filled.Keyboard,
+                                    text = "复制群聊摘要",
+                                    selected = true,
+                                    compact = compact,
+                                    onClick = onCopyGroupListSummary
+                                )
+                            }
+                            if (canMuteVisibleGroups) {
+                                MessageActionButton(
+                                    icon = Icons.Filled.NotificationsOff,
+                                    text = "群聊静音8小时",
+                                    selected = true,
+                                    compact = compact,
+                                    onClick = onMuteVisibleGroups
+                                )
+                            }
                         }
                     }
 
@@ -12930,6 +12976,71 @@ private fun mutedSummaryText(
                     }
                 }
             appendLine("${index + 1}. ${conversation.title}")
+            appendLine("   状态：${stateLabels.joinToString(separator = " · ")}")
+            appendLine("   最新：${lastMessage?.copyText() ?: "没有消息"}")
+        }
+    }.trim()
+}
+
+private fun groupListSummaryText(
+    conversations: List<ChatConversation>,
+    messagesByConversation: Map<String, List<ChatBubble>>,
+    unreadCounts: Map<String, Int>,
+    draftsByConversation: Map<String, ConversationDraft>,
+    archivedConversationIds: Map<String, Boolean>,
+    pinnedConversationIds: Map<String, Boolean>,
+    readReceiptsDisabledByConversation: Map<String, Boolean>,
+    isConversationMuted: (String) -> Boolean
+): String {
+    val groupConversations =
+        conversations.filter { conversation -> conversation.kind == ConversationKind.Group }
+    if (groupConversations.isEmpty()) {
+        return ""
+    }
+    val unreadConversationCount =
+        groupConversations.count { conversation -> (unreadCounts[conversation.id] ?: 0) > 0 }
+    val mutedConversationCount =
+        groupConversations.count { conversation -> isConversationMuted(conversation.id) }
+    val draftConversationCount =
+        groupConversations.count { conversation -> draftsByConversation[conversation.id] != null }
+    val memberCount =
+        groupConversations.sumOf { conversation -> conversation.memberFingerprints.size }
+    return buildString {
+        appendLine("SpotChat 群聊摘要")
+        appendLine("群聊：${groupConversations.size} 个")
+        appendLine("成员：$memberCount 位")
+        appendLine("未读：$unreadConversationCount 个")
+        appendLine("静音：$mutedConversationCount 个")
+        appendLine("草稿：$draftConversationCount 个")
+        appendLine()
+        groupConversations.forEachIndexed { index, conversation ->
+            val messages = messagesByConversation[conversation.id].orEmpty()
+            val lastMessage =
+                messages.lastOrNull { message -> message.deliveryState != DeliveryState.System }
+            val stateLabels =
+                buildList {
+                    val unreadCount = unreadCounts[conversation.id] ?: 0
+                    if (unreadCount > 0) {
+                        add("未读 $unreadCount")
+                    }
+                    if (isConversationMuted(conversation.id)) {
+                        add("静音")
+                    }
+                    if (draftsByConversation[conversation.id] != null) {
+                        add("有草稿")
+                    }
+                    if (pinnedConversationIds[conversation.id] == true) {
+                        add("置顶")
+                    }
+                    if (archivedConversationIds[conversation.id] == true) {
+                        add("已归档")
+                    }
+                    if (readReceiptsDisabledByConversation[conversation.id] == true) {
+                        add("回执关闭")
+                    }
+                }.ifEmpty { listOf("正常") }
+            appendLine("${index + 1}. ${conversation.title}")
+            appendLine("   成员：${conversation.memberFingerprints.size} 位")
             appendLine("   状态：${stateLabels.joinToString(separator = " · ")}")
             appendLine("   最新：${lastMessage?.copyText() ?: "没有消息"}")
         }
