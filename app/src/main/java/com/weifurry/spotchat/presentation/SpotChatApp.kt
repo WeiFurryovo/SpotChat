@@ -221,6 +221,13 @@ private data class WearEntryRecoveryState(
     val actionLabel: String
 )
 
+private data class WearEntryContext(
+    val id: Long,
+    val conversationId: String,
+    val source: String,
+    val actionLabel: String
+)
+
 private data class WatchActionConfirmation(
     val id: Long,
     val title: String,
@@ -569,6 +576,7 @@ private const val MAX_QUOTED_MESSAGE_CHARS = 72
 private const val DISAPPEARING_SWEEP_INTERVAL_MS = 15_000L
 private const val MUTE_SWEEP_INTERVAL_MS = 60_000L
 private const val ACTION_CONFIRMATION_VISIBLE_MS = 1_600L
+private const val WEAR_ENTRY_CONTEXT_VISIBLE_MS = 4_000L
 private const val NEARBY_GROUP_CONVERSATION_ID = "group:nearby"
 private const val NEARBY_GROUP_TITLE = "附近群聊"
 private const val DIRECT_CONVERSATION_PREFIX = "direct:"
@@ -897,6 +905,8 @@ internal fun SpotChatApp(
     var selectedActionMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var selectedSecurityPeerFingerprint by remember { mutableStateOf<String?>(null) }
     var wearEntryRecoveryState by remember { mutableStateOf<WearEntryRecoveryState?>(null) }
+    var wearEntryContext by remember { mutableStateOf<WearEntryContext?>(null) }
+    var wearEntryContextId by remember { mutableStateOf(0L) }
     var actionConfirmation by remember { mutableStateOf<WatchActionConfirmation?>(null) }
     var actionConfirmationId by remember { mutableStateOf(0L) }
     var pendingForwardMessage by remember { mutableStateOf<ChatBubble?>(null) }
@@ -3429,11 +3439,28 @@ internal fun SpotChatApp(
             trustState = "切换聊天，已取消录音"
         }
         wearEntryRecoveryState = null
+        wearEntryContext = null
         activeConversationId = conversation.id
         clearConversationAlerts(conversation.id)
         selectedActionMessage = null
         appSurface = AppSurface.Chat
         markConversationRead(conversation.id)
+    }
+
+    fun openConversationFromWearEntry(
+        conversation: ChatConversation,
+        source: String,
+        actionLabel: String
+    ) {
+        openConversation(conversation)
+        wearEntryContextId += 1
+        wearEntryContext =
+            WearEntryContext(
+                id = wearEntryContextId,
+                conversationId = conversation.id,
+                source = source,
+                actionLabel = actionLabel
+            )
     }
 
     fun showWearEntryRecovery(
@@ -4976,7 +5003,17 @@ internal fun SpotChatApp(
             trustState = "已标为已读"
             return
         }
-        openConversation(conversation)
+        val notificationActionLabel =
+            when (intent.action) {
+                SpotChatNotificationIntents.ACTION_REPLY -> "回复"
+                SpotChatNotificationIntents.ACTION_QUICK_REPLY -> "快捷回复"
+                else -> "打开聊天"
+            }
+        openConversationFromWearEntry(
+            conversation = conversation,
+            source = "通知",
+            actionLabel = notificationActionLabel
+        )
 
         if (intent.action == SpotChatNotificationIntents.ACTION_QUICK_REPLY) {
             val replyText =
@@ -5022,7 +5059,11 @@ internal fun SpotChatApp(
                     targetConversationId = conversationId,
                     actionLabel = "打开聊天"
                 )
-        openConversation(conversation)
+        openConversationFromWearEntry(
+            conversation = conversation,
+            source = "最近聊天 Tile",
+            actionLabel = "打开聊天"
+        )
     }
 
     fun handleVoiceTileIntent(intent: Intent) {
@@ -5045,7 +5086,11 @@ internal fun SpotChatApp(
             )
             return
         }
-        openConversation(conversation)
+        openConversationFromWearEntry(
+            conversation = conversation,
+            source = "语音 Tile",
+            actionLabel = "开始语音"
+        )
         trustState = "点麦克风开始语音"
     }
 
@@ -5076,7 +5121,11 @@ internal fun SpotChatApp(
             )
             return
         }
-        openConversation(conversation)
+        openConversationFromWearEntry(
+            conversation = conversation,
+            source = "快捷回复 Tile",
+            actionLabel = "快捷回复"
+        )
         val replyText =
             intent
                 .getStringExtra(QuickTextReplyTileService.EXTRA_TILE_REPLY_TEXT)
@@ -6023,6 +6072,9 @@ internal fun SpotChatApp(
                             trustedPeerCount = trustedPeers.size,
                             messages = messagesForConversation(selectedConversation.id),
                             pinnedMessage = pinnedMessage(selectedConversation.id),
+                            wearEntryContext =
+                                wearEntryContext
+                                    ?.takeIf { context -> context.conversationId == selectedConversation.id },
                             starredMessageIds = starredMessageIds(selectedConversation.id),
                             draft = draftsByConversation[selectedConversation.id],
                             isBlocked = isConversationBlocked(selectedConversation),
@@ -6050,11 +6102,15 @@ internal fun SpotChatApp(
                                 appSurface = AppSurface.ChatInfo
                             },
                             onOpenMessageActions = { message ->
+                                wearEntryContext = null
                                 if (message.kind == ChatMessageKind.Voice && message.voiceAudioBytes != null && !message.canRetry()) {
                                     openVoicePlayback(message)
                                 } else {
                                     playVoiceMessage(message)
                                 }
+                            },
+                            onDismissWearEntryContext = {
+                                wearEntryContext = null
                             },
                             onNavigateBack = dismissOverlay
                         )
@@ -13738,6 +13794,7 @@ private fun WatchChatSurface(
     trustedPeerCount: Int,
     messages: List<ChatBubble>,
     pinnedMessage: ChatBubble?,
+    wearEntryContext: WearEntryContext?,
     starredMessageIds: Set<String>,
     draft: ConversationDraft?,
     isBlocked: Boolean,
@@ -13757,6 +13814,7 @@ private fun WatchChatSurface(
     voicePlaybackSpeed: VoicePlaybackSpeed,
     onOpenChatInfo: () -> Unit,
     onOpenMessageActions: (ChatBubble) -> Unit,
+    onDismissWearEntryContext: () -> Unit,
     onNavigateBack: () -> Unit
 ) {
     BoxWithConstraints(
@@ -13807,6 +13865,19 @@ private fun WatchChatSurface(
                             surfaceSpec = surfaceSpec,
                             onConfirmPairing = onConfirmPairing,
                             onRejectPairing = onRejectPairing
+                        )
+                    }
+
+                    wearEntryContext?.let { context ->
+                        LaunchedEffect(context.id) {
+                            delay(WEAR_ENTRY_CONTEXT_VISIBLE_MS)
+                            onDismissWearEntryContext()
+                        }
+                        WearEntryContextBanner(
+                            context = context,
+                            compact = compact,
+                            surfaceSpec = surfaceSpec,
+                            onDismiss = onDismissWearEntryContext
                         )
                     }
 
@@ -13950,6 +14021,63 @@ private fun ChatHeroHeader(
                     textAlign = TextAlign.Start
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun WearEntryContextBanner(
+    context: WearEntryContext,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    onDismiss: () -> Unit
+) {
+    val icon =
+        when {
+            context.source.contains("语音") -> Icons.Filled.Mic
+            context.source.contains("快捷回复") -> Icons.Filled.Keyboard
+            context.source.contains("Tile") -> Icons.AutoMirrored.Filled.Chat
+            else -> Icons.Filled.MarkChatUnread
+        }
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.86f else 0.94f)
+                .height(if (compact) 34.dp else 38.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatBlue.copy(alpha = 0.16f))
+                .border(1.dp, chatBlue.copy(alpha = 0.42f), RoundedCornerShape(8.dp))
+                .clickable(onClick = onDismiss)
+                .padding(horizontal = if (compact) 8.dp else 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = chatBlue,
+            modifier = Modifier.size(if (compact) 14.dp else 16.dp)
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "来自${context.source}",
+                color = chatBlue,
+                fontSize = if (compact) 8.sp else 9.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = context.actionLabel,
+                color = MaterialTheme.colorScheme.onBackground,
+                fontSize = if (compact) 10.sp else 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
