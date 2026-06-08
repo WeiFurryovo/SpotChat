@@ -62,6 +62,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MarkChatUnread
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
@@ -347,7 +348,8 @@ private data class ChatConversation(
     val title: String,
     val subtitle: String,
     val peerFingerprint: String? = null,
-    val memberFingerprints: List<String> = emptyList()
+    val memberFingerprints: List<String> = emptyList(),
+    val themeColor: Color? = null
 )
 
 private data class GlobalSearchResult(
@@ -511,6 +513,15 @@ private val chatRowMuted = Color(0xFFA7B3B8)
 private val chatSurface = Color(0xFF111820)
 private val chatSurfaceHigh = Color(0xFF1A2430)
 private val chatDivider = Color(0xFF2A3540)
+private val conversationThemePalette =
+    listOf(
+        Color(0xFF53BDEB),
+        Color(0xFFFFB4C8),
+        Color(0xFFFFCC66),
+        Color(0xFFB6E3F4),
+        Color(0xFFC0AEDE),
+        Color(0xFF6CE5D4)
+    )
 
 private data class WatchSurfaceSpec(
     val isRound: Boolean,
@@ -751,6 +762,7 @@ internal fun SpotChatApp(
     val mentionCounts = remember { mutableStateMapOf<String, Int>() }
     val pinnedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val favoriteConversationIds = remember { mutableStateMapOf<String, Boolean>() }
+    val conversationThemeColors = remember { mutableStateMapOf<String, Color>() }
     val mutedConversations = remember { mutableStateMapOf<String, MutedConversation>() }
     val archivedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val lockedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
@@ -1127,7 +1139,8 @@ internal fun SpotChatApp(
                     } else {
                         "群聊 · ${trustedPeers.size} 位成员 · ${groupReachabilityText(memberFingerprints)}"
                     },
-                memberFingerprints = memberFingerprints
+                memberFingerprints = memberFingerprints,
+                themeColor = conversationThemeColors[NEARBY_GROUP_CONVERSATION_ID]
             )
         }
 
@@ -1144,7 +1157,8 @@ internal fun SpotChatApp(
             title = peer.deviceName,
             subtitle = "${peerAbout(peer)} · ${peerReachabilityText(peer.fingerprint)}",
             peerFingerprint = peer.fingerprint,
-            memberFingerprints = listOf(peer.fingerprint)
+            memberFingerprints = listOf(peer.fingerprint),
+            themeColor = conversationThemeColors[directConversationId(peer.fingerprint)]
         )
     }
 
@@ -1506,6 +1520,7 @@ internal fun SpotChatApp(
         conversationUpdateOrder.remove(conversation.id)
         pinnedConversationIds.remove(conversation.id)
         favoriteConversationIds.remove(conversation.id)
+        conversationThemeColors.remove(conversation.id)
         mutedConversations.remove(conversation.id)
         archivedConversationIds.remove(conversation.id)
         blockedPeerFingerprints.remove(storedPeer.fingerprint)
@@ -1587,7 +1602,8 @@ internal fun SpotChatApp(
                         } else {
                             "群聊 · ${trustedPeers.size} 位成员 · ${groupReachabilityText(groupMemberFingerprints)}"
                         },
-                    memberFingerprints = groupMemberFingerprints
+                    memberFingerprints = groupMemberFingerprints,
+                    themeColor = conversationThemeColors[NEARBY_GROUP_CONVERSATION_ID]
                 )
             )
             trustedPeers.forEach { peer ->
@@ -1598,7 +1614,8 @@ internal fun SpotChatApp(
                         title = peer.deviceName,
                         subtitle = "${peerAbout(peer)} · ${peerReachabilityText(peer.fingerprint)}",
                         peerFingerprint = peer.fingerprint,
-                        memberFingerprints = listOf(peer.fingerprint)
+                        memberFingerprints = listOf(peer.fingerprint),
+                        themeColor = conversationThemeColors[directConversationId(peer.fingerprint)]
                     )
                 )
             }
@@ -1653,6 +1670,7 @@ internal fun SpotChatApp(
         lockedConversationIds.toMap(),
         pinnedConversationIds.toMap(),
         favoriteConversationIds.toMap(),
+        conversationThemeColors.toMap(),
         mutedConversations.toMap(),
         archivedConversationIds.toMap(),
         blockedPeerFingerprints.toMap(),
@@ -1758,6 +1776,33 @@ internal fun SpotChatApp(
         }
         appendSystemMessage(
             text = if (isFavorite) "已取消收藏" else "已收藏聊天",
+            encrypted = true,
+            conversationId = conversation.id
+        )
+    }
+
+    fun cycleConversationTheme(conversation: ChatConversation) {
+        val currentColor = conversationThemeColors[conversation.id]
+        val nextIndex =
+            if (currentColor == null) {
+                0
+            } else {
+                val currentIndex = conversationThemePalette.indexOfFirst { color -> color == currentColor }
+                if (currentIndex < 0 || currentIndex == conversationThemePalette.lastIndex) {
+                    -1
+                } else {
+                    currentIndex + 1
+                }
+            }
+        if (nextIndex < 0) {
+            conversationThemeColors.remove(conversation.id)
+            trustState = "已恢复默认聊天颜色"
+        } else {
+            conversationThemeColors[conversation.id] = conversationThemePalette[nextIndex]
+            trustState = "已切换聊天颜色"
+        }
+        appendSystemMessage(
+            text = if (nextIndex < 0) "已恢复默认聊天颜色" else "已切换聊天颜色",
             encrypted = true,
             conversationId = conversation.id
         )
@@ -4208,6 +4253,9 @@ internal fun SpotChatApp(
                             onToggleFavorite = {
                                 toggleConversationFavorite(selectedConversation)
                             },
+                            onCycleTheme = {
+                                cycleConversationTheme(selectedConversation)
+                            },
                             onToggleMuted = {
                                 appSurface = AppSurface.MuteSettings
                             },
@@ -5992,6 +6040,7 @@ private fun WatchChatInfoSurface(
     onSearchMessages: () -> Unit,
     onTogglePinned: () -> Unit,
     onToggleFavorite: () -> Unit,
+    onCycleTheme: () -> Unit,
     onToggleMuted: () -> Unit,
     onToggleArchived: () -> Unit,
     onToggleBlocked: () -> Unit,
@@ -6276,6 +6325,13 @@ private fun WatchChatInfoSurface(
                             selected = isFavorite,
                             compact = compact,
                             onClick = onToggleFavorite
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.Palette,
+                            text = "切换聊天颜色",
+                            selected = conversation.themeColor != null,
+                            compact = compact,
+                            onClick = onCycleTheme
                         )
                         MessageActionButton(
                             icon = Icons.Filled.NotificationsOff,
@@ -9623,20 +9679,13 @@ private fun avatarFor(avatarId: String): DefaultAvatar =
     defaultAvatars.firstOrNull { avatar -> avatar.id == avatarId } ?: defaultAvatars.first()
 
 private fun conversationAccentColor(conversation: ChatConversation): Color {
+    conversation.themeColor?.let { themeColor -> return themeColor }
     if (conversation.kind == ConversationKind.Group) {
         return chatGreen
     }
 
-    val palette =
-        listOf(
-            Color(0xFF53BDEB),
-            Color(0xFFFFB4C8),
-            Color(0xFFFFCC66),
-            Color(0xFFB6E3F4),
-            Color(0xFFC0AEDE)
-        )
     val seed = conversation.peerFingerprint ?: conversation.id
-    return palette[abs(seed.hashCode()) % palette.size]
+    return conversationThemePalette[abs(seed.hashCode()) % conversationThemePalette.size]
 }
 
 private fun conversationPreview(
