@@ -4353,6 +4353,18 @@ internal fun SpotChatApp(
                                     }
                             }
                         },
+                        onClearVisibleDrafts = {
+                            val draftConversations =
+                                visibleConversationList.filter { conversation ->
+                                    draftsByConversation[conversation.id] != null
+                                }
+                            draftConversations.forEach { conversation ->
+                                clearDraft(conversation)
+                            }
+                            if (draftConversations.isNotEmpty()) {
+                                trustState = "已清除草稿聊天"
+                            }
+                        },
                         onCopyVisibleStarredSummary = {
                             copyStarredSummary(visibleConversationList)
                         },
@@ -5300,6 +5312,7 @@ private fun WatchConversationListSurface(
     onFavoriteMentionedVisible: () -> Unit,
     onRetryVisible: () -> Unit,
     onSendVisibleDrafts: () -> Unit,
+    onClearVisibleDrafts: () -> Unit,
     onCopyVisibleStarredSummary: () -> Unit,
     onFavoriteStarredVisible: () -> Unit,
     onUnfavoriteVisible: () -> Unit,
@@ -5617,6 +5630,16 @@ private fun WatchConversationListSurface(
                                 compact = compact,
                                 onClick = onSendVisibleDrafts
                             )
+                            if (activeFilter == ChatListFilter.Drafts) {
+                                MessageActionButton(
+                                    icon = Icons.Filled.Delete,
+                                    text = "清除全部草稿",
+                                    selected = true,
+                                    destructive = true,
+                                    compact = compact,
+                                    onClick = onClearVisibleDrafts
+                                )
+                            }
                         }
                     }
 
