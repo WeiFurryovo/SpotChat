@@ -1796,6 +1796,26 @@ internal fun SpotChatApp(
         trustState = "已复制消息"
     }
 
+    fun copySafetyCode(peer: StoredTrustedPeer) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val safetyText =
+            buildString {
+                appendLine("SpotChat 安全校验")
+                appendLine("设备：${peer.deviceName}")
+                appendLine("指纹：${SpotChatCrypto.displayFingerprint(peer.fingerprint)}")
+                append("校验码：${peer.pairingCode}")
+            }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat safety code", safetyText)
+        )
+        trustState = "已复制 ${peer.deviceName} 的校验码"
+    }
+
     fun applyMessageReaction(
         conversationId: String,
         targetMessageId: String,
@@ -3561,6 +3581,7 @@ internal fun SpotChatApp(
                             trustedPeers = trustedPeers,
                             localFingerprint = localFingerprint,
                             selectedPeerFingerprint = selectedSecurityPeerFingerprint,
+                            onCopySafetyCode = ::copySafetyCode,
                             onNavigateBack = dismissOverlay
                         )
                     }
@@ -6584,6 +6605,7 @@ private fun WatchSecurityCheckSurface(
     trustedPeers: List<StoredTrustedPeer>,
     localFingerprint: String,
     selectedPeerFingerprint: String?,
+    onCopySafetyCode: (StoredTrustedPeer) -> Unit,
     onNavigateBack: () -> Unit
 ) {
     BoxWithConstraints(
@@ -6647,7 +6669,8 @@ private fun WatchSecurityCheckSurface(
                         SafetyCodeCard(
                             peer = peer,
                             compact = compact,
-                            surfaceSpec = surfaceSpec
+                            surfaceSpec = surfaceSpec,
+                            onCopySafetyCode = { onCopySafetyCode(peer) }
                         )
                     }
 
@@ -6688,7 +6711,8 @@ private fun WatchSecurityCheckSurface(
 private fun SafetyCodeCard(
     peer: StoredTrustedPeer,
     compact: Boolean,
-    surfaceSpec: WatchSurfaceSpec
+    surfaceSpec: WatchSurfaceSpec,
+    onCopySafetyCode: () -> Unit
 ) {
     Column(
         modifier =
@@ -6725,6 +6749,27 @@ private fun SafetyCodeCard(
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center
         )
+        Box(
+            modifier =
+                Modifier
+                    .height(if (compact) 26.dp else 28.dp)
+                    .fillMaxWidth(if (surfaceSpec.isRound) 0.72f else 0.82f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(chatGreen.copy(alpha = 0.2f))
+                    .border(1.dp, chatGreen.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                    .clickable(onClick = onCopySafetyCode),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "复制校验码",
+                color = chatGreen,
+                fontSize = if (compact) 10.sp else 11.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
 
