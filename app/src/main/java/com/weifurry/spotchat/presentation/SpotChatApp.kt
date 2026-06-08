@@ -4333,6 +4333,18 @@ internal fun SpotChatApp(
                         onCopyVisibleStarredSummary = {
                             copyStarredSummary(visibleConversationList)
                         },
+                        onUnpinVisible = {
+                            val pinnedConversations =
+                                visibleConversationList.filter { conversation ->
+                                    pinnedConversationIds[conversation.id] == true
+                                }
+                            pinnedConversations.forEach { conversation ->
+                                toggleConversationPinned(conversation)
+                            }
+                            if (pinnedConversations.isNotEmpty()) {
+                                trustState = "已取消置顶聊天"
+                            }
+                        },
                         onOpenProfile = {
                             appSurface = AppSurface.Profile
                         },
@@ -5099,6 +5111,7 @@ private fun WatchConversationListSurface(
     onRetryVisible: () -> Unit,
     onSendVisibleDrafts: () -> Unit,
     onCopyVisibleStarredSummary: () -> Unit,
+    onUnpinVisible: () -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
 ) {
@@ -5386,6 +5399,20 @@ private fun WatchConversationListSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onCopyVisibleStarredSummary
+                            )
+                        }
+                    }
+
+                    if (activeFilter == ChatListFilter.Pinned && conversations.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.PushPin,
+                                text = "取消全部置顶",
+                                selected = true,
+                                compact = compact,
+                                onClick = onUnpinVisible
                             )
                         }
                     }
