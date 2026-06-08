@@ -4369,6 +4369,21 @@ internal fun SpotChatApp(
                                 trustState = "已解锁聊天预览"
                             }
                         },
+                        onDisableDisappearingVisible = {
+                            val disappearingVisibleConversations =
+                                visibleConversationList.filter { conversation ->
+                                    (
+                                        disappearingModesByConversation[conversation.id]
+                                            ?: DisappearingMessageMode.Off
+                                    ) != DisappearingMessageMode.Off
+                                }
+                            disappearingVisibleConversations.forEach { conversation ->
+                                setDisappearingMessages(conversation, DisappearingMessageMode.Off)
+                            }
+                            if (disappearingVisibleConversations.isNotEmpty()) {
+                                trustState = "已关闭限时消息"
+                            }
+                        },
                         onEnableReadReceiptsVisible = {
                             val readReceiptOffConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5150,6 +5165,7 @@ private fun WatchConversationListSurface(
     onUnpinVisible: () -> Unit,
     onUnmuteVisible: () -> Unit,
     onUnlockVisible: () -> Unit,
+    onDisableDisappearingVisible: () -> Unit,
     onEnableReadReceiptsVisible: () -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
@@ -5480,6 +5496,20 @@ private fun WatchConversationListSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onUnlockVisible
+                            )
+                        }
+                    }
+
+                    if (activeFilter == ChatListFilter.Disappearing && conversations.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.AutoDelete,
+                                text = "关闭全部限时",
+                                selected = true,
+                                compact = compact,
+                                onClick = onDisableDisappearingVisible
                             )
                         }
                     }
