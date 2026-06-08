@@ -4306,6 +4306,19 @@ internal fun SpotChatApp(
                                 }
                             )
                         },
+                        onFavoriteMentionedVisible = {
+                            val mentionedUnfavoriteConversations =
+                                visibleConversationList.filter { conversation ->
+                                    (mentionCounts[conversation.id] ?: 0) > 0 &&
+                                        favoriteConversationIds[conversation.id] != true
+                                }
+                            mentionedUnfavoriteConversations.forEach { conversation ->
+                                toggleConversationFavorite(conversation)
+                            }
+                            if (mentionedUnfavoriteConversations.isNotEmpty()) {
+                                trustState = "已收藏提及聊天"
+                            }
+                        },
                         onRetryVisible = {
                             val retryableConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5271,6 +5284,7 @@ private fun WatchConversationListSurface(
     onOpenGlobalSearch: () -> Unit,
     onOpenArchivedChats: () -> Unit,
     onMarkVisibleRead: () -> Unit,
+    onFavoriteMentionedVisible: () -> Unit,
     onRetryVisible: () -> Unit,
     onSendVisibleDrafts: () -> Unit,
     onCopyVisibleStarredSummary: () -> Unit,
@@ -5558,6 +5572,15 @@ private fun WatchConversationListSurface(
                                 compact = compact,
                                 onClick = onMarkVisibleRead
                             )
+                            if (activeFilter == ChatListFilter.Mentions) {
+                                MessageActionButton(
+                                    icon = Icons.Filled.StarRate,
+                                    text = "收藏提及聊天",
+                                    selected = true,
+                                    compact = compact,
+                                    onClick = onFavoriteMentionedVisible
+                                )
+                            }
                         }
                     }
 
