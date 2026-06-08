@@ -320,6 +320,12 @@ private data class GlobalSearchResult(
     val message: ChatBubble
 )
 
+private data class MessageReceiptSummary(
+    val expectedCount: Int,
+    val deliveredCount: Int,
+    val readCount: Int
+)
+
 private data class OutgoingMessageRef(
     val conversationId: String,
     val displayMessageId: String,
@@ -876,6 +882,40 @@ internal fun SpotChatApp(
         message: ChatBubble
     ): Boolean =
         pinnedMessageIdsByConversation[conversationId] == message.stableStarId()
+
+    fun messageReceiptSummary(
+        conversation: ChatConversation,
+        message: ChatBubble
+    ): MessageReceiptSummary? {
+        val messageId = message.messageId ?: return null
+        if (!message.mine || message.deliveryState == DeliveryState.System) {
+            return null
+        }
+        val expectedCount = conversation.memberFingerprints.size.coerceAtLeast(1)
+        val deliveredCount =
+            maxOf(
+                deliveredCounts[messageId] ?: 0,
+                if (deliveryStateRank(message.deliveryState) >= deliveryStateRank(DeliveryState.Delivered)) {
+                    expectedCount
+                } else {
+                    0
+                }
+            ).coerceAtMost(expectedCount)
+        val readCount =
+            maxOf(
+                readCounts[messageId] ?: 0,
+                if (deliveryStateRank(message.deliveryState) >= deliveryStateRank(DeliveryState.Read)) {
+                    expectedCount
+                } else {
+                    0
+                }
+            ).coerceAtMost(expectedCount)
+        return MessageReceiptSummary(
+            expectedCount = expectedCount,
+            deliveredCount = deliveredCount,
+            readCount = readCount
+        )
+    }
 
     fun quotedMessageTarget(
         conversationId: String,
@@ -3408,6 +3448,7 @@ internal fun SpotChatApp(
                                 isPinned = isMessagePinned(selectedConversation.id, actionMessage),
                                 voicePlaybackSpeed = voicePlaybackSpeed,
                                 hasQuotedMessageTarget = quotedTarget != null,
+                                receiptSummary = messageReceiptSummary(selectedConversation, actionMessage),
                                 onNavigateBack = dismissOverlay,
                                 onPlayVoiceMessage = {
                                     playVoiceMessage(actionMessage)
@@ -5213,6 +5254,7 @@ private fun WatchMessageActionsSurface(
     isPinned: Boolean,
     voicePlaybackSpeed: VoicePlaybackSpeed,
     hasQuotedMessageTarget: Boolean,
+    receiptSummary: MessageReceiptSummary?,
     onNavigateBack: () -> Unit,
     onPlayVoiceMessage: () -> Unit,
     onCycleVoicePlaybackSpeed: () -> Unit,
@@ -5399,6 +5441,7 @@ private fun WatchMessageActionsSurface(
 
                     MessageMetaStrip(
                         message = message,
+                        receiptSummary = receiptSummary,
                         compact = compact,
                         surfaceSpec = surfaceSpec
                     )
@@ -6139,6 +6182,7 @@ private fun MessageActionButton(
 @Composable
 private fun MessageMetaStrip(
     message: ChatBubble,
+    receiptSummary: MessageReceiptSummary?,
     compact: Boolean,
     surfaceSpec: WatchSurfaceSpec
 ) {
@@ -6165,6 +6209,20 @@ private fun MessageMetaStrip(
             value = message.deliveryState.label,
             compact = compact
         )
+        receiptSummary?.let { summary ->
+            MessageMetaRow(
+                icon = Icons.Filled.DoneAll,
+                label = "送达",
+                value = receiptProgressLabel(summary.deliveredCount, summary.expectedCount),
+                compact = compact
+            )
+            MessageMetaRow(
+                icon = Icons.Filled.DoneAll,
+                label = "已读",
+                value = receiptProgressLabel(summary.readCount, summary.expectedCount),
+                compact = compact
+            )
+        }
         MessageMetaRow(
             icon = Icons.Filled.Schedule,
             label = "时间",
@@ -7569,6 +7627,16 @@ private fun reactionSummary(message: ChatBubble): String =
         .joinToString(separator = " ") { (label, count) ->
             if (count > 1) "$label x$count" else label
         }
+
+private fun receiptProgressLabel(
+    currentCount: Int,
+    expectedCount: Int
+): String =
+    if (expectedCount <= 1) {
+        if (currentCount > 0) "是" else "否"
+    } else {
+        "${currentCount.coerceAtMost(expectedCount)}/$expectedCount"
+    }
 
 private fun formatTimeRemaining(expiresAtEpochMillis: Long): String {
     val remainingMs = (expiresAtEpochMillis - System.currentTimeMillis()).coerceAtLeast(0L)
