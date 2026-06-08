@@ -243,22 +243,6 @@ private data class WatchActionConfirmation(
     val detail: String
 )
 
-private data class WearDiagnosticsSnapshot(
-    val transportMode: TransportMode,
-    val trustState: String,
-    val lanReady: Boolean,
-    val bluetoothReady: Boolean,
-    val notificationReady: Boolean,
-    val audioReady: Boolean,
-    val trustedPeerCount: Int,
-    val reachablePeerCount: Int,
-    val unreadThreadCount: Int,
-    val retryableConversationCount: Int,
-    val draftConversationCount: Int,
-    val tileConversationCount: Int,
-    val wearUpdatedAtEpochMillis: Long
-)
-
 private enum class ConversationKind(
     val label: String
 ) {
@@ -2419,67 +2403,6 @@ internal fun SpotChatApp(
         )
     }
 
-    fun copyMessageSearchSummary(
-        conversation: ChatConversation,
-        query: String,
-        results: List<ChatBubble>
-    ) {
-        val clipboardManager =
-            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        if (clipboardManager == null) {
-            trustState = "无法访问剪贴板"
-            return
-        }
-        val summary =
-            messageSearchSummaryText(
-                conversation = conversation,
-                query = query,
-                results = results
-            )
-        if (summary.isBlank()) {
-            trustState = "没有搜索结果"
-            return
-        }
-        clipboardManager.setPrimaryClip(
-            ClipData.newPlainText("SpotChat message search", summary)
-        )
-        trustState = "已复制搜索摘要"
-    }
-
-    fun copyGroupMemberSummary(conversation: ChatConversation) {
-        val clipboardManager =
-            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        if (clipboardManager == null) {
-            trustState = "无法访问剪贴板"
-            return
-        }
-        val trustedByFingerprint = trustedPeers.associateBy { peer -> peer.fingerprint }
-        val memberPeers =
-            conversation.memberFingerprints.mapNotNull { fingerprint ->
-                trustedByFingerprint[fingerprint]
-            }
-        val summary =
-            groupMemberSummaryText(
-                conversation = conversation,
-                groupAbout =
-                    if (conversation.id == NEARBY_GROUP_CONVERSATION_ID) {
-                        nearbyGroupAbout
-                    } else {
-                        null
-                    },
-                memberPeers = memberPeers,
-                peerReachability = ::peerReachabilityText
-            )
-        if (summary.isBlank()) {
-            trustState = "没有群成员"
-            return
-        }
-        clipboardManager.setPrimaryClip(
-            ClipData.newPlainText("SpotChat group members", summary)
-        )
-        trustState = "已复制群成员摘要"
-    }
-
     fun copySafetyCode(peer: StoredTrustedPeer) {
         val clipboardManager =
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -2498,35 +2421,6 @@ internal fun SpotChatApp(
             ClipData.newPlainText("SpotChat safety code", safetyText)
         )
         trustState = "已复制 ${peer.deviceName} 的校验码"
-    }
-
-    fun copyConversationSafetySummary(conversation: ChatConversation) {
-        val clipboardManager =
-            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        if (clipboardManager == null) {
-            trustState = "无法访问剪贴板"
-            return
-        }
-        val trustedByFingerprint = trustedPeers.associateBy { peer -> peer.fingerprint }
-        val memberPeers =
-            conversation.memberFingerprints.mapNotNull { fingerprint ->
-                trustedByFingerprint[fingerprint]
-            }
-        val summary =
-            conversationSafetySummaryText(
-                conversation = conversation,
-                localFingerprint = localFingerprint,
-                memberPeers = memberPeers,
-                peerReachability = ::peerReachabilityText
-            )
-        if (summary.isBlank()) {
-            trustState = "没有可复制的安全信息"
-            return
-        }
-        clipboardManager.setPrimaryClip(
-            ClipData.newPlainText("SpotChat safety summary", summary)
-        )
-        trustState = "已复制安全摘要"
     }
 
     fun applyMessageReaction(
@@ -4851,33 +4745,6 @@ internal fun SpotChatApp(
                 val selectedConversation =
                     currentConversations.firstOrNull { conversation -> conversation.id == activeConversationId }
                         ?: currentConversations.first()
-                val diagnosticsSnapshot =
-                    WearDiagnosticsSnapshot(
-                        transportMode = transportMode,
-                        trustState = trustState,
-                        lanReady = hasLanConnection(),
-                        bluetoothReady = hasBluetoothRuntimePermissions(),
-                        notificationReady = notifier.canPostNotifications(),
-                        audioReady =
-                            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-                                PackageManager.PERMISSION_GRANTED,
-                        trustedPeerCount = trustedPeers.size,
-                        reachablePeerCount =
-                            trustedPeers.count { peer ->
-                                routeForPeer(peer.fingerprint) != null
-                            },
-                        unreadThreadCount =
-                            visibleConversationListBase.count { conversation ->
-                                (unreadCounts[conversation.id] ?: 0) > 0
-                            },
-                        retryableConversationCount =
-                            currentConversations.count { conversation ->
-                                hasRetryableMessages(conversation.id)
-                            },
-                        draftConversationCount = draftsByConversation.size,
-                        tileConversationCount = wearChatSnapshot.conversations.size,
-                        wearUpdatedAtEpochMillis = wearChatSnapshot.updatedAtEpochMillis
-                    )
                 val conversationListSurface: @Composable (Boolean) -> Unit = { profileNavigationEnabled ->
                     WatchConversationListSurface(
                         isRoundScreen = isRoundScreen,
@@ -5251,9 +5118,6 @@ internal fun SpotChatApp(
                             localFingerprint = localFingerprint,
                             selectedPeerFingerprint = selectedSecurityPeerFingerprint,
                             onCopySafetyCode = ::copySafetyCode,
-                            onCopySafetySummary = {
-                                copyConversationSafetySummary(selectedConversation)
-                            },
                             onNavigateBack = dismissOverlay
                         )
                     }
@@ -5311,9 +5175,6 @@ internal fun SpotChatApp(
                             trustedPeers = trustedPeers,
                             peerReachability = ::peerReachabilityText,
                             onNavigateBack = dismissOverlay,
-                            onCopyMemberSummary = {
-                                copyGroupMemberSummary(selectedConversation)
-                            },
                             onOpenDirectChat = { peer ->
                                 val directConversationId = ensureDirectConversation(peer)
                                 conversationById(directConversationId)?.let { directConversation ->
@@ -5386,13 +5247,6 @@ internal fun SpotChatApp(
                             starredMessageIds = starredMessageIds(selectedConversation.id),
                             onNavigateBack = dismissOverlay,
                             onSearchAgain = ::openMessageSearchInput,
-                            onCopyResults = {
-                                copyMessageSearchSummary(
-                                    conversation = selectedConversation,
-                                    query = searchQuery,
-                                    results = searchMessages(selectedConversation.id, searchQuery)
-                                )
-                            },
                             onOpenMessage = { message ->
                                 messageActionsBackStack.clear()
                                 messageActionsReturnSurface = AppSurface.MessageSearch
@@ -5634,17 +5488,7 @@ internal fun SpotChatApp(
                             defaultDisappearingMode = profile.defaultDisappearingMode.toDisappearingMode(),
                             defaultReadReceiptsEnabled = profile.defaultReadReceiptsEnabled,
                             securityChangeAlertsEnabled = profile.securityChangeAlertsEnabled,
-                            diagnosticsSnapshot = diagnosticsSnapshot,
                             onNavigateBack = dismissOverlay,
-                            onRefreshWearSurfaces = {
-                                updateWearStateSnapshot()
-                                wearStateStore.requestSurfaceUpdates()
-                                trustState = "已刷新手表入口"
-                                showActionConfirmation(
-                                    title = "已刷新手表入口",
-                                    detail = "Tile 和表盘入口已请求更新"
-                                )
-                            },
                             onDefaultDisappearingModeChange = { mode ->
                                 updateProfile(profile.copy(defaultDisappearingMode = mode.profileKey))
                                 trustState = "默认限时消息${mode.label}"
@@ -8483,7 +8327,6 @@ private fun WatchMessageSearchSurface(
     starredMessageIds: Set<String>,
     onNavigateBack: () -> Unit,
     onSearchAgain: () -> Unit,
-    onCopyResults: () -> Unit,
     onOpenMessage: (ChatBubble) -> Unit
 ) {
     BoxWithConstraints(
@@ -8540,16 +8383,6 @@ private fun WatchMessageSearchSurface(
                         compact = compact,
                         onClick = onSearchAgain
                     )
-                    if (results.isNotEmpty()) {
-                        MessageActionButton(
-                            icon = Icons.Filled.Keyboard,
-                            text = "复制结果摘要",
-                            selected = true,
-                            compact = compact,
-                            onClick = onCopyResults
-                        )
-                    }
-
                     if (cleanQuery.isBlank()) {
                         SearchEmptyState(
                             text = "输入关键词查找此聊天",
@@ -8687,7 +8520,6 @@ private fun WatchGroupMembersSurface(
     trustedPeers: List<StoredTrustedPeer>,
     peerReachability: (String) -> String,
     onNavigateBack: () -> Unit,
-    onCopyMemberSummary: () -> Unit,
     onOpenDirectChat: (StoredTrustedPeer) -> Unit,
     onOpenSecurityCheck: (StoredTrustedPeer) -> Unit
 ) {
@@ -8756,20 +8588,6 @@ private fun WatchGroupMembersSurface(
                             activeFilter = filter
                         }
                     )
-
-                    if (memberPeers.isNotEmpty()) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
-                        ) {
-                            MessageActionButton(
-                                icon = Icons.Filled.Keyboard,
-                                text = "复制成员摘要",
-                                selected = true,
-                                compact = compact,
-                                onClick = onCopyMemberSummary
-                            )
-                        }
-                    }
 
                     if (memberPeers.isEmpty()) {
                         SearchEmptyState(
@@ -9166,7 +8984,6 @@ private fun WatchSecurityCheckSurface(
     localFingerprint: String,
     selectedPeerFingerprint: String?,
     onCopySafetyCode: (StoredTrustedPeer) -> Unit,
-    onCopySafetySummary: () -> Unit,
     onNavigateBack: () -> Unit
 ) {
     BoxWithConstraints(
@@ -9243,20 +9060,6 @@ private fun WatchSecurityCheckSurface(
                         compact = compact,
                         surfaceSpec = surfaceSpec
                     )
-
-                    if (memberPeers.isNotEmpty()) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
-                        ) {
-                            MessageActionButton(
-                                icon = Icons.Filled.VerifiedUser,
-                                text = "复制安全摘要",
-                                selected = true,
-                                compact = compact,
-                                onClick = onCopySafetySummary
-                            )
-                        }
-                    }
 
                     if (displayedPeers.isEmpty()) {
                         SearchEmptyState(
@@ -10029,9 +9832,7 @@ private fun WatchProfileSurface(
     defaultDisappearingMode: DisappearingMessageMode,
     defaultReadReceiptsEnabled: Boolean,
     securityChangeAlertsEnabled: Boolean,
-    diagnosticsSnapshot: WearDiagnosticsSnapshot,
     onNavigateBack: () -> Unit,
-    onRefreshWearSurfaces: () -> Unit,
     onDefaultDisappearingModeChange: (DisappearingMessageMode) -> Unit,
     onToggleDefaultReadReceipts: () -> Unit,
     onToggleSecurityChangeAlerts: () -> Unit,
@@ -10201,21 +10002,6 @@ private fun WatchProfileSurface(
                             },
                             onToggleDefaultReadReceipts = onToggleDefaultReadReceipts,
                             onToggleSecurityChangeAlerts = onToggleSecurityChangeAlerts
-                        )
-                    }
-
-                    item {
-                        ProfileSectionLabel(
-                            text = "Wear 诊断",
-                            compact = compact
-                        )
-                    }
-
-                    item {
-                        ProfileWearDiagnosticsPanel(
-                            snapshot = diagnosticsSnapshot,
-                            surfaceSpec = surfaceSpec,
-                            onRefreshWearSurfaces = onRefreshWearSurfaces
                         )
                     }
 
@@ -10627,70 +10413,6 @@ private fun ProfilePrivacyPanel(
             accent = if (securityChangeAlertsEnabled) chatGreen else chatAmber,
             compact = compact,
             onClick = onToggleSecurityChangeAlerts
-        )
-    }
-}
-
-@Composable
-private fun ProfileWearDiagnosticsPanel(
-    snapshot: WearDiagnosticsSnapshot,
-    surfaceSpec: WatchSurfaceSpec,
-    onRefreshWearSurfaces: () -> Unit
-) {
-    val compact = surfaceSpec.compact
-    Column(
-        modifier =
-            Modifier
-                .fillMaxWidth(surfaceSpec.profileSummaryWidth)
-                .clip(RoundedCornerShape(8.dp))
-                .background(chatSurfaceHigh.copy(alpha = 0.82f))
-                .border(1.dp, chatBlue.copy(alpha = 0.24f), RoundedCornerShape(8.dp))
-                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 9.dp),
-        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
-    ) {
-        ProfileInfoRow(
-            icon = Icons.Filled.Refresh,
-            label = "手表入口",
-            value = "刷新 Tile/表盘",
-            accent = chatBlue,
-            compact = compact,
-            onClick = onRefreshWearSurfaces
-        )
-        ProfileInfoRow(
-            icon = snapshot.transportMode.icon,
-            label = "传输",
-            value = "${snapshot.transportMode.label} · ${snapshot.trustState}",
-            accent = if (snapshot.lanReady || snapshot.bluetoothReady) chatGreen else chatAmber,
-            compact = compact
-        )
-        ProfileInfoRow(
-            icon = Icons.Filled.VerifiedUser,
-            label = "权限",
-            value = wearPermissionSummary(snapshot),
-            accent = if (snapshot.notificationReady && snapshot.audioReady) chatGreen else chatAmber,
-            compact = compact
-        )
-        ProfileInfoRow(
-            icon = Icons.Filled.Group,
-            label = "设备",
-            value = "在线 ${snapshot.reachablePeerCount}/${snapshot.trustedPeerCount}",
-            accent = if (snapshot.reachablePeerCount > 0) chatGreen else chatAmber,
-            compact = compact
-        )
-        ProfileInfoRow(
-            icon = Icons.Filled.MarkChatUnread,
-            label = "队列",
-            value = "未读 ${snapshot.unreadThreadCount} · 待发 ${snapshot.retryableConversationCount}",
-            accent = if (snapshot.retryableConversationCount > 0) chatRose else chatBlue,
-            compact = compact
-        )
-        ProfileInfoRow(
-            icon = Icons.Filled.Schedule,
-            label = "Wear 状态",
-            value =
-                "${snapshot.tileConversationCount} 个聊天 · ${formatWearUpdateAge(snapshot.wearUpdatedAtEpochMillis)}",
-            accent = chatBlue,
-            compact = compact
         )
     }
 }
@@ -12310,111 +12032,6 @@ private fun messageInfoText(
         }
     }.trim()
 
-private fun messageSearchSummaryText(
-    conversation: ChatConversation,
-    query: String,
-    results: List<ChatBubble>
-): String {
-    val cleanQuery = query.trim()
-    if (cleanQuery.isBlank() || results.isEmpty()) {
-        return ""
-    }
-    return buildString {
-        appendLine("SpotChat 搜索摘要")
-        appendLine("聊天：${conversation.title}")
-        appendLine("关键词：$cleanQuery")
-        appendLine("结果：${results.size} 条")
-        appendLine()
-        results.forEachIndexed { index, message ->
-            val sender =
-                when {
-                    message.mine -> "我"
-                    message.senderName != null -> message.senderName
-                    conversation.kind == ConversationKind.Direct -> conversation.title
-                    else -> "SpotChat"
-                }
-            appendLine("${index + 1}. [${message.timestamp}] $sender：${message.copyText()}")
-        }
-    }.trim()
-}
-
-private fun groupMemberSummaryText(
-    conversation: ChatConversation,
-    groupAbout: String?,
-    memberPeers: List<StoredTrustedPeer>,
-    peerReachability: (String) -> String
-): String {
-    if (memberPeers.isEmpty()) {
-        return ""
-    }
-    val reachabilityByPeer =
-        memberPeers.associateWith { peer ->
-            peerReachability(peer.fingerprint)
-        }
-    val onlineCount =
-        reachabilityByPeer.count { (_, reachability) ->
-            reachability.contains("当前可发送")
-        }
-    val recentCount =
-        reachabilityByPeer.count { (_, reachability) ->
-            reachability.contains("最近发现")
-        }
-    val offlineCount = memberPeers.size - onlineCount - recentCount
-    return buildString {
-        appendLine("SpotChat 群成员摘要")
-        appendLine("群聊：${conversation.title}")
-        groupAbout
-            ?.takeIf { about -> about.isNotBlank() }
-            ?.let { about -> appendLine("群公告：$about") }
-        appendLine("成员：${memberPeers.size} 位")
-        appendLine("状态：在线 $onlineCount · 最近 $recentCount · 离线 $offlineCount")
-        appendLine()
-        memberPeers.forEachIndexed { index, peer ->
-            val reachability = reachabilityByPeer[peer].orEmpty()
-            appendLine(
-                "${index + 1}. ${peerDisplayName(peer)} · " +
-                    "${peerReachabilityShortLabel(reachability)} · " +
-                    "${peerAbout(peer)} · " +
-                    SpotChatCrypto.displayFingerprint(peer.fingerprint)
-            )
-        }
-    }.trim()
-}
-
-private fun conversationSafetySummaryText(
-    conversation: ChatConversation,
-    localFingerprint: String,
-    memberPeers: List<StoredTrustedPeer>,
-    peerReachability: (String) -> String
-): String {
-    if (memberPeers.isEmpty()) {
-        return ""
-    }
-    val reachabilityByPeer =
-        memberPeers.associateWith { peer ->
-            peerReachability(peer.fingerprint)
-        }
-    val reachableCount =
-        reachabilityByPeer.count { (_, reachability) ->
-            reachability.contains("当前可发送")
-        }
-    return buildString {
-        appendLine("SpotChat 安全摘要")
-        appendLine("聊天：${conversation.title}")
-        appendLine("类型：${conversation.kind.label}")
-        appendLine("我的指纹：${SpotChatCrypto.displayFingerprint(localFingerprint)}")
-        appendLine("成员：${memberPeers.size} 位 · 当前可发送 $reachableCount 位")
-        appendLine()
-        memberPeers.forEachIndexed { index, peer ->
-            val reachability = reachabilityByPeer[peer].orEmpty()
-            appendLine("${index + 1}. ${peerDisplayName(peer)}")
-            appendLine("   状态：${peerReachabilityShortLabel(reachability)}")
-            appendLine("   校验码：${peer.pairingCode}")
-            appendLine("   指纹：${SpotChatCrypto.displayFingerprint(peer.fingerprint)}")
-        }
-    }.trim()
-}
-
 private fun ChatBubble.searchText(): String =
     buildList {
         add(previewText())
@@ -12523,26 +12140,3 @@ private fun PeerHello.lanPort(): Int? =
 
 private fun Throwable?.readableMessage(fallback: String): String =
     this?.message?.takeIf { it.isNotBlank() } ?: fallback
-
-private fun wearPermissionSummary(snapshot: WearDiagnosticsSnapshot): String =
-    buildList {
-        add(if (snapshot.notificationReady) "通知" else "缺通知")
-        add(if (snapshot.audioReady) "录音" else "缺录音")
-        if (!snapshot.bluetoothReady) {
-            add("缺蓝牙")
-        }
-    }.joinToString(separator = " · ")
-
-private fun formatWearUpdateAge(updatedAtEpochMillis: Long): String {
-    if (updatedAtEpochMillis <= 0L) {
-        return "未同步"
-    }
-    val elapsedSeconds =
-        ((System.currentTimeMillis() - updatedAtEpochMillis).coerceAtLeast(0L) / 1_000L).toInt()
-    return when {
-        elapsedSeconds < 60 -> "刚刚"
-        elapsedSeconds < 3_600 -> "${elapsedSeconds / 60} 分钟前"
-        elapsedSeconds < 86_400 -> "${elapsedSeconds / 3_600} 小时前"
-        else -> "${elapsedSeconds / 86_400} 天前"
-    }
-}
