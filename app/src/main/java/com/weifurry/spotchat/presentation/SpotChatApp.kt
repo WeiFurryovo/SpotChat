@@ -2477,6 +2477,28 @@ internal fun SpotChatApp(
         trustState = "已复制 ${peer.deviceName} 的校验码"
     }
 
+    fun copyTrustedDevicesSummary() {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            trustedDevicesSummaryText(
+                peers = trustedPeers,
+                peerReachability = ::peerReachabilityText
+            )
+        if (summary.isBlank()) {
+            trustState = "没有可信设备"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat trusted devices", summary)
+        )
+        trustState = "已复制可信设备摘要"
+    }
+
     fun copyConversationSafetySummary(conversation: ChatConversation) {
         val clipboardManager =
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -5847,6 +5869,7 @@ internal fun SpotChatApp(
                                 updateProfile(profile.copy(defaultReadReceiptsEnabled = enabled))
                                 trustState = if (enabled) "默认已读回执开启" else "默认已读回执关闭"
                             },
+                            onCopyTrustedDevicesSummary = ::copyTrustedDevicesSummary,
                             onCopyPrivacySummary = ::copyPrivacySummary,
                             onOpenBlockedContacts = {
                                 appSurface = AppSurface.BlockedContacts
@@ -10947,6 +10970,7 @@ private fun WatchProfileSurface(
     onNavigateBack: () -> Unit,
     onDefaultDisappearingModeChange: (DisappearingMessageMode) -> Unit,
     onToggleDefaultReadReceipts: () -> Unit,
+    onCopyTrustedDevicesSummary: () -> Unit,
     onCopyPrivacySummary: () -> Unit,
     onOpenBlockedContacts: () -> Unit,
     onProfileChange: (ProfileSettings) -> Unit
@@ -11071,6 +11095,13 @@ private fun WatchProfileSurface(
                             )
                         }
                     } else {
+                        item {
+                            ProfileTrustedDevicesSummaryRow(
+                                peerCount = trustedPeers.size,
+                                surfaceSpec = surfaceSpec,
+                                onClick = onCopyTrustedDevicesSummary
+                            )
+                        }
                         val visibleTrustedPeers = if (compact) 2 else 3
                         trustedPeers.take(visibleTrustedPeers).forEach { peer ->
                             item {
@@ -11586,6 +11617,51 @@ private fun ProfileChatManagementPanel(
             accent = chatGreen,
             compact = compact
         )
+    }
+}
+
+@Composable
+private fun ProfileTrustedDevicesSummaryRow(
+    peerCount: Int,
+    surfaceSpec: WatchSurfaceSpec,
+    onClick: () -> Unit
+) {
+    val compact = surfaceSpec.compact
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(surfaceSpec.profileSummaryWidth)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.82f))
+                .border(1.dp, chatGreen.copy(alpha = 0.28f), RoundedCornerShape(8.dp))
+                .clickable(onClick = onClick)
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Keyboard,
+            contentDescription = "复制可信设备摘要",
+            tint = chatGreen,
+            modifier = Modifier.size(if (compact) 14.dp else 16.dp)
+        )
+        Spacer(modifier = Modifier.width(if (compact) 7.dp else 9.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "复制设备摘要",
+                color = MaterialTheme.colorScheme.onBackground,
+                fontSize = if (compact) 11.sp else 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = "$peerCount 台可信设备",
+                color = chatRowMuted,
+                fontSize = if (compact) 9.sp else 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
 
@@ -13966,6 +14042,39 @@ private fun conversationSafetySummaryText(
             val reachability = reachabilityByPeer[peer].orEmpty()
             appendLine("${index + 1}. ${peerDisplayName(peer)}")
             appendLine("   状态：${peerReachabilityShortLabel(reachability)}")
+            appendLine("   校验码：${peer.pairingCode}")
+            appendLine("   指纹：${SpotChatCrypto.displayFingerprint(peer.fingerprint)}")
+        }
+    }.trim()
+}
+
+private fun trustedDevicesSummaryText(
+    peers: List<StoredTrustedPeer>,
+    peerReachability: (String) -> String
+): String {
+    if (peers.isEmpty()) {
+        return ""
+    }
+    val reachabilityByPeer =
+        peers.associateWith { peer ->
+            peerReachability(peer.fingerprint)
+        }
+    val reachableCount =
+        reachabilityByPeer.count { (_, reachability) ->
+            reachability.contains("当前可发送")
+        }
+    return buildString {
+        appendLine("SpotChat 可信设备摘要")
+        appendLine("设备：${peers.size} 台")
+        appendLine("当前可发送：$reachableCount 台")
+        appendLine()
+        peers.forEachIndexed { index, peer ->
+            val reachability = reachabilityByPeer[peer].orEmpty()
+            appendLine("${index + 1}. ${peerDisplayName(peer)}")
+            appendLine("   状态：${peerReachabilityShortLabel(reachability)}")
+            appendLine("   简介：${peerAbout(peer)}")
+            appendLine("   设备：${peer.deviceName}")
+            appendLine("   信任：${trustedPeerSubtitle(peer)}")
             appendLine("   校验码：${peer.pairingCode}")
             appendLine("   指纹：${SpotChatCrypto.displayFingerprint(peer.fingerprint)}")
         }
