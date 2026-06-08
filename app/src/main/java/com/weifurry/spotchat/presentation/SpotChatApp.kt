@@ -232,7 +232,8 @@ private enum class ContentMessageFilter(
     Forwarded("转发"),
     Quoted("引用"),
     Reacted("回应"),
-    Disappearing("限时")
+    Disappearing("限时"),
+    Links("链接")
 }
 
 private enum class GroupMemberFilter(
@@ -377,10 +378,17 @@ private data class ConversationContentSummary(
     val forwardedCount: Int,
     val quotedCount: Int,
     val reactedCount: Int,
-    val disappearingCount: Int
+    val disappearingCount: Int,
+    val linkCount: Int
 ) {
     val hasContent: Boolean
-        get() = voiceCount + forwardedCount + quotedCount + reactedCount + disappearingCount > 0
+        get() =
+            voiceCount +
+                forwardedCount +
+                quotedCount +
+                reactedCount +
+                disappearingCount +
+                linkCount > 0
 }
 
 private data class ChatManagementInsight(
@@ -6443,6 +6451,31 @@ private fun WatchChatInfoSurface(
                         )
                     }
 
+                    Row(
+                        modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
+                        horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        InfoMetricPill(
+                            label = "链接",
+                            value = contentSummary.linkCount.coerceAtMost(99).toString(),
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                        InfoMetricPill(
+                            label = "引用",
+                            value = contentSummary.quotedCount.coerceAtMost(99).toString(),
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                        InfoMetricPill(
+                            label = "内容",
+                            value = contentMessageCount.coerceAtMost(99).toString(),
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
                     ChatManagementInsightPanel(
                         insights = managementInsights,
                         surfaceSpec = surfaceSpec
@@ -7848,7 +7881,7 @@ private fun ContentMessageFilterStrip(
     val density = LocalDensity.current
     val chipStepPx =
         with(density) {
-            ((if (compact) 48.dp else 53.dp) * activeFilter.ordinal).roundToPx()
+            ((if (compact) 50.dp else 55.dp) * activeFilter.ordinal).roundToPx()
         }
 
     LaunchedEffect(activeFilter, compact) {
@@ -10296,7 +10329,8 @@ private fun conversationContentSummary(messages: List<ChatBubble>): Conversation
         forwardedCount = userMessages.count { message -> message.forwarded },
         quotedCount = userMessages.count { message -> message.quotedMessage != null },
         reactedCount = userMessages.count { message -> message.reactions.isNotEmpty() },
-        disappearingCount = userMessages.count { message -> message.expiresAtEpochMillis != null }
+        disappearingCount = userMessages.count { message -> message.expiresAtEpochMillis != null },
+        linkCount = userMessages.count { message -> message.hasLinkPreview() }
     )
 }
 
@@ -10308,7 +10342,8 @@ private fun contentMessages(messages: List<ChatBubble>): List<ChatBubble> =
                     message.forwarded ||
                     message.quotedMessage != null ||
                     message.reactions.isNotEmpty() ||
-                    message.expiresAtEpochMillis != null
+                    message.expiresAtEpochMillis != null ||
+                    message.hasLinkPreview()
             )
     }
 
@@ -10350,7 +10385,7 @@ private fun chatManagementInsights(
             ChatManagementInsight(
                 icon = Icons.AutoMirrored.Filled.Chat,
                 label = "内容整理",
-                value = "$contentMessageCount 条 · 语音 ${contentSummary.voiceCount.coerceAtMost(99)}",
+                value = "$contentMessageCount 条 · 链接 ${contentSummary.linkCount.coerceAtMost(99)}",
                 accent = chatBlue
             )
     }
@@ -10425,6 +10460,7 @@ private fun ChatBubble.matchesContentFilter(filter: ContentMessageFilter): Boole
         ContentMessageFilter.Quoted -> quotedMessage != null
         ContentMessageFilter.Reacted -> reactions.isNotEmpty()
         ContentMessageFilter.Disappearing -> expiresAtEpochMillis != null
+        ContentMessageFilter.Links -> hasLinkPreview()
     }
 
 private fun ConversationContentSummary.countForFilter(
@@ -10438,6 +10474,7 @@ private fun ConversationContentSummary.countForFilter(
         ContentMessageFilter.Quoted -> quotedCount
         ContentMessageFilter.Reacted -> reactedCount
         ContentMessageFilter.Disappearing -> disappearingCount
+        ContentMessageFilter.Links -> linkCount
     }
 
 private fun ConversationContentSummary.summaryLabel(): String {
@@ -10447,9 +10484,17 @@ private fun ConversationContentSummary.summaryLabel(): String {
             "转发 $forwardedCount",
             "引用 $quotedCount",
             "回应 $reactedCount",
-            "限时 $disappearingCount"
+            "限时 $disappearingCount",
+            "链接 $linkCount"
         )
     return parts.joinToString(separator = " · ")
+}
+
+private fun ChatBubble.hasLinkPreview(): Boolean {
+    val text = previewText().lowercase(Locale.getDefault())
+    return text.contains("https://") ||
+        text.contains("http://") ||
+        text.contains("www.")
 }
 
 private fun reactionLabel(reactionCode: String): String =
