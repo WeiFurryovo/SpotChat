@@ -4369,6 +4369,18 @@ internal fun SpotChatApp(
                                 trustState = "已解锁聊天预览"
                             }
                         },
+                        onEnableReadReceiptsVisible = {
+                            val readReceiptOffConversations =
+                                visibleConversationList.filter { conversation ->
+                                    !areReadReceiptsEnabled(conversation.id)
+                                }
+                            readReceiptOffConversations.forEach { conversation ->
+                                toggleConversationReadReceipts(conversation)
+                            }
+                            if (readReceiptOffConversations.isNotEmpty()) {
+                                trustState = "已开启聊天回执"
+                            }
+                        },
                         onOpenProfile = {
                             appSurface = AppSurface.Profile
                         },
@@ -5138,6 +5150,7 @@ private fun WatchConversationListSurface(
     onUnpinVisible: () -> Unit,
     onUnmuteVisible: () -> Unit,
     onUnlockVisible: () -> Unit,
+    onEnableReadReceiptsVisible: () -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
 ) {
@@ -5467,6 +5480,20 @@ private fun WatchConversationListSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onUnlockVisible
+                            )
+                        }
+                    }
+
+                    if (activeFilter == ChatListFilter.ReadReceiptsOff && conversations.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.DoneAll,
+                                text = "开启全部回执",
+                                selected = true,
+                                compact = compact,
+                                onClick = onEnableReadReceiptsVisible
                             )
                         }
                     }
