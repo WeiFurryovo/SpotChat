@@ -2355,6 +2355,28 @@ internal fun SpotChatApp(
         trustState = "已复制安全摘要"
     }
 
+    fun copyBlockedContactsSummary() {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val blockedPeers =
+            trustedPeers.filter { peer ->
+                blockedPeerFingerprints[peer.fingerprint] == true
+            }
+        val summary = blockedContactsSummaryText(blockedPeers)
+        if (summary.isBlank()) {
+            trustState = "阻止名单为空"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat blocked contacts", summary)
+        )
+        trustState = "已复制阻止摘要"
+    }
+
     fun applyMessageReaction(
         conversationId: String,
         targetMessageId: String,
@@ -5326,6 +5348,7 @@ internal fun SpotChatApp(
                                     blockedPeerFingerprints[peer.fingerprint] == true
                                 },
                             onNavigateBack = dismissOverlay,
+                            onCopyBlockedSummary = ::copyBlockedContactsSummary,
                             onUnblockPeer = ::unblockPeer
                         )
                     }
@@ -9997,6 +10020,7 @@ private fun WatchBlockedContactsSurface(
     isRoundScreen: Boolean,
     blockedPeers: List<StoredTrustedPeer>,
     onNavigateBack: () -> Unit,
+    onCopyBlockedSummary: () -> Unit,
     onUnblockPeer: (StoredTrustedPeer) -> Unit
 ) {
     BoxWithConstraints(
@@ -10059,6 +10083,15 @@ private fun WatchBlockedContactsSurface(
                             )
                         }
                     } else {
+                        item {
+                            MessageActionButton(
+                                icon = Icons.Filled.Keyboard,
+                                text = "复制阻止摘要",
+                                selected = true,
+                                compact = compact,
+                                onClick = onCopyBlockedSummary
+                            )
+                        }
                         blockedPeers.forEach { peer ->
                             item {
                                 BlockedContactRow(
@@ -12358,6 +12391,23 @@ private fun conversationSafetySummaryText(
             appendLine("${index + 1}. ${peerDisplayName(peer)}")
             appendLine("   状态：${peerReachabilityShortLabel(reachability)}")
             appendLine("   校验码：${peer.pairingCode}")
+            appendLine("   指纹：${SpotChatCrypto.displayFingerprint(peer.fingerprint)}")
+        }
+    }.trim()
+}
+
+private fun blockedContactsSummaryText(blockedPeers: List<StoredTrustedPeer>): String {
+    if (blockedPeers.isEmpty()) {
+        return ""
+    }
+    return buildString {
+        appendLine("SpotChat 阻止名单")
+        appendLine("联系人：${blockedPeers.size} 人")
+        appendLine()
+        blockedPeers.forEachIndexed { index, peer ->
+            appendLine("${index + 1}. ${peerDisplayName(peer)}")
+            appendLine("   简介：${peerAbout(peer)}")
+            appendLine("   设备：${peer.deviceName}")
             appendLine("   指纹：${SpotChatCrypto.displayFingerprint(peer.fingerprint)}")
         }
     }.trim()
