@@ -2326,6 +2326,35 @@ internal fun SpotChatApp(
         trustState = "已复制 ${peer.deviceName} 的校验码"
     }
 
+    fun copyConversationSafetySummary(conversation: ChatConversation) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val trustedByFingerprint = trustedPeers.associateBy { peer -> peer.fingerprint }
+        val memberPeers =
+            conversation.memberFingerprints.mapNotNull { fingerprint ->
+                trustedByFingerprint[fingerprint]
+            }
+        val summary =
+            conversationSafetySummaryText(
+                conversation = conversation,
+                localFingerprint = localFingerprint,
+                memberPeers = memberPeers,
+                peerReachability = ::peerReachabilityText
+            )
+        if (summary.isBlank()) {
+            trustState = "没有可复制的安全信息"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat safety summary", summary)
+        )
+        trustState = "已复制安全摘要"
+    }
+
     fun applyMessageReaction(
         conversationId: String,
         targetMessageId: String,
@@ -4946,6 +4975,9 @@ internal fun SpotChatApp(
                             localFingerprint = localFingerprint,
                             selectedPeerFingerprint = selectedSecurityPeerFingerprint,
                             onCopySafetyCode = ::copySafetyCode,
+                            onCopySafetySummary = {
+                                copyConversationSafetySummary(selectedConversation)
+                            },
                             onNavigateBack = dismissOverlay
                         )
                     }
@@ -9217,6 +9249,7 @@ private fun WatchSecurityCheckSurface(
     localFingerprint: String,
     selectedPeerFingerprint: String?,
     onCopySafetyCode: (StoredTrustedPeer) -> Unit,
+    onCopySafetySummary: () -> Unit,
     onNavigateBack: () -> Unit
 ) {
     BoxWithConstraints(
@@ -9293,6 +9326,20 @@ private fun WatchSecurityCheckSurface(
                         compact = compact,
                         surfaceSpec = surfaceSpec
                     )
+
+                    if (memberPeers.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.VerifiedUser,
+                                text = "复制安全摘要",
+                                selected = true,
+                                compact = compact,
+                                onClick = onCopySafetySummary
+                            )
+                        }
+                    }
 
                     if (displayedPeers.isEmpty()) {
                         SearchEmptyState(
@@ -12278,6 +12325,40 @@ private fun groupMemberSummaryText(
                     "${peerAbout(peer)} · " +
                     SpotChatCrypto.displayFingerprint(peer.fingerprint)
             )
+        }
+    }.trim()
+}
+
+private fun conversationSafetySummaryText(
+    conversation: ChatConversation,
+    localFingerprint: String,
+    memberPeers: List<StoredTrustedPeer>,
+    peerReachability: (String) -> String
+): String {
+    if (memberPeers.isEmpty()) {
+        return ""
+    }
+    val reachabilityByPeer =
+        memberPeers.associateWith { peer ->
+            peerReachability(peer.fingerprint)
+        }
+    val reachableCount =
+        reachabilityByPeer.count { (_, reachability) ->
+            reachability.contains("当前可发送")
+        }
+    return buildString {
+        appendLine("SpotChat 安全摘要")
+        appendLine("聊天：${conversation.title}")
+        appendLine("类型：${conversation.kind.label}")
+        appendLine("我的指纹：${SpotChatCrypto.displayFingerprint(localFingerprint)}")
+        appendLine("成员：${memberPeers.size} 位 · 当前可发送 $reachableCount 位")
+        appendLine()
+        memberPeers.forEachIndexed { index, peer ->
+            val reachability = reachabilityByPeer[peer].orEmpty()
+            appendLine("${index + 1}. ${peerDisplayName(peer)}")
+            appendLine("   状态：${peerReachabilityShortLabel(reachability)}")
+            appendLine("   校验码：${peer.pairingCode}")
+            appendLine("   指纹：${SpotChatCrypto.displayFingerprint(peer.fingerprint)}")
         }
     }.trim()
 }
