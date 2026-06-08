@@ -235,7 +235,9 @@ private data class WearEntryContext(
     val id: Long,
     val conversationId: String,
     val source: String,
-    val action: WearEntryAction
+    val action: WearEntryAction,
+    val unreadCount: Int,
+    val latestPreview: String
 )
 
 private data class WatchActionConfirmation(
@@ -3457,11 +3459,20 @@ internal fun SpotChatApp(
         markConversationRead(conversation.id)
     }
 
+    fun wearEntryLatestPreview(conversation: ChatConversation): String =
+        messagesForConversation(conversation.id)
+            .lastOrNull { message -> message.deliveryState != DeliveryState.System }
+            ?.previewText()
+            ?.ifBlank { "暂无消息预览" }
+            ?: "暂无消息预览"
+
     fun openConversationFromWearEntry(
         conversation: ChatConversation,
         source: String,
         action: WearEntryAction
     ) {
+        val unreadCount = unreadCounts[conversation.id] ?: 0
+        val latestPreview = wearEntryLatestPreview(conversation)
         openConversation(conversation)
         wearEntryContextId += 1
         wearEntryContext =
@@ -3469,7 +3480,9 @@ internal fun SpotChatApp(
                 id = wearEntryContextId,
                 conversationId = conversation.id,
                 source = source,
-                action = action
+                action = action,
+                unreadCount = unreadCount,
+                latestPreview = latestPreview
             )
     }
 
@@ -14077,11 +14090,17 @@ private fun WearEntryContextBanner(
                     Icons.Filled.MarkChatUnread
                 }
         }
+    val sourceSummary =
+        if (context.unreadCount > 0) {
+            "来自${context.source} · ${context.unreadCount}条未读"
+        } else {
+            "来自${context.source}"
+        }
     Row(
         modifier =
             Modifier
                 .fillMaxWidth(if (surfaceSpec.isRound) 0.86f else 0.94f)
-                .height(if (compact) 38.dp else 42.dp)
+                .height(if (compact) 44.dp else 48.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(chatBlue.copy(alpha = 0.16f))
                 .border(1.dp, chatBlue.copy(alpha = 0.42f), RoundedCornerShape(8.dp))
@@ -14101,7 +14120,7 @@ private fun WearEntryContextBanner(
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = "来自${context.source}",
+                text = sourceSummary,
                 color = chatBlue,
                 fontSize = if (compact) 8.sp else 9.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -14109,7 +14128,7 @@ private fun WearEntryContextBanner(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = context.action.label,
+                text = "${context.action.label} · ${context.latestPreview}",
                 color = MaterialTheme.colorScheme.onBackground,
                 fontSize = if (compact) 10.sp else 11.sp,
                 fontWeight = FontWeight.SemiBold,
