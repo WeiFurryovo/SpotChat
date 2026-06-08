@@ -47,7 +47,7 @@ sdk.dir=/path/to/Android/Sdk
 
 ## 资源来源
 
-- `app/src/main/res/drawable-nodpi/avatar_*.png` 由 DiceBear 的 Lorelei Neutral 头像风格通过 HTTP API 生成，并作为本地资源随 APK 打包。
+- `app/src/main/res/drawable-nodpi/avatar_*.png` 由 DiceBear 的 Micah 头像风格通过 HTTP API 生成，并作为本地资源随 APK 打包。
 
 ## GitHub Actions APK
 
