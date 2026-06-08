@@ -152,6 +152,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
@@ -863,10 +864,20 @@ internal fun SpotChatApp(
     var chatListFilter by remember { mutableStateOf(ChatListFilter.All) }
     var voicePlaybackSpeed by remember { mutableStateOf(VoicePlaybackSpeed.Normal) }
     var isRecordingVoice by remember { mutableStateOf(false) }
+    var recordingStartedAtMillis by remember { mutableStateOf<Long?>(null) }
+    var recordingElapsedMillis by remember { mutableStateOf(0L) }
+    var recordingConversationId by remember { mutableStateOf<String?>(null) }
     var activePlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     val greetedPeers = remember { mutableSetOf<String>() }
     val knownPeersByFingerprint = remember { mutableStateMapOf<String, TransportPeer>() }
     val peerLastSeenAt = remember { mutableStateMapOf<String, Long>() }
+
+    fun clearVoiceRecordingState() {
+        isRecordingVoice = false
+        recordingStartedAtMillis = null
+        recordingElapsedMillis = 0L
+        recordingConversationId = null
+    }
 
     fun hasBluetoothRuntimePermissions(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
@@ -1670,7 +1681,7 @@ internal fun SpotChatApp(
             clearPendingOutboundForConversation(conversation.id, markFailed = true)
             if (isRecordingVoice && activeConversationId == conversation.id) {
                 voiceRecorder.cancel()
-                isRecordingVoice = false
+                clearVoiceRecordingState()
             }
         }
         appendSystemMessage(
@@ -3261,6 +3272,11 @@ internal fun SpotChatApp(
     }
 
     fun openConversation(conversation: ChatConversation) {
+        if (isRecordingVoice && recordingConversationId != conversation.id) {
+            voiceRecorder.cancel()
+            clearVoiceRecordingState()
+            trustState = "切换聊天，已取消录音"
+        }
         activeConversationId = conversation.id
         clearConversationAlerts(conversation.id)
         selectedActionMessage = null
@@ -4615,12 +4631,20 @@ internal fun SpotChatApp(
     }
 
     fun toggleVoiceRecording() {
-        val conversation = activeConversation()
         if (isRecordingVoice) {
+            val conversation =
+                recordingConversationId
+                    ?.let(::conversationById)
+                    ?: run {
+                        voiceRecorder.cancel()
+                        clearVoiceRecordingState()
+                        trustState = "聊天不存在，已取消录音"
+                        return
+                    }
             runCatching {
                 voiceRecorder.stop()
             }.onSuccess { recordedVoice ->
-                isRecordingVoice = false
+                clearVoiceRecordingState()
                 if (recordedVoice == null) {
                     trustState = "语音太短"
                 } else if (!canSendToConversation(conversation)) {
@@ -4630,12 +4654,13 @@ internal fun SpotChatApp(
                     sendVoiceToConversation(conversation, recordedVoice)
                 }
             }.onFailure { error ->
-                isRecordingVoice = false
                 voiceRecorder.cancel()
+                clearVoiceRecordingState()
                 trustState = error.readableMessage("无法完成录音")
             }
             return
         }
+        val conversation = activeConversation()
         if (!canSendToConversation(conversation)) {
             trustState = "公告模式下不能录语音"
             return
@@ -4654,12 +4679,24 @@ internal fun SpotChatApp(
                 voiceRecorder.start()
             }.onSuccess {
                 isRecordingVoice = true
+                recordingStartedAtMillis = System.currentTimeMillis()
+                recordingElapsedMillis = 0L
+                recordingConversationId = conversation.id
                 trustState = "正在录音"
             }.onFailure { error ->
                 trustState = error.readableMessage("无法开始录音")
             }
             return
         }
+    }
+
+    fun cancelVoiceRecording() {
+        if (!isRecordingVoice) {
+            return
+        }
+        voiceRecorder.cancel()
+        clearVoiceRecordingState()
+        trustState = "已取消录音"
     }
 
     fun playVoiceMessage(message: ChatBubble) {
@@ -4792,6 +4829,15 @@ internal fun SpotChatApp(
         handleTileIntent(intent)
         handleNotificationIntent(intent)
         onNotificationIntentHandled(intent)
+    }
+
+    LaunchedEffect(isRecordingVoice, recordingStartedAtMillis) {
+        val startedAt = recordingStartedAtMillis ?: return@LaunchedEffect
+        while (isRecordingVoice) {
+            val elapsed = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L)
+            recordingElapsedMillis = elapsed.coerceAtMost(SpotChatVoiceRecorder.MAX_RECORDING_DURATION_MS)
+            delay(250L)
+        }
     }
 
     DisposableEffect(Unit) {
@@ -5654,7 +5700,9 @@ internal fun SpotChatApp(
                                 clearDraft(selectedConversation)
                             },
                             onToggleVoiceRecording = ::toggleVoiceRecording,
+                            onCancelVoiceRecording = ::cancelVoiceRecording,
                             isRecordingVoice = isRecordingVoice,
+                            recordingElapsedMillis = recordingElapsedMillis,
                             voicePlaybackSpeed = voicePlaybackSpeed,
                             onOpenChatInfo = {
                                 appSurface = AppSurface.ChatInfo
@@ -12307,7 +12355,9 @@ private fun WatchChatSurface(
     onSendDraft: () -> Unit,
     onClearDraft: () -> Unit,
     onToggleVoiceRecording: () -> Unit,
+    onCancelVoiceRecording: () -> Unit,
     isRecordingVoice: Boolean,
+    recordingElapsedMillis: Long,
     voicePlaybackSpeed: VoicePlaybackSpeed,
     onOpenChatInfo: () -> Unit,
     onOpenMessageActions: (ChatBubble) -> Unit,
@@ -12420,7 +12470,9 @@ private fun WatchChatSurface(
                             onSendDraft = onSendDraft,
                             onClearDraft = onClearDraft,
                             onToggleVoiceRecording = onToggleVoiceRecording,
-                            isRecordingVoice = isRecordingVoice
+                            onCancelVoiceRecording = onCancelVoiceRecording,
+                            isRecordingVoice = isRecordingVoice,
+                            recordingElapsedMillis = recordingElapsedMillis
                         )
                     }
                 }
@@ -12790,7 +12842,9 @@ private fun ReplyDock(
     onSendDraft: () -> Unit,
     onClearDraft: () -> Unit,
     onToggleVoiceRecording: () -> Unit,
-    isRecordingVoice: Boolean
+    onCancelVoiceRecording: () -> Unit,
+    isRecordingVoice: Boolean,
+    recordingElapsedMillis: Long
 ) {
     val compact = surfaceSpec.compact
     Row(
@@ -12806,38 +12860,145 @@ private fun ReplyDock(
         horizontalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (draft != null) {
-            QuickReplyChip(
-                text = "草稿：${draft.text}",
+        if (isRecordingVoice) {
+            VoiceCancelButton(
                 height = quickReplyHeight - 6.dp,
-                modifier = Modifier.weight(1f),
-                onClick = onSendDraft
+                onClick = onCancelVoiceRecording
+            )
+            VoiceRecordingStatus(
+                elapsedMillis = recordingElapsedMillis,
+                height = quickReplyHeight - 6.dp,
+                compact = compact,
+                modifier = Modifier.weight(1f)
+            )
+            VoiceButton(
+                height = quickReplyHeight - 6.dp,
+                recording = true,
+                onClick = onToggleVoiceRecording
             )
         } else {
-            customMessageQuickChoices.take(1).forEach { reply ->
+            if (draft != null) {
                 QuickReplyChip(
-                    text = reply,
+                    text = "草稿：${draft.text}",
                     height = quickReplyHeight - 6.dp,
                     modifier = Modifier.weight(1f),
-                    onClick = { onSendQuickReply(reply) }
+                    onClick = onSendDraft
                 )
+            } else {
+                customMessageQuickChoices.take(1).forEach { reply ->
+                    QuickReplyChip(
+                        text = reply,
+                        height = quickReplyHeight - 6.dp,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onSendQuickReply(reply) }
+                    )
+                }
             }
+            InputButton(
+                height = quickReplyHeight - 6.dp,
+                onClick = onOpenCustomMessageInput
+            )
+            DraftButton(
+                height = quickReplyHeight - 6.dp,
+                hasDraft = draft != null,
+                onClick = if (draft == null) onOpenDraftInput else onClearDraft
+            )
+            VoiceButton(
+                height = quickReplyHeight - 6.dp,
+                recording = false,
+                onClick = onToggleVoiceRecording
+            )
         }
-        InputButton(
-            height = quickReplyHeight - 6.dp,
-            onClick = onOpenCustomMessageInput
-        )
-        DraftButton(
-            height = quickReplyHeight - 6.dp,
-            hasDraft = draft != null,
-            onClick = if (draft == null) onOpenDraftInput else onClearDraft
-        )
-        VoiceButton(
-            height = quickReplyHeight - 6.dp,
-            recording = isRecordingVoice,
-            onClick = onToggleVoiceRecording
+    }
+}
+
+@Composable
+private fun VoiceCancelButton(
+    height: Dp,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier =
+            Modifier
+                .size(height)
+                .clip(CircleShape)
+                .background(chatRose.copy(alpha = 0.92f))
+                .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Delete,
+            contentDescription = "取消录音",
+            tint = Color.White,
+            modifier = Modifier.size(15.dp)
         )
     }
+}
+
+@Composable
+private fun VoiceRecordingStatus(
+    elapsedMillis: Long,
+    height: Dp,
+    compact: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val maxDurationMillis = SpotChatVoiceRecorder.MAX_RECORDING_DURATION_MS
+    val progress =
+        (elapsedMillis.toFloat() / maxDurationMillis.toFloat())
+            .coerceIn(0f, 1f)
+    Row(
+        modifier =
+            modifier
+                .height(height)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatGreen.copy(alpha = 0.16f))
+                .border(1.dp, chatGreen.copy(alpha = 0.52f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 5.dp else 7.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            VoiceWaveBar(level = 0.46f + progress * 0.16f, compact = compact)
+            VoiceWaveBar(level = 0.78f, compact = compact)
+            VoiceWaveBar(level = 0.56f + progress * 0.24f, compact = compact)
+            VoiceWaveBar(level = 0.9f - progress * 0.16f, compact = compact)
+        }
+        Text(
+            text = "录音 ${formatRecordingDuration(elapsedMillis)}",
+            color = Color.White,
+            fontSize = if (compact) 10.sp else 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = "${ceil((maxDurationMillis - elapsedMillis).coerceAtLeast(0L) / 1_000f).toInt()}秒",
+            color = chatAmber,
+            fontSize = if (compact) 9.sp else 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun VoiceWaveBar(
+    level: Float,
+    compact: Boolean
+) {
+    val baseHeight = if (compact) 12.dp else 14.dp
+    Box(
+        modifier =
+            Modifier
+                .width(2.dp)
+                .height(baseHeight * level.coerceIn(0.32f, 1f))
+                .clip(RoundedCornerShape(1.dp))
+                .background(chatGreen)
+    )
 }
 
 @Composable
@@ -13416,6 +13577,13 @@ private fun formatTimeRemaining(expiresAtEpochMillis: Long): String {
 
 private fun formatDuration(durationMs: Long): String {
     val totalSeconds = (durationMs / 1_000L).coerceAtLeast(1L)
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    return "%d:%02d".format(Locale.getDefault(), minutes, seconds)
+}
+
+private fun formatRecordingDuration(durationMs: Long): String {
+    val totalSeconds = (durationMs / 1_000L).coerceAtLeast(0L)
     val minutes = totalSeconds / 60L
     val seconds = totalSeconds % 60L
     return "%d:%02d".format(Locale.getDefault(), minutes, seconds)
