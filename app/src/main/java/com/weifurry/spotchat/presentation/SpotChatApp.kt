@@ -128,6 +128,7 @@ import com.weifurry.spotchat.domain.SpotChatEngine
 import com.weifurry.spotchat.domain.TrustedPeer
 import com.weifurry.spotchat.domain.TrustedPeerStore
 import com.weifurry.spotchat.notifications.SpotChatNotificationIntents
+import com.weifurry.spotchat.notifications.SpotChatNotificationTokenStore
 import com.weifurry.spotchat.notifications.SpotChatNotifier
 import com.weifurry.spotchat.presentation.theme.SpotChatTheme
 import com.weifurry.spotchat.protocol.ChatCodec
@@ -144,6 +145,7 @@ import com.weifurry.spotchat.transport.TransportPeer
 import com.weifurry.spotchat.voice.RecordedVoiceMessage
 import com.weifurry.spotchat.voice.SpotChatVoiceRecorder
 import com.weifurry.spotchat.wear.QuickVoiceTileService
+import com.weifurry.spotchat.wear.QuickTextReplyTileService
 import com.weifurry.spotchat.wear.RecentChatsTileService
 import com.weifurry.spotchat.wear.SpotChatWearStateStore
 import com.weifurry.spotchat.wear.WearChatSnapshot
@@ -756,6 +758,10 @@ internal fun SpotChatApp(
     val notifier =
         remember(context) {
             SpotChatNotifier(context)
+        }
+    val notificationTokenStore =
+        remember(context) {
+            SpotChatNotificationTokenStore(context)
         }
     val voiceRecorder =
         remember(context) {
@@ -4874,8 +4880,44 @@ internal fun SpotChatApp(
         trustState = "点麦克风开始语音"
     }
 
+    fun handleTextReplyTileIntent(intent: Intent) {
+        if (!intent.getBooleanExtra(QuickTextReplyTileService.EXTRA_TEXT_REPLY_TILE_OPEN, false)) {
+            return
+        }
+        if (
+            !notificationTokenStore.isValid(
+                intent.getStringExtra(SpotChatNotificationIntents.EXTRA_INTENT_TOKEN)
+            )
+        ) {
+            return
+        }
+        val conversationId =
+            intent.getStringExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID)
+        val conversation = conversationId?.let(::conversationById)
+        if (conversation == null) {
+            appSurface = AppSurface.ConversationList
+            trustState = "选择聊天后再快捷回复"
+            return
+        }
+        openConversation(conversation)
+        val replyText =
+            intent
+                .getStringExtra(QuickTextReplyTileService.EXTRA_TILE_REPLY_TEXT)
+                ?.trim()
+                ?.take(MAX_CUSTOM_MESSAGE_CHARS)
+                .orEmpty()
+        if (replyText.isBlank()) {
+            trustState = "选择一句快捷回复"
+            return
+        }
+        clearConversationAlerts(conversation.id)
+        sendMessageToConversation(conversation, replyText)
+        trustState = "已快捷回复 ${conversation.title}"
+    }
+
     LaunchedEffect(notificationIntent, trustedPeers.size) {
         val intent = notificationIntent ?: return@LaunchedEffect
+        handleTextReplyTileIntent(intent)
         handleVoiceTileIntent(intent)
         handleTileIntent(intent)
         handleNotificationIntent(intent)

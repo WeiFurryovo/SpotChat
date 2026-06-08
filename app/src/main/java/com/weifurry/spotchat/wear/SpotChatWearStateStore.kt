@@ -133,6 +133,7 @@ class SpotChatWearStateStore(context: Context) {
             val updater = TileService.getUpdater(appContext)
             updater.requestUpdate(RecentChatsTileService::class.java)
             updater.requestUpdate(QuickVoiceTileService::class.java)
+            updater.requestUpdate(QuickTextReplyTileService::class.java)
         }
     }
 
