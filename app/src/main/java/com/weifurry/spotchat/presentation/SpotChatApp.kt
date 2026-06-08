@@ -49,6 +49,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.AutoDelete
 import androidx.compose.material.icons.filled.Bluetooth
@@ -216,6 +217,7 @@ private enum class ChatListFilter(
     All("全部"),
     Favorites("收藏"),
     Unread("未读"),
+    Mentions("提及"),
     Retryable("未发送"),
     Direct("私聊"),
     Group("群聊")
@@ -244,6 +246,7 @@ private enum class GroupMemberFilter(
 private fun ChatConversation.matchesFilter(
     filter: ChatListFilter,
     unreadCounts: Map<String, Int>,
+    mentionCounts: Map<String, Int>,
     favoriteConversationIds: Map<String, Boolean>,
     hasRetryableMessages: (String) -> Boolean
 ): Boolean =
@@ -251,6 +254,7 @@ private fun ChatConversation.matchesFilter(
         ChatListFilter.All -> true
         ChatListFilter.Favorites -> favoriteConversationIds[id] == true
         ChatListFilter.Unread -> (unreadCounts[id] ?: 0) > 0
+        ChatListFilter.Mentions -> (mentionCounts[id] ?: 0) > 0
         ChatListFilter.Retryable -> hasRetryableMessages(id)
         ChatListFilter.Direct -> kind == ConversationKind.Direct
         ChatListFilter.Group -> kind == ConversationKind.Group
@@ -743,6 +747,7 @@ internal fun SpotChatApp(
             }
         }
     val unreadCounts = remember { mutableStateMapOf<String, Int>() }
+    val mentionCounts = remember { mutableStateMapOf<String, Int>() }
     val pinnedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val favoriteConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val mutedConversations = remember { mutableStateMapOf<String, MutedConversation>() }
@@ -1144,6 +1149,7 @@ internal fun SpotChatApp(
 
     fun clearConversationAlerts(conversationId: String) {
         unreadCounts[conversationId] = 0
+        mentionCounts[conversationId] = 0
         notifier.clearConversation(conversationId)
     }
 
@@ -1191,6 +1197,29 @@ internal fun SpotChatApp(
                 MutePreset.Always -> null
             }
         return nextPreset?.let { preset -> "静音${preset.label}" } ?: "恢复通知"
+    }
+
+    fun messageMentionsMe(message: ChatBubble): Boolean {
+        if (message.mine || message.deliveryState == DeliveryState.System || message.text.isBlank()) {
+            return false
+        }
+        val text = message.text.lowercase(Locale.getDefault())
+        val names =
+            listOf(profile.displayName, deviceName, "我")
+                .map { name -> name.trim().lowercase(Locale.getDefault()) }
+                .filter { name -> name.isNotBlank() }
+                .distinct()
+        val explicitMentions =
+            names.any { name ->
+                text.contains("@$name") ||
+                    text.contains("＠$name") ||
+                    (name.length >= 2 && text.contains(name))
+            }
+        return explicitMentions ||
+            text.contains("@all") ||
+            text.contains("＠all") ||
+            text.contains("@所有人") ||
+            text.contains("＠所有人")
     }
 
     fun DeliveryState.canMoveTo(next: DeliveryState): Boolean =
@@ -1310,6 +1339,9 @@ internal fun SpotChatApp(
             (appSurface != AppSurface.Chat || activeConversationId != conversationId)
         ) {
             unreadCounts[conversationId] = (unreadCounts[conversationId] ?: 0) + 1
+            if (messageMentionsMe(timedMessage)) {
+                mentionCounts[conversationId] = (mentionCounts[conversationId] ?: 0) + 1
+            }
             if (shouldNotifyConversation(conversationId)) {
                 notifyIncomingMessage(conversationId, timedMessage)
             }
@@ -1420,6 +1452,7 @@ internal fun SpotChatApp(
             readReceiptsByMessage.remove(messageId)
         }
         unreadCounts.remove(conversationId)
+        mentionCounts.remove(conversationId)
         draftsByConversation.remove(conversationId)
         starredMessageIdsByConversation.remove(conversationId)
         pinnedMessageIdsByConversation.remove(conversationId)
@@ -2102,6 +2135,7 @@ internal fun SpotChatApp(
         conversationUpdateSequence += 1
         conversationUpdateOrder[conversation.id] = conversationUpdateSequence
         unreadCounts.remove(conversation.id)
+        mentionCounts.remove(conversation.id)
         val pinnedId = pinnedMessageIdsByConversation[conversation.id]
         if (pinnedId != null && pinnedId !in starredIds) {
             pinnedMessageIdsByConversation.remove(conversation.id)
@@ -3864,6 +3898,7 @@ internal fun SpotChatApp(
                         conversation.matchesFilter(
                             filter = chatListFilter,
                             unreadCounts = unreadCounts,
+                            mentionCounts = mentionCounts,
                             favoriteConversationIds = favoriteConversationIds,
                             hasRetryableMessages = ::hasRetryableMessages
                         )
@@ -3887,6 +3922,7 @@ internal fun SpotChatApp(
                         allVisibleConversations = visibleConversationListBase,
                         activeFilter = chatListFilter,
                         favoriteConversationIds = favoriteConversationIds,
+                        mentionCounts = mentionCounts,
                         archivedCount = archivedConversationList.size,
                         archivedUnreadCount = archivedUnreadCount,
                         unreadCounts = unreadCounts,
@@ -4587,6 +4623,7 @@ private fun WatchConversationListSurface(
     allVisibleConversations: List<ChatConversation>,
     activeFilter: ChatListFilter,
     favoriteConversationIds: Map<String, Boolean>,
+    mentionCounts: Map<String, Int>,
     archivedCount: Int,
     archivedUnreadCount: Int,
     unreadCounts: Map<String, Int>,
@@ -4707,6 +4744,10 @@ private fun WatchConversationListSurface(
                             allVisibleConversations.count { conversation ->
                                 (unreadCounts[conversation.id] ?: 0) > 0
                             },
+                        mentionCount =
+                            allVisibleConversations.count { conversation ->
+                                (mentionCounts[conversation.id] ?: 0) > 0
+                            },
                         retryableCount =
                             allVisibleConversations.count { conversation ->
                                 hasRetryableMessages(conversation.id)
@@ -4794,6 +4835,7 @@ private fun WatchConversationListSurface(
                             conversation = conversation,
                             lastMessage = lastMessage,
                             unreadCount = unreadCounts[conversation.id] ?: 0,
+                            mentionCount = mentionCounts[conversation.id] ?: 0,
                             retryableCount = conversationMessages.count { message -> message.canRetry() },
                             draft = draftsByConversation[conversation.id],
                             locked = lockedConversationIds[conversation.id] == true,
@@ -5050,6 +5092,7 @@ private fun ChatFilterStrip(
     activeFilter: ChatListFilter,
     favoriteCount: Int,
     unreadCount: Int,
+    mentionCount: Int,
     retryableCount: Int,
     directCount: Int,
     groupCount: Int,
@@ -5089,6 +5132,7 @@ private fun ChatFilterStrip(
                         ChatListFilter.All -> directCount + groupCount
                         ChatListFilter.Favorites -> favoriteCount
                         ChatListFilter.Unread -> unreadCount
+                        ChatListFilter.Mentions -> mentionCount
                         ChatListFilter.Retryable -> retryableCount
                         ChatListFilter.Direct -> directCount
                         ChatListFilter.Group -> groupCount
@@ -5119,9 +5163,17 @@ private fun FilterSegment(
         }
     val segmentWidth =
         if (compact) {
-            if (filter == ChatListFilter.Retryable) 54.dp else 45.dp
+            when (filter) {
+                ChatListFilter.Retryable -> 54.dp
+                ChatListFilter.Mentions -> 48.dp
+                else -> 45.dp
+            }
         } else {
-            if (filter == ChatListFilter.Retryable) 60.dp else 50.dp
+            when (filter) {
+                ChatListFilter.Retryable -> 60.dp
+                ChatListFilter.Mentions -> 54.dp
+                else -> 50.dp
+            }
         }
     Box(
         modifier =
@@ -5338,6 +5390,7 @@ private fun EmptyFilterCapsule(
                     ChatListFilter.All -> "还没有聊天"
                     ChatListFilter.Favorites -> "没有收藏聊天"
                     ChatListFilter.Unread -> "没有未读聊天"
+                    ChatListFilter.Mentions -> "没有提及你的聊天"
                     ChatListFilter.Retryable -> "没有未发送消息"
                     ChatListFilter.Direct -> "没有私聊"
                     ChatListFilter.Group -> "没有群聊"
@@ -5426,6 +5479,7 @@ private fun ConversationCapsule(
     conversation: ChatConversation,
     lastMessage: ChatBubble?,
     unreadCount: Int,
+    mentionCount: Int = 0,
     retryableCount: Int,
     draft: ConversationDraft? = null,
     locked: Boolean = false,
@@ -5529,9 +5583,19 @@ private fun ConversationCapsule(
             }
             Text(
                 text = preview,
-                color = if (retryableCount > 0 || unreadCount > 0) Color.White else chatRowMuted,
+                color =
+                    if (retryableCount > 0 || unreadCount > 0 || mentionCount > 0) {
+                        Color.White
+                    } else {
+                        chatRowMuted
+                    },
                 fontSize = if (compact) 10.sp else 11.sp,
-                fontWeight = if (retryableCount > 0 || unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
+                fontWeight =
+                    if (retryableCount > 0 || unreadCount > 0 || mentionCount > 0) {
+                        FontWeight.SemiBold
+                    } else {
+                        FontWeight.Normal
+                    },
                 maxLines = if (featured) 2 else 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -5539,6 +5603,9 @@ private fun ConversationCapsule(
         if (retryableCount > 0) {
             Spacer(modifier = Modifier.width(6.dp))
             RetryBadge(count = retryableCount)
+        } else if (mentionCount > 0) {
+            Spacer(modifier = Modifier.width(6.dp))
+            MentionBadge()
         } else if (unreadCount > 0) {
             Spacer(modifier = Modifier.width(6.dp))
             UnreadBadge(count = unreadCount)
@@ -5799,6 +5866,25 @@ private fun RetryBadge(count: Int) {
             fontSize = if (count > 9) 8.sp else 9.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun MentionBadge() {
+    Box(
+        modifier =
+            Modifier
+                .size(17.dp)
+                .clip(CircleShape)
+                .background(chatBlue),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Filled.AlternateEmail,
+            contentDescription = "提及你",
+            tint = Color.White,
+            modifier = Modifier.size(10.dp)
         )
     }
 }
