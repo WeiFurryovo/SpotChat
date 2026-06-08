@@ -109,30 +109,18 @@ class SpotChatNotifier(context: Context) {
                 .setAllowFreeFormInput(true)
                 .build()
         val replyAction =
-            Notification.Action.Builder(
-                Icon.createWithResource(appContext, R.drawable.ic_spotchat),
-                "回复",
-                replyPendingIntent
-            )
+            actionBuilder("回复", replyPendingIntent)
                 .addRemoteInput(remoteInput)
                 .setAllowGeneratedReplies(true)
-                .setSemanticAction(Notification.Action.SEMANTIC_ACTION_REPLY)
+                .setSemanticActionCompat(Notification.Action.SEMANTIC_ACTION_REPLY)
                 .build()
         val markReadAction =
-            Notification.Action.Builder(
-                Icon.createWithResource(appContext, R.drawable.ic_spotchat),
-                "标为已读",
-                markReadPendingIntent
-            )
-                .setSemanticAction(Notification.Action.SEMANTIC_ACTION_MARK_AS_READ)
+            actionBuilder("标为已读", markReadPendingIntent)
+                .setSemanticActionCompat(Notification.Action.SEMANTIC_ACTION_MARK_AS_READ)
                 .build()
         val muteAction =
-            Notification.Action.Builder(
-                Icon.createWithResource(appContext, R.drawable.ic_spotchat),
-                "静音8小时",
-                mutePendingIntent
-            )
-                .setSemanticAction(Notification.Action.SEMANTIC_ACTION_MUTE)
+            actionBuilder("静音8小时", mutePendingIntent)
+                .setSemanticActionCompat(Notification.Action.SEMANTIC_ACTION_MUTE)
                 .build()
 
         val notificationText = messageText.take(MAX_NOTIFICATION_MESSAGE_CHARS)
@@ -240,14 +228,29 @@ class SpotChatNotifier(context: Context) {
                 quickReplyIntent,
                 pendingIntentFlags(mutable = false)
             )
-        return Notification.Action.Builder(
-            Icon.createWithResource(appContext, R.drawable.ic_spotchat),
-            quickReplyText,
-            quickReplyPendingIntent
-        )
-            .setSemanticAction(Notification.Action.SEMANTIC_ACTION_REPLY)
+        return actionBuilder(quickReplyText, quickReplyPendingIntent)
+            .setSemanticActionCompat(Notification.Action.SEMANTIC_ACTION_REPLY)
             .build()
     }
+
+    private fun actionBuilder(
+        title: CharSequence,
+        pendingIntent: PendingIntent
+    ): Notification.Action.Builder =
+        Notification.Action.Builder(
+            Icon.createWithResource(appContext, R.drawable.ic_spotchat),
+            title,
+            pendingIntent
+        )
+
+    private fun Notification.Action.Builder.setSemanticActionCompat(
+        semanticAction: Int
+    ): Notification.Action.Builder =
+        apply {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                setSemanticAction(semanticAction)
+            }
+        }
 
     private fun pendingIntentFlags(mutable: Boolean): Int {
         val mutabilityFlag =
