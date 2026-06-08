@@ -3757,14 +3757,15 @@ private fun WatchConversationListSurface(
                     }
 
                     conversations.forEach { conversation ->
+                        val conversationMessages = messagesByConversation[conversation.id].orEmpty()
                         val lastMessage =
-                            messagesByConversation[conversation.id]
-                                .orEmpty()
+                            conversationMessages
                                 .lastOrNull { message -> message.deliveryState != DeliveryState.System }
                         ConversationCapsule(
                             conversation = conversation,
                             lastMessage = lastMessage,
                             unreadCount = unreadCounts[conversation.id] ?: 0,
+                            retryableCount = conversationMessages.count { message -> message.canRetry() },
                             isPinned = pinnedConversationIds[conversation.id] == true,
                             isMuted = isConversationMuted(conversation.id),
                             featured = conversation.id == NEARBY_GROUP_CONVERSATION_ID,
@@ -4373,6 +4374,7 @@ private fun ConversationCapsule(
     conversation: ChatConversation,
     lastMessage: ChatBubble?,
     unreadCount: Int,
+    retryableCount: Int,
     isPinned: Boolean,
     isMuted: Boolean,
     featured: Boolean,
@@ -4381,7 +4383,12 @@ private fun ConversationCapsule(
 ) {
     val compact = surfaceSpec.compact
     val accent = conversationAccentColor(conversation)
-    val preview = conversationPreview(conversation, lastMessage)
+    val preview =
+        if (retryableCount > 0) {
+            "未发送 $retryableCount 条 · ${conversationPreview(conversation, lastMessage)}"
+        } else {
+            conversationPreview(conversation, lastMessage)
+        }
     val width =
         if (surfaceSpec.isRound) {
             if (featured) 0.86f else 0.82f
@@ -4473,14 +4480,17 @@ private fun ConversationCapsule(
             }
             Text(
                 text = preview,
-                color = if (unreadCount > 0) Color.White else chatRowMuted,
+                color = if (retryableCount > 0 || unreadCount > 0) Color.White else chatRowMuted,
                 fontSize = if (compact) 10.sp else 11.sp,
-                fontWeight = if (unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
+                fontWeight = if (retryableCount > 0 || unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = if (featured) 2 else 1,
                 overflow = TextOverflow.Ellipsis
             )
         }
-        if (unreadCount > 0) {
+        if (retryableCount > 0) {
+            Spacer(modifier = Modifier.width(6.dp))
+            RetryBadge(count = retryableCount)
+        } else if (unreadCount > 0) {
             Spacer(modifier = Modifier.width(6.dp))
             UnreadBadge(count = unreadCount)
         }
@@ -4556,14 +4566,15 @@ private fun WatchForwardMessageSurface(
                     )
 
                     conversations.forEach { conversation ->
+                        val conversationMessages = messagesByConversation[conversation.id].orEmpty()
                         val lastMessage =
-                            messagesByConversation[conversation.id]
-                                .orEmpty()
+                            conversationMessages
                                 .lastOrNull { chatMessage -> chatMessage.deliveryState != DeliveryState.System }
                         ConversationCapsule(
                             conversation = conversation,
                             lastMessage = lastMessage,
                             unreadCount = unreadCounts[conversation.id] ?: 0,
+                            retryableCount = conversationMessages.count { chatMessage -> chatMessage.canRetry() },
                             isPinned = pinnedConversationIds[conversation.id] == true,
                             isMuted = isConversationMuted(conversation.id),
                             featured = conversation.id == sourceConversation.id,
@@ -4667,14 +4678,15 @@ private fun WatchArchivedChatsSurface(
                         )
                     } else {
                         conversations.forEach { conversation ->
+                            val conversationMessages = messagesByConversation[conversation.id].orEmpty()
                             val lastMessage =
-                                messagesByConversation[conversation.id]
-                                    .orEmpty()
+                                conversationMessages
                                     .lastOrNull { message -> message.deliveryState != DeliveryState.System }
                             ConversationCapsule(
                                 conversation = conversation,
                                 lastMessage = lastMessage,
                                 unreadCount = unreadCounts[conversation.id] ?: 0,
+                                retryableCount = conversationMessages.count { message -> message.canRetry() },
                                 isPinned = pinnedConversationIds[conversation.id] == true,
                                 isMuted = isConversationMuted(conversation.id),
                                 featured = false,
@@ -4700,9 +4712,38 @@ private fun UnreadBadge(count: Int) {
         contentAlignment = Alignment.Center
     ) {
         Text(
-            text = count.coerceAtMost(9).toString(),
+            text = if (count > 9) "9+" else count.toString(),
             color = Color.White,
-            fontSize = 9.sp,
+            fontSize = if (count > 9) 8.sp else 9.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun RetryBadge(count: Int) {
+    Row(
+        modifier =
+            Modifier
+                .height(17.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatRose)
+                .padding(horizontal = 5.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Refresh,
+            contentDescription = "未发送",
+            tint = Color.White,
+            modifier = Modifier.size(9.dp)
+        )
+        Spacer(modifier = Modifier.width(2.dp))
+        Text(
+            text = if (count > 9) "9+" else count.toString(),
+            color = Color.White,
+            fontSize = if (count > 9) 8.sp else 9.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1
         )
