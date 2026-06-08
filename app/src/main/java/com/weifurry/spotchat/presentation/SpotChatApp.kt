@@ -4343,6 +4343,19 @@ internal fun SpotChatApp(
                         onCopyVisibleStarredSummary = {
                             copyStarredSummary(visibleConversationList)
                         },
+                        onFavoriteStarredVisible = {
+                            val starredUnfavoriteConversations =
+                                visibleConversationList.filter { conversation ->
+                                    starredMessageIdsByConversation[conversation.id].orEmpty().isNotEmpty() &&
+                                        favoriteConversationIds[conversation.id] != true
+                                }
+                            starredUnfavoriteConversations.forEach { conversation ->
+                                toggleConversationFavorite(conversation)
+                            }
+                            if (starredUnfavoriteConversations.isNotEmpty()) {
+                                trustState = "已收藏星标聊天"
+                            }
+                        },
                         onUnfavoriteVisible = {
                             val favoriteConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5248,6 +5261,7 @@ private fun WatchConversationListSurface(
     onRetryVisible: () -> Unit,
     onSendVisibleDrafts: () -> Unit,
     onCopyVisibleStarredSummary: () -> Unit,
+    onFavoriteStarredVisible: () -> Unit,
     onUnfavoriteVisible: () -> Unit,
     onUnpinVisible: () -> Unit,
     onFavoritePinnedVisible: () -> Unit,
@@ -5571,6 +5585,13 @@ private fun WatchConversationListSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onCopyVisibleStarredSummary
+                            )
+                            MessageActionButton(
+                                icon = Icons.Filled.StarRate,
+                                text = "收藏星标聊天",
+                                selected = true,
+                                compact = compact,
+                                onClick = onFavoriteStarredVisible
                             )
                         }
                     }
