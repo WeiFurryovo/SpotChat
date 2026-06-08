@@ -212,6 +212,17 @@ private enum class ChatListFilter(
     Group("群聊")
 }
 
+private enum class ContentMessageFilter(
+    val label: String
+) {
+    All("全部"),
+    Voice("语音"),
+    Forwarded("转发"),
+    Quoted("引用"),
+    Reacted("回应"),
+    Disappearing("限时")
+}
+
 private fun ChatConversation.matchesFilter(
     filter: ChatListFilter,
     unreadCounts: Map<String, Int>,
@@ -6066,6 +6077,9 @@ private fun WatchChatContentMessagesSurface(
         val accent = conversationAccentColor(conversation)
         val scrollState = rememberScrollState()
         val contentSummary = conversationContentSummary(messages)
+        var activeFilter by remember { mutableStateOf(ContentMessageFilter.All) }
+        val filteredMessages =
+            messages.filter { message -> message.matchesContentFilter(activeFilter) }
 
         WatchFrame(
             surfaceSpec = surfaceSpec,
@@ -6100,9 +6114,26 @@ private fun WatchChatContentMessagesSurface(
                         onNavigateBack = onNavigateBack
                     )
 
+                    ContentMessageFilterStrip(
+                        activeFilter = activeFilter,
+                        summary = contentSummary,
+                        totalCount = messages.size,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec,
+                        onSelectFilter = { filter ->
+                            activeFilter = filter
+                        }
+                    )
+
                     if (messages.isEmpty()) {
                         SearchEmptyState(
                             text = "还没有内容消息",
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
+                        )
+                    } else if (filteredMessages.isEmpty()) {
+                        SearchEmptyState(
+                            text = "没有${activeFilter.label}消息",
                             compact = compact,
                             surfaceSpec = surfaceSpec
                         )
@@ -6112,7 +6143,7 @@ private fun WatchChatContentMessagesSurface(
                             verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 7.dp)
                         ) {
                             Text(
-                                text = "${messages.size} 条 · ${contentSummary.summaryLabel()}",
+                                text = "${filteredMessages.size} 条 · ${activeFilter.label} · ${contentSummary.summaryLabel()}",
                                 color = chatRowMuted,
                                 fontSize = if (compact) 9.sp else 10.sp,
                                 maxLines = 1,
@@ -6120,7 +6151,7 @@ private fun WatchChatContentMessagesSurface(
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier.fillMaxWidth()
                             )
-                            messages.forEach { message ->
+                            filteredMessages.forEach { message ->
                                 MessageCapsule(
                                     message = message,
                                     compact = compact,
@@ -6134,6 +6165,91 @@ private fun WatchChatContentMessagesSurface(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ContentMessageFilterStrip(
+    activeFilter: ContentMessageFilter,
+    summary: ConversationContentSummary,
+    totalCount: Int,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    onSelectFilter: (ContentMessageFilter) -> Unit
+) {
+    val filterScrollState = rememberScrollState()
+    val density = LocalDensity.current
+    val chipStepPx =
+        with(density) {
+            ((if (compact) 48.dp else 53.dp) * activeFilter.ordinal).roundToPx()
+        }
+
+    LaunchedEffect(activeFilter, compact) {
+        filterScrollState.animateScrollTo(chipStepPx.coerceAtMost(filterScrollState.maxValue))
+    }
+
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.84f else 0.94f)
+                .height(if (compact) 30.dp else 34.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black.copy(alpha = 0.18f))
+                .border(1.dp, chatDivider.copy(alpha = 0.52f), RoundedCornerShape(8.dp))
+                .horizontalScroll(filterScrollState)
+                .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        ContentMessageFilter.entries.forEach { filter ->
+            ContentFilterSegment(
+                filter = filter,
+                count = summary.countForFilter(filter, totalCount),
+                selected = activeFilter == filter,
+                compact = compact,
+                onClick = { onSelectFilter(filter) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun ContentFilterSegment(
+    filter: ContentMessageFilter,
+    count: Int,
+    selected: Boolean,
+    compact: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val foreground = if (selected) Color(0xFF001F1B) else chatRowMuted
+    val background =
+        if (selected) {
+            chatGreen
+        } else {
+            Color.Transparent
+        }
+    val segmentWidth = if (compact) 45.dp else 50.dp
+    Box(
+        modifier =
+            modifier
+                .width(segmentWidth)
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(7.dp))
+                .background(background)
+                .clickable(onClick = onClick)
+                .padding(horizontal = if (compact) 2.dp else 4.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "${filter.label} ${count.coerceAtMost(99)}",
+            color = foreground,
+            fontSize = if (compact) 8.sp else 9.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
@@ -8039,6 +8155,29 @@ private fun contentMessages(messages: List<ChatBubble>): List<ChatBubble> =
                     message.reactions.isNotEmpty() ||
                     message.expiresAtEpochMillis != null
             )
+    }
+
+private fun ChatBubble.matchesContentFilter(filter: ContentMessageFilter): Boolean =
+    when (filter) {
+        ContentMessageFilter.All -> true
+        ContentMessageFilter.Voice -> kind == ChatMessageKind.Voice
+        ContentMessageFilter.Forwarded -> forwarded
+        ContentMessageFilter.Quoted -> quotedMessage != null
+        ContentMessageFilter.Reacted -> reactions.isNotEmpty()
+        ContentMessageFilter.Disappearing -> expiresAtEpochMillis != null
+    }
+
+private fun ConversationContentSummary.countForFilter(
+    filter: ContentMessageFilter,
+    totalCount: Int
+): Int =
+    when (filter) {
+        ContentMessageFilter.All -> totalCount
+        ContentMessageFilter.Voice -> voiceCount
+        ContentMessageFilter.Forwarded -> forwardedCount
+        ContentMessageFilter.Quoted -> quotedCount
+        ContentMessageFilter.Reacted -> reactedCount
+        ContentMessageFilter.Disappearing -> disappearingCount
     }
 
 private fun ConversationContentSummary.summaryLabel(): String {
