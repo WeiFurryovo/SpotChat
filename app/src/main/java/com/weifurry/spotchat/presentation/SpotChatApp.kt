@@ -68,6 +68,7 @@ import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.StarRate
 import androidx.compose.material.icons.filled.Stop
@@ -203,6 +204,7 @@ private enum class AppSurface {
     StarredMessages,
     ForwardMessage,
     SecurityCheck,
+    EntryRecovery,
     Profile,
     BlockedContacts
 }
@@ -210,6 +212,12 @@ private enum class AppSurface {
 private data class ConversationDraft(
     val text: String,
     val updatedAtEpochMillis: Long = System.currentTimeMillis()
+)
+
+private data class WearEntryRecoveryState(
+    val source: String,
+    val targetConversationId: String?,
+    val actionLabel: String
 )
 
 private data class WearDiagnosticsSnapshot(
@@ -880,6 +888,7 @@ internal fun SpotChatApp(
     val messageActionsBackStack = remember { mutableStateListOf<ChatBubble>() }
     var selectedActionMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var selectedSecurityPeerFingerprint by remember { mutableStateOf<String?>(null) }
+    var wearEntryRecoveryState by remember { mutableStateOf<WearEntryRecoveryState?>(null) }
     var pendingForwardMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var pendingMessageEdit by remember { mutableStateOf<PendingMessageEdit?>(null) }
     var draftSaveConversationId by remember { mutableStateOf<String?>(null) }
@@ -3338,11 +3347,27 @@ internal fun SpotChatApp(
             clearVoiceRecordingState()
             trustState = "切换聊天，已取消录音"
         }
+        wearEntryRecoveryState = null
         activeConversationId = conversation.id
         clearConversationAlerts(conversation.id)
         selectedActionMessage = null
         appSurface = AppSurface.Chat
         markConversationRead(conversation.id)
+    }
+
+    fun showWearEntryRecovery(
+        source: String,
+        targetConversationId: String?,
+        actionLabel: String
+    ) {
+        wearEntryRecoveryState =
+            WearEntryRecoveryState(
+                source = source,
+                targetConversationId = targetConversationId,
+                actionLabel = actionLabel
+            )
+        appSurface = AppSurface.EntryRecovery
+        trustState = "$source 目标已不可用"
     }
 
     fun mergePeerWithHello(
@@ -4841,7 +4866,21 @@ internal fun SpotChatApp(
         }
         val conversationId =
             intent.getStringExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID) ?: return
-        val conversation = conversationById(conversationId) ?: return
+        val conversation =
+            conversationById(conversationId)
+                ?: return showWearEntryRecovery(
+                    source = "通知",
+                    targetConversationId = conversationId,
+                    actionLabel =
+                        when (intent.action) {
+                            SpotChatNotificationIntents.ACTION_REPLY,
+                            SpotChatNotificationIntents.ACTION_QUICK_REPLY -> "回复"
+                            SpotChatNotificationIntents.ACTION_MARK_READ -> "标为已读"
+                            SpotChatNotificationIntents.ACTION_MUTE_8H -> "静音"
+                            SpotChatNotificationIntents.ACTION_NOTIFICATION_DISMISSED -> "清除通知"
+                            else -> "打开聊天"
+                        }
+                )
         if (intent.action == SpotChatNotificationIntents.ACTION_MUTE_8H) {
             setConversationMute(conversation, MutePreset.EightHours)
             return
@@ -4895,7 +4934,13 @@ internal fun SpotChatApp(
         val conversationId =
             intent.getStringExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID)
                 ?: return
-        val conversation = conversationById(conversationId) ?: return
+        val conversation =
+            conversationById(conversationId)
+                ?: return showWearEntryRecovery(
+                    source = "最近聊天 Tile",
+                    targetConversationId = conversationId,
+                    actionLabel = "打开聊天"
+                )
         openConversation(conversation)
     }
 
@@ -4907,8 +4952,16 @@ internal fun SpotChatApp(
             intent.getStringExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID)
         val conversation = conversationId?.let(::conversationById)
         if (conversation == null) {
-            appSurface = AppSurface.ConversationList
-            trustState = "选择聊天后点麦克风录音"
+            if (conversationId == null) {
+                appSurface = AppSurface.ConversationList
+                trustState = "选择聊天后点麦克风录音"
+                return
+            }
+            showWearEntryRecovery(
+                source = "语音 Tile",
+                targetConversationId = conversationId,
+                actionLabel = "开始语音"
+            )
             return
         }
         openConversation(conversation)
@@ -4930,8 +4983,16 @@ internal fun SpotChatApp(
             intent.getStringExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID)
         val conversation = conversationId?.let(::conversationById)
         if (conversation == null) {
-            appSurface = AppSurface.ConversationList
-            trustState = "选择聊天后再快捷回复"
+            if (conversationId == null) {
+                appSurface = AppSurface.ConversationList
+                trustState = "选择聊天后再快捷回复"
+                return
+            }
+            showWearEntryRecovery(
+                source = "快捷回复 Tile",
+                targetConversationId = conversationId,
+                actionLabel = "快捷回复"
+            )
             return
         }
         openConversation(conversation)
@@ -5819,6 +5880,32 @@ internal fun SpotChatApp(
                                 clearConversationAlerts(result.conversation.id)
                                 markConversationRead(result.conversation.id)
                                 appSurface = AppSurface.MessageActions
+                            }
+                        )
+                    }
+                }
+
+                if (appSurface == AppSurface.EntryRecovery) {
+                    SlideInOverlay(
+                        onDismissed = {
+                            wearEntryRecoveryState = null
+                            appSurface = AppSurface.ConversationList
+                        }
+                    ) { dismissOverlay ->
+                        WatchEntryRecoverySurface(
+                            isRoundScreen = isRoundScreen,
+                            recoveryState = wearEntryRecoveryState,
+                            visibleConversationCount = visibleConversationListBase.size,
+                            archivedConversationCount = archivedConversationList.size,
+                            onNavigateBack = dismissOverlay,
+                            onOpenConversationList = {
+                                wearEntryRecoveryState = null
+                                appSurface = AppSurface.ConversationList
+                            },
+                            onRefreshWearSurfaces = {
+                                updateWearStateSnapshot()
+                                wearStateStore.requestSurfaceUpdates()
+                                trustState = "已刷新手表入口"
                             }
                         )
                     }
@@ -11351,6 +11438,180 @@ private fun WatchSecurityCheckSurface(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun WatchEntryRecoverySurface(
+    isRoundScreen: Boolean,
+    recoveryState: WearEntryRecoveryState?,
+    visibleConversationCount: Int,
+    archivedConversationCount: Int,
+    onNavigateBack: () -> Unit,
+    onOpenConversationList: () -> Unit,
+    onRefreshWearSurfaces: () -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
+        val scrollState = rememberScrollState()
+        val source = recoveryState?.source ?: "手表入口"
+        val actionLabel = recoveryState?.actionLabel ?: "打开聊天"
+        val targetLabel =
+            recoveryState
+                ?.targetConversationId
+                ?.takeIf { conversationId -> conversationId.isNotBlank() }
+                ?.let(::shortMessageId)
+                ?: "未指定"
+
+        WatchFrame(
+            surfaceSpec = surfaceSpec,
+            accent = chatAmber,
+            modifier = Modifier.padding(horizontal = surfaceSpec.chatHorizontalPadding)
+        ) {
+            ScreenScaffold(
+                scrollState = scrollState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(),
+                scrollIndicator = {}
+            ) { scaffoldPadding ->
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .padding(scaffoldPadding)
+                            .padding(
+                                top = surfaceSpec.chatTopPadding,
+                                bottom = surfaceSpec.chatBottomPadding
+                            ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp)
+                ) {
+                    RecoveryHeader(
+                        source = source,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec,
+                        onNavigateBack = onNavigateBack
+                    )
+
+                    ChatInfoLine(
+                        icon = Icons.Filled.Warning,
+                        label = "入口状态",
+                        value = "$source 无法继续",
+                        accent = chatAmber,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec
+                    )
+                    ChatInfoLine(
+                        icon = Icons.AutoMirrored.Filled.Chat,
+                        label = "请求动作",
+                        value = actionLabel,
+                        accent = chatBlue,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec
+                    )
+                    ChatInfoLine(
+                        icon = Icons.Filled.VerifiedUser,
+                        label = "目标聊天",
+                        value = targetLabel,
+                        accent = chatRose,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec
+                    )
+                    ChatInfoLine(
+                        icon = Icons.Filled.Group,
+                        label = "当前聊天",
+                        value = "${visibleConversationCount.coerceAtMost(99)} 个可见 · ${archivedConversationCount.coerceAtMost(99)} 个归档",
+                        accent = chatGreen,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec
+                    )
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
+                        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
+                    ) {
+                        MessageActionButton(
+                            icon = Icons.AutoMirrored.Filled.Chat,
+                            text = "回聊天列表",
+                            selected = true,
+                            compact = compact,
+                            onClick = onOpenConversationList
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.Refresh,
+                            text = "刷新手表入口",
+                            selected = false,
+                            compact = compact,
+                            onClick = onRefreshWearSurfaces
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecoveryHeader(
+    source: String,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    onNavigateBack: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(surfaceSpec.chatHeaderWidth),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.92f),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ProfileBackButton(
+                compact = compact,
+                contentDescription = "返回聊天列表",
+                onClick = onNavigateBack
+            )
+            Spacer(modifier = Modifier.width(if (compact) 9.dp else 11.dp))
+            Box(
+                modifier =
+                    Modifier
+                        .size(if (compact) 40.dp else 46.dp)
+                        .clip(CircleShape)
+                        .background(chatAmber.copy(alpha = 0.18f))
+                        .border(1.dp, chatAmber.copy(alpha = 0.46f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Warning,
+                    contentDescription = source,
+                    tint = chatAmber,
+                    modifier = Modifier.size(if (compact) 20.dp else 23.dp)
+                )
+            }
+        }
+        Text(
+            text = "入口已失效",
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = if (compact) 17.sp else 20.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            text = source,
+            color = chatRowMuted,
+            fontSize = if (compact) 10.sp else 11.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
