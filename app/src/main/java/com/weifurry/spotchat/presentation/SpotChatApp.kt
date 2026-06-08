@@ -2528,6 +2528,40 @@ internal fun SpotChatApp(
         trustState = "已复制阻止摘要"
     }
 
+    fun copyPrivacySummary() {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val currentConversations = conversations()
+        val blockedPeers =
+            trustedPeers.filter { peer ->
+                blockedPeerFingerprints[peer.fingerprint] == true
+            }
+        val summary =
+            privacySummaryText(
+                profile = profile,
+                conversations = currentConversations,
+                trustedPeerCount = trustedPeers.size,
+                blockedPeers = blockedPeers,
+                archivedConversationIds = archivedConversationIds,
+                mutedConversationIds = mutedConversations.filterValues { muted -> muted.isActive() }.keys,
+                lockedConversationIds = lockedConversationIds,
+                disappearingModesByConversation = disappearingModesByConversation,
+                readReceiptsDisabledByConversation = readReceiptsDisabledByConversation
+            )
+        if (summary.isBlank()) {
+            trustState = "没有隐私摘要"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat privacy summary", summary)
+        )
+        trustState = "已复制隐私摘要"
+    }
+
     fun copyArchivedSummary(conversations: List<ChatConversation>) {
         val clipboardManager =
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -5813,6 +5847,7 @@ internal fun SpotChatApp(
                                 updateProfile(profile.copy(defaultReadReceiptsEnabled = enabled))
                                 trustState = if (enabled) "默认已读回执开启" else "默认已读回执关闭"
                             },
+                            onCopyPrivacySummary = ::copyPrivacySummary,
                             onOpenBlockedContacts = {
                                 appSurface = AppSurface.BlockedContacts
                             },
@@ -10912,6 +10947,7 @@ private fun WatchProfileSurface(
     onNavigateBack: () -> Unit,
     onDefaultDisappearingModeChange: (DisappearingMessageMode) -> Unit,
     onToggleDefaultReadReceipts: () -> Unit,
+    onCopyPrivacySummary: () -> Unit,
     onOpenBlockedContacts: () -> Unit,
     onProfileChange: (ProfileSettings) -> Unit
 ) {
@@ -11071,6 +11107,7 @@ private fun WatchProfileSurface(
                             onCycleDefaultDisappearingMode = {
                                 onDefaultDisappearingModeChange(defaultDisappearingMode.next())
                             },
+                            onCopyPrivacySummary = onCopyPrivacySummary,
                             onToggleDefaultReadReceipts = onToggleDefaultReadReceipts
                         )
                     }
@@ -11436,6 +11473,7 @@ private fun ProfilePrivacyPanel(
     surfaceSpec: WatchSurfaceSpec,
     onOpenBlockedContacts: () -> Unit,
     onCycleDefaultDisappearingMode: () -> Unit,
+    onCopyPrivacySummary: () -> Unit,
     onToggleDefaultReadReceipts: () -> Unit
 ) {
     val compact = surfaceSpec.compact
@@ -11464,6 +11502,14 @@ private fun ProfilePrivacyPanel(
                 .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 9.dp),
         verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
     ) {
+        ProfileInfoRow(
+            icon = Icons.Filled.Keyboard,
+            label = "隐私摘要",
+            value = "复制设置与状态",
+            accent = chatBlue,
+            compact = compact,
+            onClick = onCopyPrivacySummary
+        )
         ProfileInfoRow(
             icon = Icons.Filled.PersonRemove,
             label = "已阻止",
@@ -13922,6 +13968,59 @@ private fun conversationSafetySummaryText(
             appendLine("   状态：${peerReachabilityShortLabel(reachability)}")
             appendLine("   校验码：${peer.pairingCode}")
             appendLine("   指纹：${SpotChatCrypto.displayFingerprint(peer.fingerprint)}")
+        }
+    }.trim()
+}
+
+private fun privacySummaryText(
+    profile: ProfileSettings,
+    conversations: List<ChatConversation>,
+    trustedPeerCount: Int,
+    blockedPeers: List<StoredTrustedPeer>,
+    archivedConversationIds: Map<String, Boolean>,
+    mutedConversationIds: Set<String>,
+    lockedConversationIds: Map<String, Boolean>,
+    disappearingModesByConversation: Map<String, DisappearingMessageMode>,
+    readReceiptsDisabledByConversation: Map<String, Boolean>
+): String {
+    val defaultDisappearingMode = profile.defaultDisappearingMode.toDisappearingMode()
+    val archivedConversationCount =
+        conversations.count { conversation -> archivedConversationIds[conversation.id] == true }
+    val mutedConversationCount =
+        conversations.count { conversation -> conversation.id in mutedConversationIds }
+    val lockedConversationCount =
+        conversations.count { conversation -> lockedConversationIds[conversation.id] == true }
+    val disappearingConversationCount =
+        conversations.count { conversation ->
+            (
+                disappearingModesByConversation[conversation.id]
+                    ?: DisappearingMessageMode.Off
+            ) != DisappearingMessageMode.Off
+        }
+    val readReceiptsOffConversationCount =
+        conversations.count { conversation -> readReceiptsDisabledByConversation[conversation.id] == true }
+    return buildString {
+        appendLine("SpotChat 隐私摘要")
+        appendLine("昵称：${profile.displayName}")
+        appendLine("简介：${profile.about.ifBlank { ProfileStore.DEFAULT_ABOUT }}")
+        appendLine("可信设备：$trustedPeerCount 台")
+        appendLine("阻止联系人：${blockedPeers.size} 人")
+        appendLine("默认限时：${defaultDisappearingMode.label}")
+        appendLine("默认回执：${if (profile.defaultReadReceiptsEnabled) "开启" else "关闭"}")
+        appendLine()
+        appendLine("聊天状态")
+        appendLine("聊天：${conversations.size} 个")
+        appendLine("已归档：$archivedConversationCount 个")
+        appendLine("静音：$mutedConversationCount 个")
+        appendLine("锁定：$lockedConversationCount 个")
+        appendLine("限时：$disappearingConversationCount 个")
+        appendLine("回执关闭：$readReceiptsOffConversationCount 个")
+        if (blockedPeers.isNotEmpty()) {
+            appendLine()
+            appendLine("阻止名单")
+            blockedPeers.forEachIndexed { index, peer ->
+                appendLine("${index + 1}. ${peerDisplayName(peer)} · ${peerAbout(peer)}")
+            }
         }
     }.trim()
 }
