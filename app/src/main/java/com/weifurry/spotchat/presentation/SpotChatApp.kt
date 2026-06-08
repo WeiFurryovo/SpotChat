@@ -4367,6 +4367,19 @@ internal fun SpotChatApp(
                                 trustState = "已取消置顶聊天"
                             }
                         },
+                        onFavoritePinnedVisible = {
+                            val pinnedUnfavoriteConversations =
+                                visibleConversationList.filter { conversation ->
+                                    pinnedConversationIds[conversation.id] == true &&
+                                        favoriteConversationIds[conversation.id] != true
+                                }
+                            pinnedUnfavoriteConversations.forEach { conversation ->
+                                toggleConversationFavorite(conversation)
+                            }
+                            if (pinnedUnfavoriteConversations.isNotEmpty()) {
+                                trustState = "已收藏置顶聊天"
+                            }
+                        },
                         onUnmuteVisible = {
                             val mutedVisibleConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5237,6 +5250,7 @@ private fun WatchConversationListSurface(
     onCopyVisibleStarredSummary: () -> Unit,
     onUnfavoriteVisible: () -> Unit,
     onUnpinVisible: () -> Unit,
+    onFavoritePinnedVisible: () -> Unit,
     onUnmuteVisible: () -> Unit,
     onArchiveMutedVisible: () -> Unit,
     onMuteVisibleGroups: () -> Unit,
@@ -5585,6 +5599,13 @@ private fun WatchConversationListSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onUnpinVisible
+                            )
+                            MessageActionButton(
+                                icon = Icons.Filled.StarRate,
+                                text = "收藏全部置顶",
+                                selected = true,
+                                compact = compact,
+                                onClick = onFavoritePinnedVisible
                             )
                         }
                     }
