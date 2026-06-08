@@ -2191,6 +2191,33 @@ internal fun SpotChatApp(
         trustState = "已复制消息"
     }
 
+    fun copyMessageInfo(
+        conversation: ChatConversation,
+        message: ChatBubble
+    ) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val infoText =
+            messageInfoText(
+                conversation = conversation,
+                message = message,
+                receiptSummary = messageReceiptSummary(conversation, message),
+                reactionDetails = reactionDetails(message)
+            )
+        if (infoText.isBlank()) {
+            trustState = "没有消息信息"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat message info", infoText)
+        )
+        trustState = "已复制消息信息"
+    }
+
     fun copyConversationTranscript(conversation: ChatConversation) {
         val clipboardManager =
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -5297,6 +5324,9 @@ internal fun SpotChatApp(
                                 onCopyMessage = {
                                     copyMessageText(actionMessage)
                                 },
+                                onCopyMessageInfo = {
+                                    copyMessageInfo(selectedConversation, actionMessage)
+                                },
                                 onViewInChat = {
                                     selectedActionMessage = null
                                     activeConversationId = selectedConversation.id
@@ -8337,6 +8367,7 @@ private fun WatchMessageActionsSurface(
     onToggleStarred: () -> Unit,
     onTogglePinned: () -> Unit,
     onCopyMessage: () -> Unit,
+    onCopyMessageInfo: () -> Unit,
     onViewInChat: () -> Unit,
     onOpenQuotedMessage: () -> Unit,
     onDeleteMessage: () -> Unit,
@@ -8461,6 +8492,13 @@ private fun WatchMessageActionsSurface(
                             selected = false,
                             compact = compact,
                             onClick = onCopyMessage
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.DoneAll,
+                            text = "复制消息信息",
+                            selected = receiptSummary != null,
+                            compact = compact,
+                            onClick = onCopyMessageInfo
                         )
                         MessageActionButton(
                             icon = Icons.AutoMirrored.Filled.Chat,
@@ -12395,6 +12433,58 @@ private fun conversationTranscript(
         }
     }.trim()
 }
+
+private fun messageInfoText(
+    conversation: ChatConversation,
+    message: ChatBubble,
+    receiptSummary: MessageReceiptSummary?,
+    reactionDetails: List<ReactionDetail>
+): String =
+    buildString {
+        val sender =
+            when {
+                message.mine -> "我"
+                message.senderName != null -> message.senderName
+                conversation.kind == ConversationKind.Direct -> conversation.title
+                else -> "SpotChat"
+            }
+        appendLine("SpotChat 消息信息")
+        appendLine("聊天：${conversation.title}")
+        appendLine("发送者：$sender")
+        appendLine("时间：${message.timestamp}")
+        appendLine("类型：${if (message.kind == ChatMessageKind.Voice) "语音" else "文字"}")
+        appendLine("安全：${if (message.encrypted) "E2EE 加密" else "明文"}")
+        appendLine("状态：${message.deliveryState.label}")
+        appendLine("内容：${message.copyText()}")
+        if (message.forwarded) {
+            appendLine("标记：已转发")
+        }
+        message.quotedMessage?.let { quote ->
+            appendLine("引用：${quote.senderName}：${quote.text}")
+        }
+        message.expiresAtEpochMillis?.let { expiresAt ->
+            appendLine("限时：${formatTimeRemaining(expiresAt)} 后过期")
+        }
+        if (reactionDetails.isNotEmpty()) {
+            appendLine("回应：${reactionDetails.joinToString(separator = "、") { detail -> "${detail.senderName} ${detail.reactionLabel}" }}")
+        }
+        receiptSummary?.let { summary ->
+            appendLine("送达：${receiptProgressLabel(summary.deliveredCount, summary.expectedCount)}")
+            appendLine("已读：${receiptProgressLabel(summary.readCount, summary.expectedCount)}")
+            if (summary.deliveredNames.isNotEmpty()) {
+                appendLine("送达者：${receiptNamesLabel(summary.deliveredNames)}")
+            }
+            if (summary.readNames.isNotEmpty()) {
+                appendLine("已读者：${receiptNamesLabel(summary.readNames)}")
+            }
+            if (summary.undeliveredNames.isNotEmpty()) {
+                appendLine("未送达：${receiptNamesLabel(summary.undeliveredNames)}")
+            }
+            if (summary.unreadNames.isNotEmpty()) {
+                appendLine("未读：${receiptNamesLabel(summary.unreadNames)}")
+            }
+        }
+    }.trim()
 
 private fun attentionSummaryText(
     conversations: List<ChatConversation>,
