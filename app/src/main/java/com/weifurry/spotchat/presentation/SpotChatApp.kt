@@ -4368,6 +4368,19 @@ internal fun SpotChatApp(
                                 trustState = "已取消收藏聊天"
                             }
                         },
+                        onPinFavoriteVisible = {
+                            val favoriteUnpinnedConversations =
+                                visibleConversationList.filter { conversation ->
+                                    favoriteConversationIds[conversation.id] == true &&
+                                        pinnedConversationIds[conversation.id] != true
+                                }
+                            favoriteUnpinnedConversations.forEach { conversation ->
+                                toggleConversationPinned(conversation)
+                            }
+                            if (favoriteUnpinnedConversations.isNotEmpty()) {
+                                trustState = "已置顶收藏聊天"
+                            }
+                        },
                         onUnpinVisible = {
                             val pinnedConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5263,6 +5276,7 @@ private fun WatchConversationListSurface(
     onCopyVisibleStarredSummary: () -> Unit,
     onFavoriteStarredVisible: () -> Unit,
     onUnfavoriteVisible: () -> Unit,
+    onPinFavoriteVisible: () -> Unit,
     onUnpinVisible: () -> Unit,
     onFavoritePinnedVisible: () -> Unit,
     onUnmuteVisible: () -> Unit,
@@ -5606,6 +5620,13 @@ private fun WatchConversationListSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onUnfavoriteVisible
+                            )
+                            MessageActionButton(
+                                icon = Icons.Filled.PushPin,
+                                text = "置顶全部收藏",
+                                selected = true,
+                                compact = compact,
+                                onClick = onPinFavoriteVisible
                             )
                         }
                     }
