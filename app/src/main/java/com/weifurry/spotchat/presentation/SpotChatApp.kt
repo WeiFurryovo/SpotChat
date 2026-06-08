@@ -4470,6 +4470,19 @@ internal fun SpotChatApp(
                                 trustState = "私聊预览已锁定"
                             }
                         },
+                        onDisableDirectReceiptsVisible = {
+                            val directReceiptEnabledConversations =
+                                visibleConversationList.filter { conversation ->
+                                    conversation.kind == ConversationKind.Direct &&
+                                        areReadReceiptsEnabled(conversation.id)
+                                }
+                            directReceiptEnabledConversations.forEach { conversation ->
+                                toggleConversationReadReceipts(conversation)
+                            }
+                            if (directReceiptEnabledConversations.isNotEmpty()) {
+                                trustState = "私聊回执已关闭"
+                            }
+                        },
                         onUnlockVisible = {
                             val lockedVisibleConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5297,6 +5310,7 @@ private fun WatchConversationListSurface(
     onArchiveMutedVisible: () -> Unit,
     onMuteVisibleGroups: () -> Unit,
     onLockVisibleDirects: () -> Unit,
+    onDisableDirectReceiptsVisible: () -> Unit,
     onUnlockVisible: () -> Unit,
     onDisableDisappearingVisible: () -> Unit,
     onEnableReadReceiptsVisible: () -> Unit,
@@ -5721,6 +5735,15 @@ private fun WatchConversationListSurface(
                                 compact = compact,
                                 onClick = onLockVisibleDirects
                             )
+                            if (activeFilter == ChatListFilter.Direct) {
+                                MessageActionButton(
+                                    icon = Icons.Filled.DoneAll,
+                                    text = "关闭私聊回执",
+                                    selected = true,
+                                    compact = compact,
+                                    onClick = onDisableDirectReceiptsVisible
+                                )
+                            }
                         }
                     }
 
