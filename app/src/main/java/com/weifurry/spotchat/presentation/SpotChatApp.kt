@@ -2670,6 +2670,38 @@ internal fun SpotChatApp(
         trustState = "已复制聊天总览"
     }
 
+    fun copyChatManagementSummary() {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val currentConversations = conversations()
+        val summary =
+            chatManagementSummaryText(
+                conversations = currentConversations,
+                unreadCounts = unreadCounts,
+                mentionCounts = mentionCounts,
+                draftsByConversation = draftsByConversation,
+                favoriteConversationIds = favoriteConversationIds,
+                pinnedConversationIds = pinnedConversationIds,
+                archivedConversationIds = archivedConversationIds,
+                lockedConversationIds = lockedConversationIds,
+                starredMessageIdsByConversation = starredMessageIdsByConversation,
+                isConversationMuted = ::isConversationMuted,
+                hasRetryableMessages = ::hasRetryableMessages
+            )
+        if (summary.isBlank()) {
+            trustState = "没有管理摘要"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat chat management", summary)
+        )
+        trustState = "已复制管理摘要"
+    }
+
     fun copyMutedSummary(conversations: List<ChatConversation>) {
         val clipboardManager =
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -5899,6 +5931,7 @@ internal fun SpotChatApp(
                             onCopyIdentitySafetySummary = ::copyIdentitySafetySummary,
                             onCopyTrustedDevicesSummary = ::copyTrustedDevicesSummary,
                             onCopyPrivacySummary = ::copyPrivacySummary,
+                            onCopyChatManagementSummary = ::copyChatManagementSummary,
                             onOpenBlockedContacts = {
                                 appSurface = AppSurface.BlockedContacts
                             },
@@ -11001,6 +11034,7 @@ private fun WatchProfileSurface(
     onCopyIdentitySafetySummary: () -> Unit,
     onCopyTrustedDevicesSummary: () -> Unit,
     onCopyPrivacySummary: () -> Unit,
+    onCopyChatManagementSummary: () -> Unit,
     onOpenBlockedContacts: () -> Unit,
     onProfileChange: (ProfileSettings) -> Unit
 ) {
@@ -11188,7 +11222,8 @@ private fun WatchProfileSurface(
                             draftChatCount = draftChatCount,
                             retryableChatCount = retryableChatCount,
                             starredMessageCount = starredMessageCount,
-                            surfaceSpec = surfaceSpec
+                            surfaceSpec = surfaceSpec,
+                            onCopyChatManagementSummary = onCopyChatManagementSummary
                         )
                     }
 
@@ -11622,7 +11657,8 @@ private fun ProfileChatManagementPanel(
     draftChatCount: Int,
     retryableChatCount: Int,
     starredMessageCount: Int,
-    surfaceSpec: WatchSurfaceSpec
+    surfaceSpec: WatchSurfaceSpec,
+    onCopyChatManagementSummary: () -> Unit
 ) {
     val compact = surfaceSpec.compact
     Column(
@@ -11635,6 +11671,14 @@ private fun ProfileChatManagementPanel(
                 .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 9.dp),
         verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
     ) {
+        ProfileInfoRow(
+            icon = Icons.Filled.Keyboard,
+            label = "管理摘要",
+            value = "复制聊天状态",
+            accent = chatBlue,
+            compact = compact,
+            onClick = onCopyChatManagementSummary
+        )
         ProfileInfoRow(
             icon = Icons.Filled.Archive,
             label = "归档/静音",
@@ -13390,6 +13434,118 @@ private fun chatListOverviewText(
             appendLine("   类型：${conversation.kind.label}")
             appendLine("   状态：${stateLabels.joinToString(separator = " · ")}")
             appendLine("   最新：${lastMessage?.copyText() ?: "没有消息"}")
+        }
+    }.trim()
+}
+
+private fun chatManagementSummaryText(
+    conversations: List<ChatConversation>,
+    unreadCounts: Map<String, Int>,
+    mentionCounts: Map<String, Int>,
+    draftsByConversation: Map<String, ConversationDraft>,
+    favoriteConversationIds: Map<String, Boolean>,
+    pinnedConversationIds: Map<String, Boolean>,
+    archivedConversationIds: Map<String, Boolean>,
+    lockedConversationIds: Map<String, Boolean>,
+    starredMessageIdsByConversation: Map<String, Set<String>>,
+    isConversationMuted: (String) -> Boolean,
+    hasRetryableMessages: (String) -> Boolean
+): String {
+    if (conversations.isEmpty()) {
+        return ""
+    }
+    val archivedConversationCount =
+        conversations.count { conversation -> archivedConversationIds[conversation.id] == true }
+    val mutedConversationCount =
+        conversations.count { conversation -> isConversationMuted(conversation.id) }
+    val lockedConversationCount =
+        conversations.count { conversation -> lockedConversationIds[conversation.id] == true }
+    val draftConversationCount =
+        conversations.count { conversation -> draftsByConversation[conversation.id] != null }
+    val retryableConversationCount =
+        conversations.count { conversation -> hasRetryableMessages(conversation.id) }
+    val starredMessageCount =
+        starredMessageIdsByConversation.values.sumOf { messageIds -> messageIds.size }
+    val unreadConversationCount =
+        conversations.count { conversation -> (unreadCounts[conversation.id] ?: 0) > 0 }
+    val mentionConversationCount =
+        conversations.count { conversation -> (mentionCounts[conversation.id] ?: 0) > 0 }
+    val favoriteConversationCount =
+        conversations.count { conversation -> favoriteConversationIds[conversation.id] == true }
+    val pinnedConversationCount =
+        conversations.count { conversation -> pinnedConversationIds[conversation.id] == true }
+    return buildString {
+        appendLine("SpotChat 聊天管理摘要")
+        appendLine("聊天：${conversations.size} 个")
+        appendLine("未读：$unreadConversationCount 个")
+        appendLine("提及：$mentionConversationCount 个")
+        appendLine("草稿：$draftConversationCount 个")
+        appendLine("未发送：$retryableConversationCount 个")
+        appendLine("星标消息：$starredMessageCount 条")
+        appendLine("收藏：$favoriteConversationCount 个")
+        appendLine("置顶：$pinnedConversationCount 个")
+        appendLine("已归档：$archivedConversationCount 个")
+        appendLine("静音：$mutedConversationCount 个")
+        appendLine("锁定：$lockedConversationCount 个")
+        appendLine()
+        val activeManagementConversations =
+            conversations.filter { conversation ->
+                (unreadCounts[conversation.id] ?: 0) > 0 ||
+                    (mentionCounts[conversation.id] ?: 0) > 0 ||
+                    draftsByConversation[conversation.id] != null ||
+                    hasRetryableMessages(conversation.id) ||
+                    favoriteConversationIds[conversation.id] == true ||
+                    pinnedConversationIds[conversation.id] == true ||
+                    archivedConversationIds[conversation.id] == true ||
+                    isConversationMuted(conversation.id) ||
+                    lockedConversationIds[conversation.id] == true ||
+                    starredMessageIdsByConversation[conversation.id].orEmpty().isNotEmpty()
+            }
+        if (activeManagementConversations.isEmpty()) {
+            appendLine("当前没有需要特别管理的聊天")
+        } else {
+            appendLine("需要关注")
+            activeManagementConversations.forEachIndexed { index, conversation ->
+                val stateLabels =
+                    buildList {
+                        val unreadCount = unreadCounts[conversation.id] ?: 0
+                        if (unreadCount > 0) {
+                            add("未读 $unreadCount")
+                        }
+                        val mentionCount = mentionCounts[conversation.id] ?: 0
+                        if (mentionCount > 0) {
+                            add("提及 $mentionCount")
+                        }
+                        if (draftsByConversation[conversation.id] != null) {
+                            add("有草稿")
+                        }
+                        if (hasRetryableMessages(conversation.id)) {
+                            add("有未发送")
+                        }
+                        val starredCount =
+                            starredMessageIdsByConversation[conversation.id].orEmpty().size
+                        if (starredCount > 0) {
+                            add("星标 $starredCount")
+                        }
+                        if (favoriteConversationIds[conversation.id] == true) {
+                            add("收藏")
+                        }
+                        if (pinnedConversationIds[conversation.id] == true) {
+                            add("置顶")
+                        }
+                        if (archivedConversationIds[conversation.id] == true) {
+                            add("已归档")
+                        }
+                        if (isConversationMuted(conversation.id)) {
+                            add("静音")
+                        }
+                        if (lockedConversationIds[conversation.id] == true) {
+                            add("锁定")
+                        }
+                    }
+                appendLine("${index + 1}. ${conversation.title}")
+                appendLine("   状态：${stateLabels.joinToString(separator = " · ")}")
+            }
         }
     }.trim()
 }
