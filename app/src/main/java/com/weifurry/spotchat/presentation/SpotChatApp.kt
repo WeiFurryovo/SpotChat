@@ -4293,10 +4293,10 @@ internal fun SpotChatApp(
                             markConversationsRead(
                                 conversations = visibleConversationList,
                                 statusText =
-                                    if (chatListFilter == ChatListFilter.Mentions) {
-                                        "提及聊天已读"
-                                    } else {
-                                        "未读聊天已读"
+                                    when (chatListFilter) {
+                                        ChatListFilter.Mentions -> "提及聊天已读"
+                                        ChatListFilter.All -> "全部聊天已读"
+                                        else -> "未读聊天已读"
                                     },
                                 shouldMark = { conversation ->
                                     when (chatListFilter) {
@@ -5447,9 +5447,17 @@ private fun WatchConversationListSurface(
                         onClick = onOpenGlobalSearch
                     )
 
+                    val canMarkVisibleRead =
+                        when (activeFilter) {
+                            ChatListFilter.All, ChatListFilter.Unread ->
+                                conversations.any { conversation -> (unreadCounts[conversation.id] ?: 0) > 0 }
+                            ChatListFilter.Mentions ->
+                                conversations.any { conversation -> (mentionCounts[conversation.id] ?: 0) > 0 }
+                            else -> false
+                        }
+
                     if (
-                        (activeFilter == ChatListFilter.Unread || activeFilter == ChatListFilter.Mentions) &&
-                        conversations.isNotEmpty()
+                        canMarkVisibleRead
                     ) {
                         Column(
                             modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
