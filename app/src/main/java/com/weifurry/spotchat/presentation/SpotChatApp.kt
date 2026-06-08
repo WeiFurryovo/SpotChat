@@ -221,6 +221,12 @@ private data class WearEntryRecoveryState(
     val actionLabel: String
 )
 
+private data class WatchActionConfirmation(
+    val id: Long,
+    val title: String,
+    val detail: String
+)
+
 private data class WearDiagnosticsSnapshot(
     val transportMode: TransportMode,
     val trustState: String,
@@ -562,6 +568,7 @@ private const val MAX_CONTENT_SUMMARY_MESSAGES = 40
 private const val MAX_QUOTED_MESSAGE_CHARS = 72
 private const val DISAPPEARING_SWEEP_INTERVAL_MS = 15_000L
 private const val MUTE_SWEEP_INTERVAL_MS = 60_000L
+private const val ACTION_CONFIRMATION_VISIBLE_MS = 1_600L
 private const val NEARBY_GROUP_CONVERSATION_ID = "group:nearby"
 private const val NEARBY_GROUP_TITLE = "附近群聊"
 private const val DIRECT_CONVERSATION_PREFIX = "direct:"
@@ -890,6 +897,8 @@ internal fun SpotChatApp(
     var selectedActionMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var selectedSecurityPeerFingerprint by remember { mutableStateOf<String?>(null) }
     var wearEntryRecoveryState by remember { mutableStateOf<WearEntryRecoveryState?>(null) }
+    var actionConfirmation by remember { mutableStateOf<WatchActionConfirmation?>(null) }
+    var actionConfirmationId by remember { mutableStateOf(0L) }
     var pendingForwardMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var pendingMessageEdit by remember { mutableStateOf<PendingMessageEdit?>(null) }
     var draftSaveConversationId by remember { mutableStateOf<String?>(null) }
@@ -917,6 +926,19 @@ internal fun SpotChatApp(
         recordingStartedAtMillis = null
         recordingElapsedMillis = 0L
         recordingConversationId = null
+    }
+
+    fun showActionConfirmation(
+        title: String,
+        detail: String
+    ) {
+        actionConfirmationId += 1
+        actionConfirmation =
+            WatchActionConfirmation(
+                id = actionConfirmationId,
+                title = title,
+                detail = detail
+            )
     }
 
     fun hasBluetoothRuntimePermissions(): Boolean =
@@ -2381,6 +2403,10 @@ internal fun SpotChatApp(
             ClipData.newPlainText("SpotChat message", copyText)
         )
         trustState = "已复制消息"
+        showActionConfirmation(
+            title = "已复制消息",
+            detail = "内容已放入剪贴板"
+        )
     }
 
     fun copyMessageInfo(
@@ -2408,6 +2434,10 @@ internal fun SpotChatApp(
             ClipData.newPlainText("SpotChat message info", infoText)
         )
         trustState = "已复制消息信息"
+        showActionConfirmation(
+            title = "已复制消息信息",
+            detail = "可在手机或桌面继续查看"
+        )
     }
 
     fun copyConversationTranscript(conversation: ChatConversation) {
@@ -2430,6 +2460,10 @@ internal fun SpotChatApp(
             ClipData.newPlainText("SpotChat transcript", transcript)
         )
         trustState = "已复制聊天记录"
+        showActionConfirmation(
+            title = "已复制聊天记录",
+            detail = "最近对话已整理到剪贴板"
+        )
     }
 
     fun copyPhoneHandoffSummary(
@@ -2468,6 +2502,10 @@ internal fun SpotChatApp(
             ClipData.newPlainText("SpotChat phone handoff", summary)
         )
         trustState = "已复制手机交接"
+        showActionConfirmation(
+            title = "已复制手机交接",
+            detail = "可切到手机继续处理"
+        )
     }
 
     fun copyStarredSummary(conversations: List<ChatConversation>) {
@@ -2948,6 +2986,10 @@ internal fun SpotChatApp(
             )
         )
         trustState = "已复制诊断摘要"
+        showActionConfirmation(
+            title = "已复制诊断摘要",
+            detail = "手表状态已放入剪贴板"
+        )
     }
 
     fun copyMutedSummary(conversations: List<ChatConversation>) {
@@ -5945,6 +5987,10 @@ internal fun SpotChatApp(
                                 updateWearStateSnapshot()
                                 wearStateStore.requestSurfaceUpdates()
                                 trustState = "已刷新手表入口"
+                                showActionConfirmation(
+                                    title = "已刷新手表入口",
+                                    detail = "Tile 和表盘入口已请求更新"
+                                )
                             }
                         )
                     }
@@ -6592,6 +6638,10 @@ internal fun SpotChatApp(
                                 updateWearStateSnapshot()
                                 wearStateStore.requestSurfaceUpdates()
                                 trustState = "已刷新手表入口"
+                                showActionConfirmation(
+                                    title = "已刷新手表入口",
+                                    detail = "Tile 和表盘入口已请求更新"
+                                )
                             },
                             onDefaultDisappearingModeChange = { mode ->
                                 updateProfile(profile.copy(defaultDisappearingMode = mode.profileKey))
@@ -6639,6 +6689,103 @@ internal fun SpotChatApp(
                             onUnblockPeer = ::unblockPeer
                         )
                     }
+                }
+
+                actionConfirmation?.let { confirmation ->
+                    LaunchedEffect(confirmation.id) {
+                        delay(ACTION_CONFIRMATION_VISIBLE_MS)
+                        if (actionConfirmation?.id == confirmation.id) {
+                            actionConfirmation = null
+                        }
+                    }
+                    WatchActionConfirmationBanner(
+                        confirmation = confirmation,
+                        isRoundScreen = isRoundScreen,
+                        onDismiss = {
+                            if (actionConfirmation?.id == confirmation.id) {
+                                actionConfirmation = null
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WatchActionConfirmationBanner(
+    confirmation: WatchActionConfirmation,
+    isRoundScreen: Boolean,
+    onDismiss: () -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val bottomPadding =
+            when {
+                isRoundScreen && compact -> 20.dp
+                isRoundScreen -> 24.dp
+                else -> 12.dp
+            }
+        val bannerWidthFraction =
+            when {
+                isRoundScreen && compact -> 0.82f
+                isRoundScreen -> 0.78f
+                else -> 0.9f
+            }
+        Box(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .padding(bottom = bottomPadding),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth(bannerWidthFraction)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(chatGreen.copy(alpha = 0.94f))
+                        .border(
+                            width = 1.dp,
+                            color = Color.White.copy(alpha = 0.18f),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        .clickable(onClick = onDismiss)
+                        .padding(
+                            horizontal = if (compact) 9.dp else 11.dp,
+                            vertical = if (compact) 7.dp else 8.dp
+                        ),
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.DoneAll,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(if (compact) 16.dp else 18.dp)
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
+                    Text(
+                        text = confirmation.title,
+                        color = Color.White,
+                        fontSize = if (compact) 11.sp else 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = confirmation.detail,
+                        color = Color.White.copy(alpha = 0.78f),
+                        fontSize = if (compact) 9.sp else 10.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }
