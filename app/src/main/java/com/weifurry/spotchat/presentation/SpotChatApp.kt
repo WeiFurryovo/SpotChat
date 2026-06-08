@@ -5471,6 +5471,12 @@ private fun WatchConversationListSurface(
                     val canRetryVisibleMessages =
                         (activeFilter == ChatListFilter.All || activeFilter == ChatListFilter.Retryable) &&
                             conversations.any { conversation -> hasRetryableMessages(conversation.id) }
+                    val canMuteVisibleGroups =
+                        (activeFilter == ChatListFilter.All || activeFilter == ChatListFilter.Group) &&
+                            conversations.any { conversation ->
+                                conversation.kind == ConversationKind.Group &&
+                                    !isConversationMuted(conversation.id)
+                            }
 
                     if (
                         canMarkVisibleRead
@@ -5577,7 +5583,7 @@ private fun WatchConversationListSurface(
                         }
                     }
 
-                    if (activeFilter == ChatListFilter.Group && conversations.isNotEmpty()) {
+                    if (canMuteVisibleGroups) {
                         Column(
                             modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
                         ) {
