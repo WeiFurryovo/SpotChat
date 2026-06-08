@@ -3555,6 +3555,11 @@ internal fun SpotChatApp(
             intent.getStringExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID) ?: return
         val conversation = conversationById(conversationId) ?: return
         clearConversationAlerts(conversation.id)
+        if (intent.action == SpotChatNotificationIntents.ACTION_MARK_READ) {
+            markConversationRead(conversation.id)
+            trustState = "已标为已读"
+            return
+        }
         openConversation(conversation)
 
         if (intent.action != SpotChatNotificationIntents.ACTION_REPLY) {

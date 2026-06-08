@@ -46,6 +46,8 @@ class SpotChatNotifier(context: Context) {
             baseIntent(SpotChatNotificationIntents.ACTION_OPEN_CONVERSATION, conversationId)
         val replyIntent =
             baseIntent(SpotChatNotificationIntents.ACTION_REPLY, conversationId)
+        val markReadIntent =
+            baseIntent(SpotChatNotificationIntents.ACTION_MARK_READ, conversationId)
 
         val openPendingIntent =
             PendingIntent.getActivity(
@@ -60,6 +62,13 @@ class SpotChatNotifier(context: Context) {
                 notificationId + REPLY_REQUEST_CODE_OFFSET,
                 replyIntent,
                 pendingIntentFlags(mutable = true)
+            )
+        val markReadPendingIntent =
+            PendingIntent.getActivity(
+                appContext,
+                notificationId + MARK_READ_REQUEST_CODE_OFFSET,
+                markReadIntent,
+                pendingIntentFlags(mutable = false)
             )
         val remoteInput =
             RemoteInput.Builder(SpotChatNotificationIntents.EXTRA_REMOTE_REPLY)
@@ -76,6 +85,13 @@ class SpotChatNotifier(context: Context) {
                 .addRemoteInput(remoteInput)
                 .setAllowGeneratedReplies(true)
                 .build()
+        val markReadAction =
+            Notification.Action.Builder(
+                Icon.createWithResource(appContext, R.drawable.ic_spotchat),
+                "标为已读",
+                markReadPendingIntent
+            )
+                .build()
 
         val notificationText = messageText.take(MAX_NOTIFICATION_MESSAGE_CHARS)
 
@@ -90,6 +106,7 @@ class SpotChatNotifier(context: Context) {
                 .setCategory(Notification.CATEGORY_MESSAGE)
                 .setNumber(unreadCount)
                 .addAction(replyAction)
+                .addAction(markReadAction)
                 .build()
 
         notificationManager.notify(notificationId, notification)
@@ -180,6 +197,7 @@ class SpotChatNotifier(context: Context) {
         private const val NOTIFICATION_ID_BASE = 42_000
         private const val NOTIFICATION_ID_MASK = 0x000F_FFFF
         private const val REPLY_REQUEST_CODE_OFFSET = 10_000
+        private const val MARK_READ_REQUEST_CODE_OFFSET = 20_000
         private const val MAX_NOTIFICATION_MESSAGE_CHARS = 160
     }
 }
