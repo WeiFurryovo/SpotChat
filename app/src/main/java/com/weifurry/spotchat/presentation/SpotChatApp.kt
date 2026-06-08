@@ -2272,6 +2272,40 @@ internal fun SpotChatApp(
         trustState = "已复制内容摘要"
     }
 
+    fun copyGroupMemberSummary(conversation: ChatConversation) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val trustedByFingerprint = trustedPeers.associateBy { peer -> peer.fingerprint }
+        val memberPeers =
+            conversation.memberFingerprints.mapNotNull { fingerprint ->
+                trustedByFingerprint[fingerprint]
+            }
+        val summary =
+            groupMemberSummaryText(
+                conversation = conversation,
+                groupAbout =
+                    if (conversation.id == NEARBY_GROUP_CONVERSATION_ID) {
+                        nearbyGroupAbout
+                    } else {
+                        null
+                    },
+                memberPeers = memberPeers,
+                peerReachability = ::peerReachabilityText
+            )
+        if (summary.isBlank()) {
+            trustState = "没有群成员"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat group members", summary)
+        )
+        trustState = "已复制群成员摘要"
+    }
+
     fun copySafetyCode(peer: StoredTrustedPeer) {
         val clipboardManager =
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -4969,6 +5003,9 @@ internal fun SpotChatApp(
                             trustedPeers = trustedPeers,
                             peerReachability = ::peerReachabilityText,
                             onNavigateBack = dismissOverlay,
+                            onCopyMemberSummary = {
+                                copyGroupMemberSummary(selectedConversation)
+                            },
                             onOpenDirectChat = { peer ->
                                 val directConversationId = ensureDirectConversation(peer)
                                 conversationById(directConversationId)?.let { directConversation ->
@@ -8701,6 +8738,7 @@ private fun WatchGroupMembersSurface(
     trustedPeers: List<StoredTrustedPeer>,
     peerReachability: (String) -> String,
     onNavigateBack: () -> Unit,
+    onCopyMemberSummary: () -> Unit,
     onOpenDirectChat: (StoredTrustedPeer) -> Unit,
     onOpenSecurityCheck: (StoredTrustedPeer) -> Unit
 ) {
@@ -8769,6 +8807,20 @@ private fun WatchGroupMembersSurface(
                             activeFilter = filter
                         }
                     )
+
+                    if (memberPeers.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Keyboard,
+                                text = "复制成员摘要",
+                                selected = true,
+                                compact = compact,
+                                onClick = onCopyMemberSummary
+                            )
+                        }
+                    }
 
                     if (memberPeers.isEmpty()) {
                         SearchEmptyState(
@@ -12186,6 +12238,49 @@ private fun ChatBubble.contentLabels(): List<String> =
             add("链接")
         }
     }
+
+private fun groupMemberSummaryText(
+    conversation: ChatConversation,
+    groupAbout: String?,
+    memberPeers: List<StoredTrustedPeer>,
+    peerReachability: (String) -> String
+): String {
+    if (memberPeers.isEmpty()) {
+        return ""
+    }
+    val reachabilityByPeer =
+        memberPeers.associateWith { peer ->
+            peerReachability(peer.fingerprint)
+        }
+    val onlineCount =
+        reachabilityByPeer.count { (_, reachability) ->
+            reachability.contains("当前可发送")
+        }
+    val recentCount =
+        reachabilityByPeer.count { (_, reachability) ->
+            reachability.contains("最近发现")
+        }
+    val offlineCount = memberPeers.size - onlineCount - recentCount
+    return buildString {
+        appendLine("SpotChat 群成员摘要")
+        appendLine("群聊：${conversation.title}")
+        groupAbout
+            ?.takeIf { about -> about.isNotBlank() }
+            ?.let { about -> appendLine("群公告：$about") }
+        appendLine("成员：${memberPeers.size} 位")
+        appendLine("状态：在线 $onlineCount · 最近 $recentCount · 离线 $offlineCount")
+        appendLine()
+        memberPeers.forEachIndexed { index, peer ->
+            val reachability = reachabilityByPeer[peer].orEmpty()
+            appendLine(
+                "${index + 1}. ${peerDisplayName(peer)} · " +
+                    "${peerReachabilityShortLabel(reachability)} · " +
+                    "${peerAbout(peer)} · " +
+                    SpotChatCrypto.displayFingerprint(peer.fingerprint)
+            )
+        }
+    }.trim()
+}
 
 private fun ChatBubble.searchText(): String =
     buildList {
