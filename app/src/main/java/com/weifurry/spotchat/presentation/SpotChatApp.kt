@@ -220,6 +220,7 @@ private enum class ChatListFilter(
     Favorites("收藏"),
     Unread("未读"),
     Starred("星标"),
+    Drafts("草稿"),
     Mentions("提及"),
     Retryable("未发送"),
     Locked("锁定"),
@@ -257,6 +258,7 @@ private fun ChatConversation.matchesFilter(
     mentionCounts: Map<String, Int>,
     favoriteConversationIds: Map<String, Boolean>,
     starredMessageIdsByConversation: Map<String, Set<String>>,
+    draftsByConversation: Map<String, ConversationDraft>,
     lockedConversationIds: Map<String, Boolean>,
     disappearingModesByConversation: Map<String, DisappearingMessageMode>,
     readReceiptsDisabledByConversation: Map<String, Boolean>,
@@ -268,6 +270,7 @@ private fun ChatConversation.matchesFilter(
         ChatListFilter.Favorites -> favoriteConversationIds[id] == true
         ChatListFilter.Unread -> (unreadCounts[id] ?: 0) > 0
         ChatListFilter.Starred -> starredMessageIdsByConversation[id].orEmpty().isNotEmpty()
+        ChatListFilter.Drafts -> draftsByConversation[id] != null
         ChatListFilter.Mentions -> (mentionCounts[id] ?: 0) > 0
         ChatListFilter.Retryable -> hasRetryableMessages(id)
         ChatListFilter.Locked -> lockedConversationIds[id] == true
@@ -4184,6 +4187,7 @@ internal fun SpotChatApp(
                             mentionCounts = mentionCounts,
                             favoriteConversationIds = favoriteConversationIds,
                             starredMessageIdsByConversation = starredMessageIdsByConversation,
+                            draftsByConversation = draftsByConversation,
                             lockedConversationIds = lockedConversationIds,
                             disappearingModesByConversation = disappearingModesByConversation,
                             readReceiptsDisabledByConversation = readReceiptsDisabledByConversation,
@@ -5122,6 +5126,10 @@ private fun WatchConversationListSurface(
                         allVisibleConversations.count { conversation ->
                             starredMessageIdsByConversation[conversation.id].orEmpty().isNotEmpty()
                         }
+                    val draftCount =
+                        allVisibleConversations.count { conversation ->
+                            draftsByConversation[conversation.id] != null
+                        }
                     val mentionCount =
                         allVisibleConversations.count { conversation ->
                             (mentionCounts[conversation.id] ?: 0) > 0
@@ -5175,6 +5183,7 @@ private fun WatchConversationListSurface(
                         favoriteCount = favoriteCount,
                         unreadCount = unreadCount,
                         starredCount = starredCount,
+                        draftCount = draftCount,
                         mentionCount = mentionCount,
                         retryableCount = retryableCount,
                         lockedCount = lockedCount,
@@ -5527,6 +5536,7 @@ private fun ChatFilterStrip(
     favoriteCount: Int,
     unreadCount: Int,
     starredCount: Int,
+    draftCount: Int,
     mentionCount: Int,
     retryableCount: Int,
     lockedCount: Int,
@@ -5572,6 +5582,7 @@ private fun ChatFilterStrip(
                         ChatListFilter.Favorites -> favoriteCount
                         ChatListFilter.Unread -> unreadCount
                         ChatListFilter.Starred -> starredCount
+                        ChatListFilter.Drafts -> draftCount
                         ChatListFilter.Mentions -> mentionCount
                         ChatListFilter.Retryable -> retryableCount
                         ChatListFilter.Locked -> lockedCount
@@ -5610,6 +5621,7 @@ private fun FilterSegment(
             when (filter) {
                 ChatListFilter.Retryable -> 54.dp
                 ChatListFilter.Starred -> 48.dp
+                ChatListFilter.Drafts -> 48.dp
                 ChatListFilter.Mentions -> 48.dp
                 ChatListFilter.Locked -> 48.dp
                 ChatListFilter.Muted -> 48.dp
@@ -5621,6 +5633,7 @@ private fun FilterSegment(
             when (filter) {
                 ChatListFilter.Retryable -> 60.dp
                 ChatListFilter.Starred -> 54.dp
+                ChatListFilter.Drafts -> 54.dp
                 ChatListFilter.Mentions -> 54.dp
                 ChatListFilter.Locked -> 54.dp
                 ChatListFilter.Muted -> 54.dp
@@ -5947,6 +5960,7 @@ private fun EmptyFilterCapsule(
                     ChatListFilter.Favorites -> "没有收藏聊天"
                     ChatListFilter.Unread -> "没有未读聊天"
                     ChatListFilter.Starred -> "没有星标聊天"
+                    ChatListFilter.Drafts -> "没有草稿聊天"
                     ChatListFilter.Mentions -> "没有提及你的聊天"
                     ChatListFilter.Retryable -> "没有未发送消息"
                     ChatListFilter.Locked -> "没有锁定聊天"
