@@ -5104,51 +5104,85 @@ private fun WatchConversationListSurface(
                         surfaceSpec = surfaceSpec
                     )
 
-                    ChatFilterStrip(
-                        activeFilter = activeFilter,
-                        favoriteCount =
-                            allVisibleConversations.count { conversation ->
-                                favoriteConversationIds[conversation.id] == true
-                            },
-                        unreadCount =
-                            allVisibleConversations.count { conversation ->
-                                (unreadCounts[conversation.id] ?: 0) > 0
-                            },
-                        mentionCount =
-                            allVisibleConversations.count { conversation ->
-                                (mentionCounts[conversation.id] ?: 0) > 0
-                            },
-                        retryableCount =
-                            allVisibleConversations.count { conversation ->
-                                hasRetryableMessages(conversation.id)
-                            },
-                        lockedCount =
-                            allVisibleConversations.count { conversation ->
-                                lockedConversationIds[conversation.id] == true
-                            },
-                        mutedCount =
-                            allVisibleConversations.count { conversation ->
-                                isConversationMuted(conversation.id)
-                            },
-                        disappearingCount =
-                            allVisibleConversations.count { conversation ->
+                    val favoriteCount =
+                        allVisibleConversations.count { conversation ->
+                            favoriteConversationIds[conversation.id] == true
+                        }
+                    val unreadCount =
+                        allVisibleConversations.count { conversation ->
+                            (unreadCounts[conversation.id] ?: 0) > 0
+                        }
+                    val mentionCount =
+                        allVisibleConversations.count { conversation ->
+                            (mentionCounts[conversation.id] ?: 0) > 0
+                        }
+                    val retryableCount =
+                        allVisibleConversations.count { conversation ->
+                            hasRetryableMessages(conversation.id)
+                        }
+                    val lockedCount =
+                        allVisibleConversations.count { conversation ->
+                            lockedConversationIds[conversation.id] == true
+                        }
+                    val mutedCount =
+                        allVisibleConversations.count { conversation ->
+                            isConversationMuted(conversation.id)
+                        }
+                    val disappearingCount =
+                        allVisibleConversations.count { conversation ->
+                            (
+                                disappearingModesByConversation[conversation.id]
+                                    ?: DisappearingMessageMode.Off
+                            ) != DisappearingMessageMode.Off
+                        }
+                    val readReceiptsOffCount =
+                        allVisibleConversations.count { conversation ->
+                            readReceiptsDisabledByConversation[conversation.id] == true
+                        }
+                    val privacyChatCount =
+                        allVisibleConversations.count { conversation ->
+                            val hasDisappearingMessages =
                                 (
                                     disappearingModesByConversation[conversation.id]
                                         ?: DisappearingMessageMode.Off
                                 ) != DisappearingMessageMode.Off
-                            },
-                        readReceiptsOffCount =
-                            allVisibleConversations.count { conversation ->
+                            lockedConversationIds[conversation.id] == true ||
+                                isConversationMuted(conversation.id) ||
+                                hasDisappearingMessages ||
                                 readReceiptsDisabledByConversation[conversation.id] == true
-                            },
-                        directCount =
-                            allVisibleConversations.count { conversation ->
-                                conversation.kind == ConversationKind.Direct
-                            },
-                        groupCount =
-                            allVisibleConversations.count { conversation ->
-                                conversation.kind == ConversationKind.Group
-                            },
+                        }
+                    val directCount =
+                        allVisibleConversations.count { conversation ->
+                            conversation.kind == ConversationKind.Direct
+                        }
+                    val groupCount =
+                        allVisibleConversations.count { conversation ->
+                            conversation.kind == ConversationKind.Group
+                        }
+
+                    ChatFilterStrip(
+                        activeFilter = activeFilter,
+                        favoriteCount = favoriteCount,
+                        unreadCount = unreadCount,
+                        mentionCount = mentionCount,
+                        retryableCount = retryableCount,
+                        lockedCount = lockedCount,
+                        mutedCount = mutedCount,
+                        disappearingCount = disappearingCount,
+                        readReceiptsOffCount = readReceiptsOffCount,
+                        directCount = directCount,
+                        groupCount = groupCount,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec,
+                        onSelectFilter = onSelectFilter
+                    )
+
+                    PrivacyOverviewCapsule(
+                        privacyChatCount = privacyChatCount,
+                        lockedCount = lockedCount,
+                        mutedCount = mutedCount,
+                        disappearingCount = disappearingCount,
+                        readReceiptsOffCount = readReceiptsOffCount,
                         compact = compact,
                         surfaceSpec = surfaceSpec,
                         onSelectFilter = onSelectFilter
@@ -5601,6 +5635,108 @@ private fun FilterSegment(
             textAlign = TextAlign.Center
         )
     }
+}
+
+@Composable
+private fun PrivacyOverviewCapsule(
+    privacyChatCount: Int,
+    lockedCount: Int,
+    mutedCount: Int,
+    disappearingCount: Int,
+    readReceiptsOffCount: Int,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    onSelectFilter: (ChatListFilter) -> Unit
+) {
+    val summary =
+        if (privacyChatCount == 0) {
+            "隐私常规"
+        } else {
+            "隐私 $privacyChatCount"
+        }
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.74f))
+                .border(1.dp, chatGreen.copy(alpha = 0.18f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 6.dp else 8.dp, vertical = if (compact) 6.dp else 7.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.VerifiedUser,
+            contentDescription = "隐私总览",
+            tint = if (privacyChatCount == 0) chatGreen else chatAmber,
+            modifier = Modifier.size(if (compact) 12.dp else 14.dp)
+        )
+        Text(
+            text = summary,
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = if (compact) 9.sp else 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        PrivacyMetricPill(
+            label = "锁",
+            count = lockedCount,
+            filter = ChatListFilter.Locked,
+            compact = compact,
+            onSelectFilter = onSelectFilter
+        )
+        PrivacyMetricPill(
+            label = "静",
+            count = mutedCount,
+            filter = ChatListFilter.Muted,
+            compact = compact,
+            onSelectFilter = onSelectFilter
+        )
+        PrivacyMetricPill(
+            label = "限",
+            count = disappearingCount,
+            filter = ChatListFilter.Disappearing,
+            compact = compact,
+            onSelectFilter = onSelectFilter
+        )
+        PrivacyMetricPill(
+            label = "回",
+            count = readReceiptsOffCount,
+            filter = ChatListFilter.ReadReceiptsOff,
+            compact = compact,
+            onSelectFilter = onSelectFilter
+        )
+    }
+}
+
+@Composable
+private fun PrivacyMetricPill(
+    label: String,
+    count: Int,
+    filter: ChatListFilter,
+    compact: Boolean,
+    onSelectFilter: (ChatListFilter) -> Unit
+) {
+    val hasCount = count > 0
+    val background = if (hasCount) chatGreen.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.045f)
+    val foreground = if (hasCount) chatGreen else chatRowMuted
+    Text(
+        text = "$label${count.coerceAtMost(99)}",
+        color = foreground,
+        fontSize = if (compact) 8.sp else 9.sp,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+        textAlign = TextAlign.Center,
+        modifier =
+            Modifier
+                .width(if (compact) 25.dp else 29.dp)
+                .clip(RoundedCornerShape(7.dp))
+                .background(background)
+                .clickable(onClick = { onSelectFilter(filter) })
+                .padding(vertical = if (compact) 4.dp else 5.dp)
+    )
 }
 
 @Composable
