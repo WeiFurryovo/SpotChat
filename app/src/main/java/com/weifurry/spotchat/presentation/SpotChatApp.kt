@@ -1944,15 +1944,18 @@ internal fun SpotChatApp(
 
     fun removeMessageCaches(
         conversationId: String,
-        message: ChatBubble
+        message: ChatBubble,
+        removeStar: Boolean = true
     ) {
         val starId = message.stableStarId()
         val displayMessageId = message.messageId
-        val updatedStarIds = starredMessageIds(conversationId) - starId
-        if (updatedStarIds.isEmpty()) {
-            starredMessageIdsByConversation.remove(conversationId)
-        } else {
-            starredMessageIdsByConversation[conversationId] = updatedStarIds
+        if (removeStar) {
+            val updatedStarIds = starredMessageIds(conversationId) - starId
+            if (updatedStarIds.isEmpty()) {
+                starredMessageIdsByConversation.remove(conversationId)
+            } else {
+                starredMessageIdsByConversation[conversationId] = updatedStarIds
+            }
         }
         if (pinnedMessageIdsByConversation[conversationId] == starId) {
             pinnedMessageIdsByConversation.remove(conversationId)
@@ -1975,6 +1978,61 @@ internal fun SpotChatApp(
         }
         pendingQuotedMessage =
             pendingQuotedMessage?.takeUnless { quote -> quote.messageId == displayMessageId }
+    }
+
+    fun clearConversationKeepingStarred(conversation: ChatConversation) {
+        val starredIds = starredMessageIds(conversation.id)
+        if (starredIds.isEmpty()) {
+            clearConversation(conversation)
+            return
+        }
+        val messages = messagesForConversation(conversation.id)
+        val keptMessages =
+            messages.filter { message ->
+                message.deliveryState != DeliveryState.System &&
+                    message.stableStarId() in starredIds
+            }
+        val removedMessages =
+            messages.filterNot { message ->
+                message.deliveryState != DeliveryState.System &&
+                    message.stableStarId() in starredIds
+            }
+        removedMessages.forEach { message ->
+            removeMessageCaches(conversation.id, message, removeStar = false)
+        }
+        conversationMessages[conversation.id] =
+            listOf(
+                ChatBubble(
+                    text = "已清空聊天，保留 ${keptMessages.size} 条星标消息",
+                    mine = false,
+                    encrypted = true,
+                    timestamp = nowTime(),
+                    deliveryState = DeliveryState.System
+                )
+            ) + keptMessages
+        conversationUpdateSequence += 1
+        conversationUpdateOrder[conversation.id] = conversationUpdateSequence
+        unreadCounts.remove(conversation.id)
+        val pinnedId = pinnedMessageIdsByConversation[conversation.id]
+        if (pinnedId != null && pinnedId !in starredIds) {
+            pinnedMessageIdsByConversation.remove(conversation.id)
+        }
+        notifier.clearConversation(conversation.id)
+        selectedActionMessage =
+            selectedActionMessage?.takeIf { message ->
+                message.stableStarId() in starredIds
+            }
+        selectedSecurityPeerFingerprint = null
+        pendingQuotedMessage =
+            pendingQuotedMessage?.takeIf { quote ->
+                keptMessages.any { message -> message.messageId == quote.messageId }
+            }
+        pendingDirectReply = null
+        pendingForwardMessage =
+            pendingForwardMessage?.takeIf { message ->
+                message.stableStarId() in starredIds
+            }
+        trustState = "已保留星标消息"
     }
 
     fun deleteMessageForMe(
@@ -3788,6 +3846,10 @@ internal fun SpotChatApp(
                             onToggleDisappearingMessages = {
                                 appSurface = AppSurface.DisappearingSettings
                             },
+                            onClearKeepingStarred = {
+                                clearConversationKeepingStarred(selectedConversation)
+                                appSurface = AppSurface.Chat
+                            },
                             onClearConversation = {
                                 clearConversation(selectedConversation)
                                 appSurface = AppSurface.Chat
@@ -5475,6 +5537,7 @@ private fun WatchChatInfoSurface(
     onToggleUnread: () -> Unit,
     onRetryFailedMessages: () -> Unit,
     onToggleDisappearingMessages: () -> Unit,
+    onClearKeepingStarred: () -> Unit,
     onClearConversation: () -> Unit,
     onForgetPeer: () -> Unit
 ) {
@@ -5824,6 +5887,15 @@ private fun WatchChatInfoSurface(
                             compact = compact,
                             onClick = onSearchMessages
                         )
+                        if (starredCount > 0) {
+                            MessageActionButton(
+                                icon = Icons.Filled.StarRate,
+                                text = "清空保留星标",
+                                selected = true,
+                                compact = compact,
+                                onClick = onClearKeepingStarred
+                            )
+                        }
                         MessageActionButton(
                             icon = Icons.Filled.Delete,
                             text = "清空聊天",
