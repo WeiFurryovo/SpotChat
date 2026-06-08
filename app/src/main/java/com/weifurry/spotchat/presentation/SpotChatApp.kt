@@ -65,6 +65,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PersonRemove
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
@@ -2429,6 +2430,44 @@ internal fun SpotChatApp(
             ClipData.newPlainText("SpotChat transcript", transcript)
         )
         trustState = "已复制聊天记录"
+    }
+
+    fun copyPhoneHandoffSummary(
+        conversation: ChatConversation,
+        reachability: String
+    ) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val messages = messagesForConversation(conversation.id)
+        val summary =
+            phoneHandoffSummaryText(
+                conversation = conversation,
+                messages = messages,
+                reachability = reachability,
+                unreadCount = unreadCounts[conversation.id] ?: 0,
+                draft = draftsByConversation[conversation.id],
+                retryableCount =
+                    messages.count { message -> message.canRetry() },
+                isMuted = isConversationMuted(conversation.id),
+                isArchived = archivedConversationIds[conversation.id] == true,
+                isLocked = isConversationLocked(conversation.id),
+                readReceiptsEnabled = areReadReceiptsEnabled(conversation.id),
+                disappearingMode =
+                    disappearingModesByConversation[conversation.id]
+                        ?: DisappearingMessageMode.Off
+            )
+        if (summary.isBlank()) {
+            trustState = "没有可交接的聊天"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat phone handoff", summary)
+        )
+        trustState = "已复制手机交接"
     }
 
     fun copyStarredSummary(conversations: List<ChatConversation>) {
@@ -6108,6 +6147,17 @@ internal fun SpotChatApp(
                             onCopyTranscript = {
                                 copyConversationTranscript(selectedConversation)
                             },
+                            onCopyPhoneHandoff = {
+                                val reachability =
+                                    if (selectedConversation.kind == ConversationKind.Direct) {
+                                        selectedConversation.peerFingerprint
+                                            ?.let { fingerprint -> peerReachabilityText(fingerprint) }
+                                            ?: "等待发现"
+                                    } else {
+                                        groupReachabilityText(selectedConversation.memberFingerprints)
+                                    }
+                                copyPhoneHandoffSummary(selectedConversation, reachability)
+                            },
                             onCopyContentSummary = {
                                 copyConversationContentSummary(selectedConversation)
                             },
@@ -9015,6 +9065,7 @@ private fun WatchChatInfoSurface(
     onRetryFailedMessages: () -> Unit,
     onToggleDisappearingMessages: () -> Unit,
     onCopyTranscript: () -> Unit,
+    onCopyPhoneHandoff: () -> Unit,
     onCopyContentSummary: () -> Unit,
     onClearKeepingStarred: () -> Unit,
     onClearConversation: () -> Unit,
@@ -9542,6 +9593,13 @@ private fun WatchChatInfoSurface(
                             selected = true,
                             compact = compact,
                             onClick = onOpenSecurityCheck
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.PhoneAndroid,
+                            text = "手机交接",
+                            selected = true,
+                            compact = compact,
+                            onClick = onCopyPhoneHandoff
                         )
                         MessageActionButton(
                             icon = Icons.AutoMirrored.Filled.Chat,
@@ -14892,6 +14950,78 @@ private fun conversationTranscript(
                     ?.joinToString(separator = " · ", prefix = " [", postfix = "]")
                     .orEmpty()
             appendLine("[${message.timestamp}] $sender$prefix：${message.copyText()}")
+        }
+    }.trim()
+}
+
+private fun phoneHandoffSummaryText(
+    conversation: ChatConversation,
+    messages: List<ChatBubble>,
+    reachability: String,
+    unreadCount: Int,
+    draft: ConversationDraft?,
+    retryableCount: Int,
+    isMuted: Boolean,
+    isArchived: Boolean,
+    isLocked: Boolean,
+    readReceiptsEnabled: Boolean,
+    disappearingMode: DisappearingMessageMode
+): String {
+    val userMessages =
+        messages
+            .filter { message -> message.deliveryState != DeliveryState.System }
+    val recentMessages = userMessages.takeLast(4)
+    return buildString {
+        appendLine("SpotChat 手机交接")
+        appendLine("聊天：${conversation.title}")
+        appendLine("类型：${conversation.kind.label}")
+        appendLine("可达：$reachability")
+        appendLine(
+            "状态：" +
+                buildList {
+                    if (unreadCount > 0) {
+                        add("未读 $unreadCount")
+                    }
+                    if (retryableCount > 0) {
+                        add("待发 $retryableCount")
+                    }
+                    if (draft != null) {
+                        add("有草稿")
+                    }
+                    if (isMuted) {
+                        add("静音")
+                    }
+                    if (isArchived) {
+                        add("归档")
+                    }
+                    if (isLocked) {
+                        add("锁定")
+                    }
+                    if (!readReceiptsEnabled) {
+                        add("回执关闭")
+                    }
+                    if (disappearingMode != DisappearingMessageMode.Off) {
+                        add("限时${disappearingMode.label}")
+                    }
+                }.ifEmpty { listOf("正常") }.joinToString(separator = " · ")
+        )
+        draft?.text?.takeIf { text -> text.isNotBlank() }?.let { text ->
+            appendLine("草稿：$text")
+        }
+        appendLine("最近消息：")
+        if (recentMessages.isEmpty()) {
+            appendLine("没有消息")
+        } else {
+            recentMessages.forEach { message ->
+                val sender =
+                    when {
+                        message.mine -> "我"
+                        message.senderName != null -> message.senderName
+                        conversation.kind == ConversationKind.Direct -> conversation.title
+                        else -> "SpotChat"
+                    }
+                appendLine("- $sender：${message.copyText()}")
+            }
         }
     }.trim()
 }
