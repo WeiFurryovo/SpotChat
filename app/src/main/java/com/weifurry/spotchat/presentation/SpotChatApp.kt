@@ -2278,6 +2278,58 @@ internal fun SpotChatApp(
         trustState = if (mentionsOnly) "已复制提及摘要" else "已复制未读摘要"
     }
 
+    fun copyMessageSearchSummary(
+        conversation: ChatConversation,
+        query: String,
+        results: List<ChatBubble>
+    ) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            messageSearchSummaryText(
+                conversation = conversation,
+                query = query,
+                results = results
+            )
+        if (summary.isBlank()) {
+            trustState = "没有搜索结果"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat message search", summary)
+        )
+        trustState = "已复制搜索摘要"
+    }
+
+    fun copyGlobalSearchSummary(
+        query: String,
+        results: List<GlobalSearchResult>
+    ) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            globalSearchSummaryText(
+                query = query,
+                results = results
+            )
+        if (summary.isBlank()) {
+            trustState = "没有搜索结果"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat global search", summary)
+        )
+        trustState = "已复制全局搜索摘要"
+    }
+
     fun copyConversationContentSummary(conversation: ChatConversation) {
         val clipboardManager =
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -4807,6 +4859,12 @@ internal fun SpotChatApp(
                             },
                             onNavigateBack = dismissOverlay,
                             onSearchAgain = ::openGlobalSearchInput,
+                            onCopyResults = {
+                                copyGlobalSearchSummary(
+                                    query = searchQuery,
+                                    results = searchAllMessages(currentConversations, searchQuery)
+                                )
+                            },
                             onOpenResult = { result ->
                                 activeConversationId = result.conversation.id
                                 messageActionsBackStack.clear()
@@ -5166,6 +5224,13 @@ internal fun SpotChatApp(
                             starredMessageIds = starredMessageIds(selectedConversation.id),
                             onNavigateBack = dismissOverlay,
                             onSearchAgain = ::openMessageSearchInput,
+                            onCopyResults = {
+                                copyMessageSearchSummary(
+                                    conversation = selectedConversation,
+                                    query = searchQuery,
+                                    results = searchMessages(selectedConversation.id, searchQuery)
+                                )
+                            },
                             onOpenMessage = { message ->
                                 messageActionsBackStack.clear()
                                 messageActionsReturnSurface = AppSurface.MessageSearch
@@ -8503,6 +8568,7 @@ private fun WatchMessageSearchSurface(
     starredMessageIds: Set<String>,
     onNavigateBack: () -> Unit,
     onSearchAgain: () -> Unit,
+    onCopyResults: () -> Unit,
     onOpenMessage: (ChatBubble) -> Unit
 ) {
     BoxWithConstraints(
@@ -8559,6 +8625,15 @@ private fun WatchMessageSearchSurface(
                         compact = compact,
                         onClick = onSearchAgain
                     )
+                    if (results.isNotEmpty()) {
+                        MessageActionButton(
+                            icon = Icons.Filled.Keyboard,
+                            text = "复制结果摘要",
+                            selected = true,
+                            compact = compact,
+                            onClick = onCopyResults
+                        )
+                    }
 
                     if (cleanQuery.isBlank()) {
                         SearchEmptyState(
@@ -8611,6 +8686,7 @@ private fun WatchGlobalSearchSurface(
     starredMessageIds: (String) -> Set<String>,
     onNavigateBack: () -> Unit,
     onSearchAgain: () -> Unit,
+    onCopyResults: () -> Unit,
     onOpenResult: (GlobalSearchResult) -> Unit
 ) {
     BoxWithConstraints(
@@ -8674,6 +8750,15 @@ private fun WatchGlobalSearchSurface(
                         compact = compact,
                         onClick = onSearchAgain
                     )
+                    if (results.isNotEmpty()) {
+                        MessageActionButton(
+                            icon = Icons.Filled.Keyboard,
+                            text = "复制结果摘要",
+                            selected = true,
+                            compact = compact,
+                            onClick = onCopyResults
+                        )
+                    }
 
                     if (cleanQuery.isBlank()) {
                         SearchEmptyState(
@@ -12351,6 +12436,62 @@ private fun attentionSummaryText(
             } else {
                 appendLine("   最新：没有可显示消息")
             }
+        }
+    }.trim()
+}
+
+private fun messageSearchSummaryText(
+    conversation: ChatConversation,
+    query: String,
+    results: List<ChatBubble>
+): String {
+    val cleanQuery = query.trim()
+    if (cleanQuery.isBlank() || results.isEmpty()) {
+        return ""
+    }
+    return buildString {
+        appendLine("SpotChat 搜索摘要")
+        appendLine("聊天：${conversation.title}")
+        appendLine("关键词：$cleanQuery")
+        appendLine("结果：${results.size} 条")
+        appendLine()
+        results.forEachIndexed { index, message ->
+            val sender =
+                when {
+                    message.mine -> "我"
+                    message.senderName != null -> message.senderName
+                    conversation.kind == ConversationKind.Direct -> conversation.title
+                    else -> "SpotChat"
+                }
+            appendLine("${index + 1}. [${message.timestamp}] $sender：${message.copyText()}")
+        }
+    }.trim()
+}
+
+private fun globalSearchSummaryText(
+    query: String,
+    results: List<GlobalSearchResult>
+): String {
+    val cleanQuery = query.trim()
+    if (cleanQuery.isBlank() || results.isEmpty()) {
+        return ""
+    }
+    return buildString {
+        appendLine("SpotChat 全局搜索摘要")
+        appendLine("关键词：$cleanQuery")
+        appendLine("结果：${results.size} 条")
+        appendLine()
+        results.forEachIndexed { index, result ->
+            val message = result.message
+            val sender =
+                when {
+                    message.mine -> "我"
+                    message.senderName != null -> message.senderName
+                    result.conversation.kind == ConversationKind.Direct -> result.conversation.title
+                    else -> "SpotChat"
+                }
+            appendLine("${index + 1}. ${result.conversation.title}")
+            appendLine("   [${message.timestamp}] $sender：${message.copyText()}")
         }
     }.trim()
 }
