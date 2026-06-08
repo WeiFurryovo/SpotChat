@@ -2682,6 +2682,18 @@ internal fun SpotChatApp(
         trustState = "正在重发"
     }
 
+    fun retryConversationMessages(conversation: ChatConversation) {
+        val retryableMessages = messagesForConversation(conversation.id).filter { message -> message.canRetry() }
+        if (retryableMessages.isEmpty()) {
+            trustState = "没有可重发消息"
+            return
+        }
+        retryableMessages.forEach { message ->
+            retryMessage(conversation, message)
+        }
+        trustState = "正在重发 ${retryableMessages.size} 条消息"
+    }
+
     fun toggleVoiceRecording() {
         if (
             context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
@@ -3220,6 +3232,9 @@ internal fun SpotChatApp(
                             isArchived = archivedConversationIds[selectedConversation.id] == true,
                             unreadCount = unreadCounts[selectedConversation.id] ?: 0,
                             starredCount = starredMessageIds(selectedConversation.id).size,
+                            retryableCount =
+                                messagesForConversation(selectedConversation.id)
+                                    .count { message -> message.canRetry() },
                             disappearingMode =
                                 disappearingModesByConversation[selectedConversation.id]
                                     ?: DisappearingMessageMode.Off,
@@ -3252,6 +3267,9 @@ internal fun SpotChatApp(
                             },
                             onToggleUnread = {
                                 toggleConversationUnread(selectedConversation)
+                            },
+                            onRetryFailedMessages = {
+                                retryConversationMessages(selectedConversation)
                             },
                             onToggleDisappearingMessages = {
                                 toggleDisappearingMessages(selectedConversation)
@@ -4744,6 +4762,7 @@ private fun WatchChatInfoSurface(
     isArchived: Boolean,
     unreadCount: Int,
     starredCount: Int,
+    retryableCount: Int,
     disappearingMode: DisappearingMessageMode,
     onNavigateBack: () -> Unit,
     onOpenSecurityCheck: () -> Unit,
@@ -4754,6 +4773,7 @@ private fun WatchChatInfoSurface(
     onToggleMuted: () -> Unit,
     onToggleArchived: () -> Unit,
     onToggleUnread: () -> Unit,
+    onRetryFailedMessages: () -> Unit,
     onToggleDisappearingMessages: () -> Unit,
     onClearConversation: () -> Unit,
     onForgetPeer: () -> Unit
@@ -4895,6 +4915,31 @@ private fun WatchChatInfoSurface(
                         )
                     }
 
+                    Row(
+                        modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
+                        horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        InfoMetricPill(
+                            label = "未发送",
+                            value = retryableCount.coerceAtMost(99).toString(),
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                        InfoMetricPill(
+                            label = "状态",
+                            value = if (retryableCount > 0) "需处理" else "正常",
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                        InfoMetricPill(
+                            label = "重发",
+                            value = if (retryableCount > 0) "可用" else "无",
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
                     ChatInfoLine(
                         icon =
                             if (conversation.kind == ConversationKind.Group) {
@@ -4991,6 +5036,15 @@ private fun WatchChatInfoSurface(
                             compact = compact,
                             onClick = onToggleUnread
                         )
+                        if (retryableCount > 0) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Refresh,
+                                text = "重发未发送",
+                                selected = true,
+                                compact = compact,
+                                onClick = onRetryFailedMessages
+                            )
+                        }
                         MessageActionButton(
                             icon = Icons.Filled.StarRate,
                             text = "星标消息",
