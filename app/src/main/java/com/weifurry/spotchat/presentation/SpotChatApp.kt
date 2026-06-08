@@ -4077,6 +4077,16 @@ private fun ChatFilterStrip(
     onSelectFilter: (ChatListFilter) -> Unit
 ) {
     val filterScrollState = rememberScrollState()
+    val density = LocalDensity.current
+    val chipStepPx =
+        with(density) {
+            ((if (compact) 48.dp else 53.dp) * activeFilter.ordinal).roundToPx()
+        }
+
+    LaunchedEffect(activeFilter, compact) {
+        filterScrollState.animateScrollTo(chipStepPx.coerceAtMost(filterScrollState.maxValue))
+    }
+
     Row(
         modifier =
             Modifier
