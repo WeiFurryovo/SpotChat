@@ -4765,6 +4765,20 @@ internal fun SpotChatApp(
                             trustState = trustState,
                             trustedPeers = trustedPeers,
                             blockedPeerFingerprints = blockedPeerFingerprints.toMap(),
+                            archivedChatCount =
+                                archivedConversationIds.count { (_, archived) -> archived },
+                            mutedChatCount =
+                                mutedConversations.count { (_, muted) -> muted.isActive() },
+                            lockedChatCount = lockedConversationIds.count { (_, locked) -> locked },
+                            draftChatCount = draftsByConversation.size,
+                            retryableChatCount =
+                                conversations().count { conversation ->
+                                    hasRetryableMessages(conversation.id)
+                                },
+                            starredMessageCount =
+                                starredMessageIdsByConversation.values.sumOf { starredIds ->
+                                    starredIds.size
+                                },
                             onNavigateBack = dismissOverlay,
                             onProfileChange = ::updateProfile
                         )
@@ -8472,6 +8486,12 @@ private fun WatchProfileSurface(
     trustState: String,
     trustedPeers: List<StoredTrustedPeer>,
     blockedPeerFingerprints: Map<String, Boolean>,
+    archivedChatCount: Int,
+    mutedChatCount: Int,
+    lockedChatCount: Int,
+    draftChatCount: Int,
+    retryableChatCount: Int,
+    starredMessageCount: Int,
     onNavigateBack: () -> Unit,
     onProfileChange: (ProfileSettings) -> Unit
 ) {
@@ -8624,6 +8644,25 @@ private fun WatchProfileSurface(
                     item {
                         ProfilePrivacyPanel(
                             blockedPeers = blockedPeers,
+                            surfaceSpec = surfaceSpec
+                        )
+                    }
+
+                    item {
+                        ProfileSectionLabel(
+                            text = "聊天管理",
+                            compact = compact
+                        )
+                    }
+
+                    item {
+                        ProfileChatManagementPanel(
+                            archivedChatCount = archivedChatCount,
+                            mutedChatCount = mutedChatCount,
+                            lockedChatCount = lockedChatCount,
+                            draftChatCount = draftChatCount,
+                            retryableChatCount = retryableChatCount,
+                            starredMessageCount = starredMessageCount,
                             surfaceSpec = surfaceSpec
                         )
                     }
@@ -9005,6 +9044,51 @@ private fun ProfilePrivacyPanel(
             label = "屏蔽名单",
             value = blockedSummary,
             accent = if (blockedPeers.isEmpty()) chatGreen else chatRose,
+            compact = compact
+        )
+    }
+}
+
+@Composable
+private fun ProfileChatManagementPanel(
+    archivedChatCount: Int,
+    mutedChatCount: Int,
+    lockedChatCount: Int,
+    draftChatCount: Int,
+    retryableChatCount: Int,
+    starredMessageCount: Int,
+    surfaceSpec: WatchSurfaceSpec
+) {
+    val compact = surfaceSpec.compact
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth(surfaceSpec.profileSummaryWidth)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.82f))
+                .border(1.dp, chatAmber.copy(alpha = 0.22f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 9.dp),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
+    ) {
+        ProfileInfoRow(
+            icon = Icons.Filled.Archive,
+            label = "归档/静音",
+            value = "$archivedChatCount / $mutedChatCount",
+            accent = chatAmber,
+            compact = compact
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.Lock,
+            label = "锁定/草稿",
+            value = "$lockedChatCount / $draftChatCount",
+            accent = chatBlue,
+            compact = compact
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.StarRate,
+            label = "待发/星标",
+            value = "$retryableChatCount / $starredMessageCount",
+            accent = chatGreen,
             compact = compact
         )
     }
