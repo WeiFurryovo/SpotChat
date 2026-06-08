@@ -2212,6 +2212,43 @@ internal fun SpotChatApp(
         trustState = "已复制聊天记录"
     }
 
+    fun copyStarredSummary(conversations: List<ChatConversation>) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            buildString {
+                appendLine("SpotChat 星标摘要")
+                var starredConversationCount = 0
+                conversations.forEach { conversation ->
+                    val transcript =
+                        conversationTranscript(
+                            conversation = conversation,
+                            messages = starredMessages(conversation.id)
+                        )
+                    if (transcript.isNotBlank()) {
+                        starredConversationCount += 1
+                        appendLine()
+                        append(transcript)
+                    }
+                }
+                if (starredConversationCount == 0) {
+                    clear()
+                }
+            }.trim()
+        if (summary.isBlank()) {
+            trustState = "没有星标消息"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat starred summary", summary)
+        )
+        trustState = "已复制星标摘要"
+    }
+
     fun copySafetyCode(peer: StoredTrustedPeer) {
         val clipboardManager =
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -4293,6 +4330,9 @@ internal fun SpotChatApp(
                                 trustState = "已发送草稿聊天"
                             }
                         },
+                        onCopyVisibleStarredSummary = {
+                            copyStarredSummary(visibleConversationList)
+                        },
                         onOpenProfile = {
                             appSurface = AppSurface.Profile
                         },
@@ -5058,6 +5098,7 @@ private fun WatchConversationListSurface(
     onMarkVisibleRead: () -> Unit,
     onRetryVisible: () -> Unit,
     onSendVisibleDrafts: () -> Unit,
+    onCopyVisibleStarredSummary: () -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
 ) {
@@ -5331,6 +5372,20 @@ private fun WatchConversationListSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onSendVisibleDrafts
+                            )
+                        }
+                    }
+
+                    if (activeFilter == ChatListFilter.Starred && conversations.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.StarRate,
+                                text = "复制星标摘要",
+                                selected = true,
+                                compact = compact,
+                                onClick = onCopyVisibleStarredSummary
                             )
                         }
                     }
