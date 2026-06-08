@@ -74,7 +74,7 @@ class SpotChatWearStateStore(context: Context) {
             }
             ?: WearChatSnapshot()
 
-    fun save(snapshot: WearChatSnapshot) {
+    fun save(snapshot: WearChatSnapshot): WearChatSnapshot {
         val normalized =
             snapshot.copy(
                 conversations =
@@ -92,10 +92,11 @@ class SpotChatWearStateStore(context: Context) {
         val encodedSnapshot = json.encodeToString(normalized)
         val previousSnapshot = prefs.getString(KEY_SNAPSHOT, null)
         if (previousSnapshot == encodedSnapshot) {
-            return
+            return normalized
         }
         prefs.edit().putString(KEY_SNAPSHOT, encodedSnapshot).apply()
         requestSurfaceUpdates()
+        return normalized
     }
 
     fun requestSurfaceUpdates() {

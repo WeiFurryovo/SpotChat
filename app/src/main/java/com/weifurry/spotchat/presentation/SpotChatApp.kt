@@ -212,6 +212,22 @@ private data class ConversationDraft(
     val updatedAtEpochMillis: Long = System.currentTimeMillis()
 )
 
+private data class WearDiagnosticsSnapshot(
+    val transportMode: TransportMode,
+    val trustState: String,
+    val lanReady: Boolean,
+    val bluetoothReady: Boolean,
+    val notificationReady: Boolean,
+    val audioReady: Boolean,
+    val trustedPeerCount: Int,
+    val reachablePeerCount: Int,
+    val unreadThreadCount: Int,
+    val retryableConversationCount: Int,
+    val draftConversationCount: Int,
+    val tileConversationCount: Int,
+    val wearUpdatedAtEpochMillis: Long
+)
+
 private enum class ConversationKind(
     val label: String
 ) {
@@ -879,6 +895,9 @@ internal fun SpotChatApp(
     var recordingElapsedMillis by remember { mutableStateOf(0L) }
     var recordingConversationId by remember { mutableStateOf<String?>(null) }
     var activePlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var wearChatSnapshot by remember(wearStateStore) {
+        mutableStateOf(wearStateStore.load())
+    }
     val greetedPeers = remember { mutableSetOf<String>() }
     val knownPeersByFingerprint = remember { mutableStateMapOf<String, TransportPeer>() }
     val peerLastSeenAt = remember { mutableStateMapOf<String, Long>() }
@@ -1931,12 +1950,12 @@ internal fun SpotChatApp(
                     isMuted = isConversationMuted(conversation.id)
                 )
             }
-        wearStateStore.save(
+        val snapshot =
             WearChatSnapshot(
                 conversations = summaries,
                 updatedAtEpochMillis = System.currentTimeMillis()
             )
-        )
+        wearChatSnapshot = wearStateStore.save(snapshot)
     }
 
     LaunchedEffect(
@@ -2865,6 +2884,22 @@ internal fun SpotChatApp(
             ClipData.newPlainText("SpotChat chat management", summary)
         )
         trustState = "已复制管理摘要"
+    }
+
+    fun copyWearDiagnosticsSummary(snapshot: WearDiagnosticsSnapshot) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText(
+                "SpotChat wear diagnostics",
+                wearDiagnosticsSummaryText(snapshot)
+            )
+        )
+        trustState = "已复制诊断摘要"
     }
 
     fun copyMutedSummary(conversations: List<ChatConversation>) {
@@ -5295,6 +5330,33 @@ internal fun SpotChatApp(
                 val selectedConversation =
                     currentConversations.firstOrNull { conversation -> conversation.id == activeConversationId }
                         ?: currentConversations.first()
+                val diagnosticsSnapshot =
+                    WearDiagnosticsSnapshot(
+                        transportMode = transportMode,
+                        trustState = trustState,
+                        lanReady = hasLanConnection(),
+                        bluetoothReady = hasBluetoothRuntimePermissions(),
+                        notificationReady = notifier.canPostNotifications(),
+                        audioReady =
+                            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                                PackageManager.PERMISSION_GRANTED,
+                        trustedPeerCount = trustedPeers.size,
+                        reachablePeerCount =
+                            trustedPeers.count { peer ->
+                                routeForPeer(peer.fingerprint) != null
+                            },
+                        unreadThreadCount =
+                            visibleConversationListBase.count { conversation ->
+                                (unreadCounts[conversation.id] ?: 0) > 0
+                            },
+                        retryableConversationCount =
+                            currentConversations.count { conversation ->
+                                hasRetryableMessages(conversation.id)
+                            },
+                        draftConversationCount = draftsByConversation.size,
+                        tileConversationCount = wearChatSnapshot.conversations.size,
+                        wearUpdatedAtEpochMillis = wearChatSnapshot.updatedAtEpochMillis
+                    )
                 val conversationListSurface: @Composable (Boolean) -> Unit = { profileNavigationEnabled ->
                     WatchConversationListSurface(
                         isRoundScreen = isRoundScreen,
@@ -6387,7 +6449,13 @@ internal fun SpotChatApp(
                                 starredMessageIdsByConversation.values.sumOf { starredIds ->
                                     starredIds.size
                             },
+                            diagnosticsSnapshot = diagnosticsSnapshot,
                             onNavigateBack = dismissOverlay,
+                            onRefreshWearSurfaces = {
+                                updateWearStateSnapshot()
+                                wearStateStore.requestSurfaceUpdates()
+                                trustState = "已刷新手表入口"
+                            },
                             onDefaultDisappearingModeChange = { mode ->
                                 updateProfile(profile.copy(defaultDisappearingMode = mode.profileKey))
                                 trustState = "默认限时消息${mode.label}"
@@ -6406,6 +6474,9 @@ internal fun SpotChatApp(
                             onCopyTrustedDevicesSummary = ::copyTrustedDevicesSummary,
                             onCopyPrivacySummary = ::copyPrivacySummary,
                             onCopyChatManagementSummary = ::copyChatManagementSummary,
+                            onCopyWearDiagnosticsSummary = {
+                                copyWearDiagnosticsSummary(diagnosticsSnapshot)
+                            },
                             onOpenBlockedContacts = {
                                 appSurface = AppSurface.BlockedContacts
                             },
@@ -12153,7 +12224,9 @@ private fun WatchProfileSurface(
     draftChatCount: Int,
     retryableChatCount: Int,
     starredMessageCount: Int,
+    diagnosticsSnapshot: WearDiagnosticsSnapshot,
     onNavigateBack: () -> Unit,
+    onRefreshWearSurfaces: () -> Unit,
     onDefaultDisappearingModeChange: (DisappearingMessageMode) -> Unit,
     onToggleDefaultReadReceipts: () -> Unit,
     onToggleSecurityChangeAlerts: () -> Unit,
@@ -12161,6 +12234,7 @@ private fun WatchProfileSurface(
     onCopyTrustedDevicesSummary: () -> Unit,
     onCopyPrivacySummary: () -> Unit,
     onCopyChatManagementSummary: () -> Unit,
+    onCopyWearDiagnosticsSummary: () -> Unit,
     onOpenBlockedContacts: () -> Unit,
     onProfileChange: (ProfileSettings) -> Unit
 ) {
@@ -12352,6 +12426,22 @@ private fun WatchProfileSurface(
                             starredMessageCount = starredMessageCount,
                             surfaceSpec = surfaceSpec,
                             onCopyChatManagementSummary = onCopyChatManagementSummary
+                        )
+                    }
+
+                    item {
+                        ProfileSectionLabel(
+                            text = "Wear 诊断",
+                            compact = compact
+                        )
+                    }
+
+                    item {
+                        ProfileWearDiagnosticsPanel(
+                            snapshot = diagnosticsSnapshot,
+                            surfaceSpec = surfaceSpec,
+                            onRefreshWearSurfaces = onRefreshWearSurfaces,
+                            onCopyWearDiagnosticsSummary = onCopyWearDiagnosticsSummary
                         )
                     }
 
@@ -12836,6 +12926,79 @@ private fun ProfileChatManagementPanel(
             label = "待发/星标",
             value = "$retryableChatCount / $starredMessageCount",
             accent = chatGreen,
+            compact = compact
+        )
+    }
+}
+
+@Composable
+private fun ProfileWearDiagnosticsPanel(
+    snapshot: WearDiagnosticsSnapshot,
+    surfaceSpec: WatchSurfaceSpec,
+    onRefreshWearSurfaces: () -> Unit,
+    onCopyWearDiagnosticsSummary: () -> Unit
+) {
+    val compact = surfaceSpec.compact
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth(surfaceSpec.profileSummaryWidth)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.82f))
+                .border(1.dp, chatBlue.copy(alpha = 0.24f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 9.dp),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
+    ) {
+        ProfileInfoRow(
+            icon = Icons.Filled.Refresh,
+            label = "手表入口",
+            value = "刷新 Tile/表盘",
+            accent = chatBlue,
+            compact = compact,
+            onClick = onRefreshWearSurfaces
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.Keyboard,
+            label = "诊断摘要",
+            value = "复制本机状态",
+            accent = chatGreen,
+            compact = compact,
+            onClick = onCopyWearDiagnosticsSummary
+        )
+        ProfileInfoRow(
+            icon = snapshot.transportMode.icon,
+            label = "传输",
+            value = "${snapshot.transportMode.label} · ${snapshot.trustState}",
+            accent = if (snapshot.lanReady || snapshot.bluetoothReady) chatGreen else chatAmber,
+            compact = compact
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.VerifiedUser,
+            label = "权限",
+            value = wearPermissionSummary(snapshot),
+            accent = if (snapshot.notificationReady && snapshot.audioReady) chatGreen else chatAmber,
+            compact = compact
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.Group,
+            label = "设备",
+            value = "在线 ${snapshot.reachablePeerCount}/${snapshot.trustedPeerCount}",
+            accent = if (snapshot.reachablePeerCount > 0) chatGreen else chatAmber,
+            compact = compact
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.MarkChatUnread,
+            label = "队列",
+            value = "未读 ${snapshot.unreadThreadCount} · 待发 ${snapshot.retryableConversationCount}",
+            accent = if (snapshot.retryableConversationCount > 0) chatRose else chatBlue,
+            compact = compact
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.Schedule,
+            label = "Wear 状态",
+            value =
+                "${snapshot.tileConversationCount} 个聊天 · ${formatWearUpdateAge(snapshot.wearUpdatedAtEpochMillis)}",
+            accent = chatBlue,
             compact = compact
         )
     }
@@ -15675,6 +15838,24 @@ private fun identitySafetySummaryText(
         }
     }.trim()
 
+private fun wearDiagnosticsSummaryText(snapshot: WearDiagnosticsSnapshot): String =
+    buildString {
+        appendLine("SpotChat Wear 诊断")
+        appendLine("当前传输：${snapshot.transportMode.label}")
+        appendLine("当前状态：${snapshot.trustState}")
+        appendLine("局域网：${if (snapshot.lanReady) "可用" else "不可用"}")
+        appendLine("蓝牙权限：${if (snapshot.bluetoothReady) "可用" else "缺少权限"}")
+        appendLine("通知权限：${if (snapshot.notificationReady) "可用" else "缺少权限"}")
+        appendLine("录音权限：${if (snapshot.audioReady) "可用" else "缺少权限"}")
+        appendLine("可信设备：${snapshot.trustedPeerCount} 台")
+        appendLine("当前在线：${snapshot.reachablePeerCount} 台")
+        appendLine("未读聊天：${snapshot.unreadThreadCount} 个")
+        appendLine("未发送聊天：${snapshot.retryableConversationCount} 个")
+        appendLine("草稿聊天：${snapshot.draftConversationCount} 个")
+        appendLine("Wear 快照聊天：${snapshot.tileConversationCount} 个")
+        appendLine("Wear 快照更新：${formatWearUpdateAge(snapshot.wearUpdatedAtEpochMillis)}")
+    }.trim()
+
 private fun trustedDevicesSummaryText(
     peers: List<StoredTrustedPeer>,
     peerReachability: (String) -> String
@@ -15887,3 +16068,26 @@ private fun PeerHello.lanPort(): Int? =
 
 private fun Throwable?.readableMessage(fallback: String): String =
     this?.message?.takeIf { it.isNotBlank() } ?: fallback
+
+private fun wearPermissionSummary(snapshot: WearDiagnosticsSnapshot): String =
+    buildList {
+        add(if (snapshot.notificationReady) "通知" else "缺通知")
+        add(if (snapshot.audioReady) "录音" else "缺录音")
+        if (!snapshot.bluetoothReady) {
+            add("缺蓝牙")
+        }
+    }.joinToString(separator = " · ")
+
+private fun formatWearUpdateAge(updatedAtEpochMillis: Long): String {
+    if (updatedAtEpochMillis <= 0L) {
+        return "未同步"
+    }
+    val elapsedSeconds =
+        ((System.currentTimeMillis() - updatedAtEpochMillis).coerceAtLeast(0L) / 1_000L).toInt()
+    return when {
+        elapsedSeconds < 60 -> "刚刚"
+        elapsedSeconds < 3_600 -> "${elapsedSeconds / 60} 分钟前"
+        elapsedSeconds < 86_400 -> "${elapsedSeconds / 3_600} 小时前"
+        else -> "${elapsedSeconds / 86_400} 天前"
+    }
+}
