@@ -5172,6 +5172,13 @@ private fun WatchConversationListSurface(
                                 draftsByConversation[conversation.id] != null ||
                                 hasRetryableMessages(conversation.id)
                         }
+                    val importantChatCount =
+                        allVisibleConversations.count { conversation ->
+                            pinnedConversationIds[conversation.id] == true ||
+                                favoriteConversationIds[conversation.id] == true ||
+                                starredMessageIdsByConversation[conversation.id].orEmpty().isNotEmpty() ||
+                                draftsByConversation[conversation.id] != null
+                        }
                     val privacyChatCount =
                         allVisibleConversations.count { conversation ->
                             val hasDisappearingMessages =
@@ -5219,6 +5226,17 @@ private fun WatchConversationListSurface(
                         mentionCount = mentionCount,
                         draftCount = draftCount,
                         retryableCount = retryableCount,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec,
+                        onSelectFilter = onSelectFilter
+                    )
+
+                    ImportantOverviewCapsule(
+                        importantChatCount = importantChatCount,
+                        pinnedCount = pinnedCount,
+                        favoriteCount = favoriteCount,
+                        starredCount = starredCount,
+                        draftCount = draftCount,
                         compact = compact,
                         surfaceSpec = surfaceSpec,
                         onSelectFilter = onSelectFilter
@@ -5768,6 +5786,84 @@ private fun AttentionOverviewCapsule(
             count = retryableCount,
             filter = ChatListFilter.Retryable,
             activeColor = chatRose,
+            compact = compact,
+            onSelectFilter = onSelectFilter
+        )
+    }
+}
+
+@Composable
+private fun ImportantOverviewCapsule(
+    importantChatCount: Int,
+    pinnedCount: Int,
+    favoriteCount: Int,
+    starredCount: Int,
+    draftCount: Int,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    onSelectFilter: (ChatListFilter) -> Unit
+) {
+    val summary =
+        if (importantChatCount == 0) {
+            "重点 0"
+        } else {
+            "重点 $importantChatCount"
+        }
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.74f))
+                .border(1.dp, chatBlue.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 6.dp else 8.dp, vertical = if (compact) 6.dp else 7.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.PushPin,
+            contentDescription = "重点聊天总览",
+            tint = if (importantChatCount == 0) chatRowMuted else chatBlue,
+            modifier = Modifier.size(if (compact) 12.dp else 14.dp)
+        )
+        Text(
+            text = summary,
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = if (compact) 9.sp else 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        OverviewMetricPill(
+            label = "顶",
+            count = pinnedCount,
+            filter = ChatListFilter.Pinned,
+            activeColor = chatBlue,
+            compact = compact,
+            onSelectFilter = onSelectFilter
+        )
+        OverviewMetricPill(
+            label = "收",
+            count = favoriteCount,
+            filter = ChatListFilter.Favorites,
+            activeColor = chatAmber,
+            compact = compact,
+            onSelectFilter = onSelectFilter
+        )
+        OverviewMetricPill(
+            label = "星",
+            count = starredCount,
+            filter = ChatListFilter.Starred,
+            activeColor = chatAmber,
+            compact = compact,
+            onSelectFilter = onSelectFilter
+        )
+        OverviewMetricPill(
+            label = "草",
+            count = draftCount,
+            filter = ChatListFilter.Drafts,
+            activeColor = chatAmber,
             compact = compact,
             onSelectFilter = onSelectFilter
         )
