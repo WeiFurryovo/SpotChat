@@ -2305,6 +2305,28 @@ internal fun SpotChatApp(
         trustState = if (mentionsOnly) "已复制提及摘要" else "已复制未读摘要"
     }
 
+    fun copyDraftSummary(conversations: List<ChatConversation>) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            draftSummaryText(
+                conversations = conversations,
+                draftsByConversation = draftsByConversation
+            )
+        if (summary.isBlank()) {
+            trustState = "没有草稿摘要"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat draft summary", summary)
+        )
+        trustState = "已复制草稿摘要"
+    }
+
     fun copyMessageSearchSummary(
         conversation: ChatConversation,
         query: String,
@@ -4612,6 +4634,9 @@ internal fun SpotChatApp(
                                 trustState = "已清除草稿聊天"
                             }
                         },
+                        onCopyDraftSummary = {
+                            copyDraftSummary(visibleConversationList)
+                        },
                         onCopyVisibleStarredSummary = {
                             copyStarredSummary(visibleConversationList)
                         },
@@ -5605,6 +5630,7 @@ private fun WatchConversationListSurface(
     onClearRetryableVisible: () -> Unit,
     onSendVisibleDrafts: () -> Unit,
     onClearVisibleDrafts: () -> Unit,
+    onCopyDraftSummary: () -> Unit,
     onCopyVisibleStarredSummary: () -> Unit,
     onCopyAttentionSummary: () -> Unit,
     onFavoriteStarredVisible: () -> Unit,
@@ -5951,6 +5977,13 @@ private fun WatchConversationListSurface(
                                 onClick = onSendVisibleDrafts
                             )
                             if (activeFilter == ChatListFilter.Drafts) {
+                                MessageActionButton(
+                                    icon = Icons.Filled.Keyboard,
+                                    text = "复制草稿摘要",
+                                    selected = true,
+                                    compact = compact,
+                                    onClick = onCopyDraftSummary
+                                )
                                 MessageActionButton(
                                     icon = Icons.Filled.Delete,
                                     text = "清除全部草稿",
@@ -12526,6 +12559,38 @@ private fun attentionSummaryText(
             } else {
                 appendLine("   最新：没有可显示消息")
             }
+        }
+    }.trim()
+}
+
+private fun draftSummaryText(
+    conversations: List<ChatConversation>,
+    draftsByConversation: Map<String, ConversationDraft>
+): String {
+    val draftConversations =
+        conversations.mapNotNull { conversation ->
+            draftsByConversation[conversation.id]?.let { draft ->
+                conversation to draft
+            }
+        }
+    if (draftConversations.isEmpty()) {
+        return ""
+    }
+    return buildString {
+        appendLine("SpotChat 草稿摘要")
+        appendLine("聊天：${draftConversations.size} 个")
+        appendLine()
+        draftConversations.forEachIndexed { index, (conversation, draft) ->
+            val updatedAt =
+                if (draft.updatedAtEpochMillis <= 0L) {
+                    "未知时间"
+                } else {
+                    SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
+                        .format(Date(draft.updatedAtEpochMillis))
+                }
+            appendLine("${index + 1}. ${conversation.title}")
+            appendLine("   更新时间：$updatedAt")
+            appendLine("   草稿：${draft.text}")
         }
     }.trim()
 }
