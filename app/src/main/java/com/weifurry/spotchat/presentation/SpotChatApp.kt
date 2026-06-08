@@ -4633,6 +4633,18 @@ internal fun SpotChatApp(
                                     trustState = "已取消归档聊天"
                                 }
                             },
+                            onMuteArchived = {
+                                val unmutedArchivedConversations =
+                                    archivedConversationList.filter { conversation ->
+                                        !isConversationMuted(conversation.id)
+                                    }
+                                unmutedArchivedConversations.forEach { conversation ->
+                                    setConversationMute(conversation, MutePreset.Always)
+                                }
+                                if (unmutedArchivedConversations.isNotEmpty()) {
+                                    trustState = "归档聊天已静音"
+                                }
+                            },
                             onOpenConversation = ::openConversation
                         )
                     }
@@ -7078,6 +7090,7 @@ private fun WatchArchivedChatsSurface(
     onNavigateBack: () -> Unit,
     onMarkAllRead: () -> Unit,
     onUnarchiveAll: () -> Unit,
+    onMuteArchived: () -> Unit,
     onOpenConversation: (ChatConversation) -> Unit
 ) {
     BoxWithConstraints(
@@ -7153,6 +7166,15 @@ private fun WatchArchivedChatsSurface(
                         Column(
                             modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
                         ) {
+                            if (conversations.any { conversation -> !isConversationMuted(conversation.id) }) {
+                                MessageActionButton(
+                                    icon = Icons.Filled.NotificationsOff,
+                                    text = "静音全部归档",
+                                    selected = true,
+                                    compact = compact,
+                                    onClick = onMuteArchived
+                                )
+                            }
                             MessageActionButton(
                                 icon = Icons.Filled.Archive,
                                 text = "取消全部归档",
