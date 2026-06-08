@@ -1,6 +1,8 @@
 package com.weifurry.spotchat.wear
 
+import android.content.ComponentName
 import android.content.Context
+import androidx.wear.watchface.complications.datasource.ComplicationDataSourceUpdateRequester
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -52,8 +54,9 @@ data class WearChatSnapshot(
 }
 
 class SpotChatWearStateStore(context: Context) {
+    private val appContext = context.applicationContext
     private val prefs =
-        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val json =
         Json {
             encodeDefaults = true
@@ -85,7 +88,24 @@ class SpotChatWearStateStore(context: Context) {
                             }.thenByDescending { conversation -> conversation.updatedAtEpochMillis }
                         )
             )
-        prefs.edit().putString(KEY_SNAPSHOT, json.encodeToString(normalized)).apply()
+        val encodedSnapshot = json.encodeToString(normalized)
+        val previousSnapshot = prefs.getString(KEY_SNAPSHOT, null)
+        if (previousSnapshot == encodedSnapshot) {
+            return
+        }
+        prefs.edit().putString(KEY_SNAPSHOT, encodedSnapshot).apply()
+        requestUnreadComplicationUpdate()
+    }
+
+    private fun requestUnreadComplicationUpdate() {
+        runCatching {
+            ComplicationDataSourceUpdateRequester
+                .create(
+                    appContext,
+                    ComponentName(appContext, UnreadThreadsComplicationDataSourceService::class.java)
+                )
+                .requestUpdateAll()
+        }
     }
 
     companion object {
