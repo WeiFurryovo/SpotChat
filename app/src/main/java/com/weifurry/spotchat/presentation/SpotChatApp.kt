@@ -298,12 +298,13 @@ private enum class VoicePlaybackSpeed(
 
 private enum class DisappearingMessageMode(
     val label: String,
-    val durationMs: Long?
+    val durationMs: Long?,
+    val profileKey: String
 ) {
-    Off("关闭", null),
-    OneMinute("1分钟", 60_000L),
-    OneHour("1小时", 3_600_000L),
-    OneDay("24小时", 86_400_000L);
+    Off("关闭", null, ProfileStore.DEFAULT_DISAPPEARING_MODE),
+    OneMinute("1分钟", 60_000L, "one_minute"),
+    OneHour("1小时", 3_600_000L, "one_hour"),
+    OneDay("24小时", 86_400_000L, "one_day");
 
     fun next(): DisappearingMessageMode =
         entries[(ordinal + 1) % entries.size]
@@ -1431,15 +1432,30 @@ internal fun SpotChatApp(
     fun ensureDirectConversation(storedPeer: StoredTrustedPeer): String {
         val conversationId = directConversationId(storedPeer.fingerprint)
         if (conversationMessages[conversationId] == null) {
+            val defaultDisappearingMode = profile.defaultDisappearingMode.toDisappearingMode()
+            if (defaultDisappearingMode != DisappearingMessageMode.Off) {
+                disappearingModesByConversation[conversationId] = defaultDisappearingMode
+            }
             conversationMessages[conversationId] =
-                listOf(
+                listOfNotNull(
                     ChatBubble(
                         text = "与 ${peerDisplayName(storedPeer)} 的私聊已准备好",
                         mine = false,
                         encrypted = true,
                         timestamp = nowTime(),
                         deliveryState = DeliveryState.System
-                    )
+                    ),
+                    defaultDisappearingMode
+                        .takeIf { mode -> mode != DisappearingMessageMode.Off }
+                        ?.let { mode ->
+                            ChatBubble(
+                                text = "已套用默认限时消息，后续新消息将在${mode.label}后自动删除",
+                                mine = false,
+                                encrypted = true,
+                                timestamp = nowTime(),
+                                deliveryState = DeliveryState.System
+                            )
+                        }
                 )
         }
         return conversationId
@@ -4787,6 +4803,7 @@ internal fun SpotChatApp(
                             trustState = trustState,
                             trustedPeers = trustedPeers,
                             blockedPeerFingerprints = blockedPeerFingerprints.toMap(),
+                            defaultDisappearingMode = profile.defaultDisappearingMode.toDisappearingMode(),
                             archivedChatCount =
                                 archivedConversationIds.count { (_, archived) -> archived },
                             mutedChatCount =
@@ -4800,8 +4817,12 @@ internal fun SpotChatApp(
                             starredMessageCount =
                                 starredMessageIdsByConversation.values.sumOf { starredIds ->
                                     starredIds.size
-                                },
+                            },
                             onNavigateBack = dismissOverlay,
+                            onDefaultDisappearingModeChange = { mode ->
+                                updateProfile(profile.copy(defaultDisappearingMode = mode.profileKey))
+                                trustState = "默认限时消息${mode.label}"
+                            },
                             onProfileChange = ::updateProfile
                         )
                     }
@@ -8744,6 +8765,7 @@ private fun WatchProfileSurface(
     trustState: String,
     trustedPeers: List<StoredTrustedPeer>,
     blockedPeerFingerprints: Map<String, Boolean>,
+    defaultDisappearingMode: DisappearingMessageMode,
     archivedChatCount: Int,
     mutedChatCount: Int,
     lockedChatCount: Int,
@@ -8751,6 +8773,7 @@ private fun WatchProfileSurface(
     retryableChatCount: Int,
     starredMessageCount: Int,
     onNavigateBack: () -> Unit,
+    onDefaultDisappearingModeChange: (DisappearingMessageMode) -> Unit,
     onProfileChange: (ProfileSettings) -> Unit
 ) {
     BoxWithConstraints(
@@ -8902,7 +8925,11 @@ private fun WatchProfileSurface(
                     item {
                         ProfilePrivacyPanel(
                             blockedPeers = blockedPeers,
-                            surfaceSpec = surfaceSpec
+                            defaultDisappearingMode = defaultDisappearingMode,
+                            surfaceSpec = surfaceSpec,
+                            onCycleDefaultDisappearingMode = {
+                                onDefaultDisappearingModeChange(defaultDisappearingMode.next())
+                            }
                         )
                     }
 
@@ -9262,7 +9289,9 @@ private fun ProfileSecurityPanel(
 @Composable
 private fun ProfilePrivacyPanel(
     blockedPeers: List<StoredTrustedPeer>,
-    surfaceSpec: WatchSurfaceSpec
+    defaultDisappearingMode: DisappearingMessageMode,
+    surfaceSpec: WatchSurfaceSpec,
+    onCycleDefaultDisappearingMode: () -> Unit
 ) {
     val compact = surfaceSpec.compact
     val blockedSummary =
@@ -9303,6 +9332,14 @@ private fun ProfilePrivacyPanel(
             value = blockedSummary,
             accent = if (blockedPeers.isEmpty()) chatGreen else chatRose,
             compact = compact
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.AutoDelete,
+            label = "默认限时",
+            value = defaultDisappearingMode.label,
+            accent = if (defaultDisappearingMode == DisappearingMessageMode.Off) chatRowMuted else chatGreen,
+            compact = compact,
+            onClick = onCycleDefaultDisappearingMode
         )
     }
 }
@@ -9471,9 +9508,18 @@ private fun ProfileInfoRow(
     label: String,
     value: String,
     accent: Color,
-    compact: Boolean
+    compact: Boolean,
+    onClick: (() -> Unit)? = null
 ) {
     Row(
+        modifier =
+            if (onClick == null) {
+                Modifier
+            } else {
+                Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onClick)
+            },
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
@@ -10366,6 +10412,10 @@ private fun disappearingActionLabel(mode: DisappearingMessageMode): String =
     } else {
         "限时消息${mode.label}"
     }
+
+private fun String.toDisappearingMode(): DisappearingMessageMode =
+    DisappearingMessageMode.entries.firstOrNull { mode -> mode.profileKey == this }
+        ?: DisappearingMessageMode.Off
 
 private fun disappearingSystemMessage(mode: DisappearingMessageMode): String =
     if (mode == DisappearingMessageMode.Off) {
