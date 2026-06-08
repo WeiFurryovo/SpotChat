@@ -2327,6 +2327,28 @@ internal fun SpotChatApp(
         trustState = "已复制草稿摘要"
     }
 
+    fun copyRetryableSummary(conversations: List<ChatConversation>) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            retryableSummaryText(
+                conversations = conversations,
+                messagesByConversation = conversationMessages
+            )
+        if (summary.isBlank()) {
+            trustState = "没有未发送摘要"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat unsent summary", summary)
+        )
+        trustState = "已复制未发送摘要"
+    }
+
     fun copyMessageSearchSummary(
         conversation: ChatConversation,
         query: String,
@@ -4605,6 +4627,9 @@ internal fun SpotChatApp(
                                 trustState = "已清除 $clearedMessageCount 条未发送"
                             }
                         },
+                        onCopyRetryableSummary = {
+                            copyRetryableSummary(visibleConversationList)
+                        },
                         onSendVisibleDrafts = {
                             val draftConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5628,6 +5653,7 @@ private fun WatchConversationListSurface(
     onFavoriteMentionedVisible: () -> Unit,
     onRetryVisible: () -> Unit,
     onClearRetryableVisible: () -> Unit,
+    onCopyRetryableSummary: () -> Unit,
     onSendVisibleDrafts: () -> Unit,
     onClearVisibleDrafts: () -> Unit,
     onCopyDraftSummary: () -> Unit,
@@ -5955,6 +5981,13 @@ private fun WatchConversationListSurface(
                                 onClick = onRetryVisible
                             )
                             if (activeFilter == ChatListFilter.Retryable) {
+                                MessageActionButton(
+                                    icon = Icons.Filled.Keyboard,
+                                    text = "复制未发送摘要",
+                                    selected = true,
+                                    compact = compact,
+                                    onClick = onCopyRetryableSummary
+                                )
                                 MessageActionButton(
                                     icon = Icons.Filled.Delete,
                                     text = "清除未发送",
@@ -12591,6 +12624,38 @@ private fun draftSummaryText(
             appendLine("${index + 1}. ${conversation.title}")
             appendLine("   更新时间：$updatedAt")
             appendLine("   草稿：${draft.text}")
+        }
+    }.trim()
+}
+
+private fun retryableSummaryText(
+    conversations: List<ChatConversation>,
+    messagesByConversation: Map<String, List<ChatBubble>>
+): String {
+    val retryableConversations =
+        conversations.mapNotNull { conversation ->
+            val retryableMessages =
+                messagesByConversation[conversation.id]
+                    .orEmpty()
+                    .filter { message -> message.canRetry() }
+            retryableMessages
+                .takeIf { messages -> messages.isNotEmpty() }
+                ?.let { messages -> conversation to messages }
+        }
+    if (retryableConversations.isEmpty()) {
+        return ""
+    }
+    val retryableMessageCount = retryableConversations.sumOf { (_, messages) -> messages.size }
+    return buildString {
+        appendLine("SpotChat 未发送摘要")
+        appendLine("聊天：${retryableConversations.size} 个")
+        appendLine("消息：$retryableMessageCount 条")
+        appendLine()
+        retryableConversations.forEachIndexed { index, (conversation, messages) ->
+            appendLine("${index + 1}. ${conversation.title}")
+            messages.forEach { message ->
+                appendLine("   [${message.timestamp}] ${message.deliveryState.label}：${message.copyText()}")
+            }
         }
     }.trim()
 }
