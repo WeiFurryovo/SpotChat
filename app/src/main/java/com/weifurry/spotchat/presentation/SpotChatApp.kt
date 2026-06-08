@@ -381,7 +381,7 @@ private data class PendingOutboundMessage(
     val conversationId: String,
     val text: String,
     val displayMessageId: String,
-    val targetFingerprints: List<String>,
+    val remainingTargetFingerprints: List<String>,
     val quotedMessage: QuotedMessage? = null,
     val forwarded: Boolean = false
 )
@@ -389,7 +389,7 @@ private data class PendingOutboundMessage(
 private data class PendingOutboundVoiceMessage(
     val conversationId: String,
     val displayMessageId: String,
-    val targetFingerprints: List<String>,
+    val remainingTargetFingerprints: List<String>,
     val durationMs: Long,
     val audioBytes: ByteArray
 ) {
@@ -399,7 +399,7 @@ private data class PendingOutboundVoiceMessage(
 
         return conversationId == other.conversationId &&
             displayMessageId == other.displayMessageId &&
-            targetFingerprints == other.targetFingerprints &&
+            remainingTargetFingerprints == other.remainingTargetFingerprints &&
             durationMs == other.durationMs &&
             audioBytes.contentEquals(other.audioBytes)
     }
@@ -407,7 +407,7 @@ private data class PendingOutboundVoiceMessage(
     override fun hashCode(): Int {
         var result = conversationId.hashCode()
         result = 31 * result + displayMessageId.hashCode()
-        result = 31 * result + targetFingerprints.hashCode()
+        result = 31 * result + remainingTargetFingerprints.hashCode()
         result = 31 * result + durationMs.hashCode()
         result = 31 * result + audioBytes.contentHashCode()
         return result
@@ -736,6 +736,7 @@ internal fun SpotChatApp(
     val favoriteConversationIds = remember { mutableStateMapOf<String, Boolean>() }
     val mutedConversations = remember { mutableStateMapOf<String, MutedConversation>() }
     val archivedConversationIds = remember { mutableStateMapOf<String, Boolean>() }
+    val blockedPeerFingerprints = remember { mutableStateMapOf<String, Boolean>() }
     val starredMessageIdsByConversation = remember { mutableStateMapOf<String, Set<String>>() }
     val pinnedMessageIdsByConversation = remember { mutableStateMapOf<String, String>() }
     val disappearingModesByConversation = remember { mutableStateMapOf<String, DisappearingMessageMode>() }
@@ -1048,27 +1049,35 @@ internal fun SpotChatApp(
                 }
         }
 
+    fun isPeerBlocked(fingerprint: String): Boolean =
+        blockedPeerFingerprints[fingerprint] == true
+
     fun peerReachabilityText(fingerprint: String): String =
-        if (knownPeersByFingerprint[fingerprint] != null) {
-            "当前可发送"
-        } else {
-            peerLastSeenAt[fingerprint]
-                ?.let { lastSeen -> "最近发现 ${formatClockTime(lastSeen)}" }
-                ?: "等待发现"
+        when {
+            isPeerBlocked(fingerprint) -> "已阻止"
+            knownPeersByFingerprint[fingerprint] != null -> "当前可发送"
+            else ->
+                peerLastSeenAt[fingerprint]
+                    ?.let { lastSeen -> "最近发现 ${formatClockTime(lastSeen)}" }
+                    ?: "等待发现"
         }
 
     fun groupReachabilityText(memberFingerprints: List<String>): String {
         if (memberFingerprints.isEmpty()) {
             return "等待成员"
         }
-        val reachableCount = memberFingerprints.count { fingerprint ->
+        val allowedFingerprints = memberFingerprints.filterNot(::isPeerBlocked)
+        if (allowedFingerprints.isEmpty()) {
+            return "成员均已阻止"
+        }
+        val reachableCount = allowedFingerprints.count { fingerprint ->
             knownPeersByFingerprint[fingerprint] != null
         }
         if (reachableCount > 0) {
-            return "$reachableCount/${memberFingerprints.size} 可发送"
+            return "$reachableCount/${allowedFingerprints.size} 可发送"
         }
         val lastSeenAt =
-            memberFingerprints
+            allowedFingerprints
                 .mapNotNull { fingerprint -> peerLastSeenAt[fingerprint] }
                 .maxOrNull()
         return lastSeenAt
@@ -1343,6 +1352,10 @@ internal fun SpotChatApp(
             storedPeer.fingerprint == peer.fingerprint || storedPeer.publicKey == peer.publicKey
         }
 
+    fun isConversationBlocked(conversation: ChatConversation): Boolean =
+        conversation.kind == ConversationKind.Direct &&
+            conversation.peerFingerprint?.let(::isPeerBlocked) == true
+
     fun removeTrustedPeer(storedPeer: StoredTrustedPeer) {
         trustedPeers.removeAll { existing ->
             existing.fingerprint == storedPeer.fingerprint || existing.publicKey == storedPeer.publicKey
@@ -1422,6 +1435,7 @@ internal fun SpotChatApp(
         favoriteConversationIds.remove(conversation.id)
         mutedConversations.remove(conversation.id)
         archivedConversationIds.remove(conversation.id)
+        blockedPeerFingerprints.remove(storedPeer.fingerprint)
         pinnedMessageIdsByConversation.remove(conversation.id)
         disappearingModesByConversation.remove(conversation.id)
         selectedActionMessage = null
@@ -1550,6 +1564,7 @@ internal fun SpotChatApp(
         favoriteConversationIds.toMap(),
         mutedConversations.toMap(),
         archivedConversationIds.toMap(),
+        blockedPeerFingerprints.toMap(),
         disappearingModesByConversation.toMap(),
         trustedPeers.size,
         knownPeersByFingerprint.toMap(),
@@ -1697,6 +1712,59 @@ internal fun SpotChatApp(
         }
         appendSystemMessage(
             text = if (isArchived) "已取消归档" else "已归档聊天",
+            encrypted = true,
+            conversationId = conversation.id
+        )
+    }
+
+    fun toggleConversationBlocked(conversation: ChatConversation) {
+        val peerFingerprint = conversation.peerFingerprint ?: return
+        val peerName = trustedPeer(peerFingerprint)?.deviceName ?: conversation.title
+        val isBlocked = isPeerBlocked(peerFingerprint)
+        if (isBlocked) {
+            blockedPeerFingerprints.remove(peerFingerprint)
+            trustState = "已解除阻止 $peerName"
+        } else {
+            blockedPeerFingerprints[peerFingerprint] = true
+            pendingOutboundMessages
+                .filterValues { message -> peerFingerprint in message.remainingTargetFingerprints }
+                .toMap()
+                .forEach { (messageId, message) ->
+                    val remainingTargets = message.remainingTargetFingerprints - peerFingerprint
+                    if (remainingTargets.isEmpty()) {
+                        pendingOutboundMessages.remove(messageId)
+                    } else {
+                        pendingOutboundMessages[messageId] =
+                            message.copy(remainingTargetFingerprints = remainingTargets)
+                    }
+                }
+            pendingOutboundVoiceMessages
+                .filterValues { message -> peerFingerprint in message.remainingTargetFingerprints }
+                .toMap()
+                .forEach { (messageId, message) ->
+                    val remainingTargets = message.remainingTargetFingerprints - peerFingerprint
+                    if (remainingTargets.isEmpty()) {
+                        pendingOutboundVoiceMessages.remove(messageId)
+                    } else {
+                        pendingOutboundVoiceMessages[messageId] =
+                            message.copy(remainingTargetFingerprints = remainingTargets)
+                    }
+                }
+            pendingOutboundMessages
+                .filterValues { message -> message.conversationId == conversation.id }
+                .keys
+                .toList()
+                .forEach { messageId -> pendingOutboundMessages.remove(messageId) }
+            pendingOutboundVoiceMessages
+                .filterValues { message -> message.conversationId == conversation.id }
+                .keys
+                .toList()
+                .forEach { messageId -> pendingOutboundVoiceMessages.remove(messageId) }
+            notifier.clearConversation(conversation.id)
+            trustState = "已阻止 $peerName"
+        }
+        appendSystemMessage(
+            text = if (isBlocked) "已解除阻止 $peerName" else "已阻止 $peerName 的消息",
             encrypted = true,
             conversationId = conversation.id
         )
@@ -2054,6 +2122,10 @@ internal fun SpotChatApp(
                             )
                             return
                         }
+                        if (isPeerBlocked(encryptedMessage.senderFingerprint)) {
+                            trustState = "已忽略被阻止联系人"
+                            return
+                        }
                         runCatching { engine.decryptText(encryptedMessage) }
                             .onSuccess { plain ->
                                 val payload = decodeChatPayload(plain.text)
@@ -2139,6 +2211,10 @@ internal fun SpotChatApp(
                             )
                             return
                         }
+                        if (isPeerBlocked(encryptedMessage.senderFingerprint)) {
+                            trustState = "已忽略被阻止语音"
+                            return
+                        }
                         runCatching { engine.decryptVoice(encryptedMessage) }
                             .onSuccess { plain ->
                                 val conversationId = directConversationId(plain.senderFingerprint)
@@ -2209,6 +2285,10 @@ internal fun SpotChatApp(
                             trustState = "拦截未确认回应"
                             return
                         }
+                        if (isPeerBlocked(encryptedMessage.senderFingerprint)) {
+                            trustState = "已忽略被阻止回应"
+                            return
+                        }
                         rememberPeerRoute(encryptedMessage.senderFingerprint, event.peer)
                         runCatching { engine.decryptReaction(encryptedMessage) }
                             .onSuccess { reaction ->
@@ -2248,6 +2328,10 @@ internal fun SpotChatApp(
                         val encryptedAck = packet.encryptedMessage ?: return
                         if (trustedPeer(encryptedAck.senderFingerprint) == null) {
                             trustState = "拦截未认证回执"
+                            return
+                        }
+                        if (isPeerBlocked(encryptedAck.senderFingerprint)) {
+                            trustState = "已忽略被阻止回执"
                             return
                         }
                         rememberPeerRoute(encryptedAck.senderFingerprint, event.peer)
@@ -2350,7 +2434,18 @@ internal fun SpotChatApp(
     }
 
     fun targetsForConversation(conversation: ChatConversation): List<Pair<String, TransportPeer>> =
-        conversation.memberFingerprints.mapNotNull { fingerprint ->
+        conversation.memberFingerprints.filterNot(::isPeerBlocked).mapNotNull { fingerprint ->
+            val peer = routeForPeer(fingerprint)
+            val storedPeer = trustedPeer(fingerprint)
+            if (peer == null || storedPeer == null) {
+                null
+            } else {
+                fingerprint to peer
+            }
+        }
+
+    fun targetsForFingerprints(fingerprints: List<String>): List<Pair<String, TransportPeer>> =
+        fingerprints.distinct().filterNot(::isPeerBlocked).mapNotNull { fingerprint ->
             val peer = routeForPeer(fingerprint)
             val storedPeer = trustedPeer(fingerprint)
             if (peer == null || storedPeer == null) {
@@ -2446,7 +2541,7 @@ internal fun SpotChatApp(
                             conversationId = conversation.id,
                             text = text,
                             displayMessageId = displayMessageId,
-                            targetFingerprints = conversation.memberFingerprints,
+                            remainingTargetFingerprints = targets.map { (fingerprint, _) -> fingerprint },
                             quotedMessage = quotedMessage,
                             forwarded = forwarded
                         )
@@ -2464,7 +2559,13 @@ internal fun SpotChatApp(
 
     fun trySendPendingOutboundMessage(queuedReply: PendingOutboundMessage) {
         val conversation = conversationById(queuedReply.conversationId) ?: return
-        val targets = targetsForConversation(conversation)
+        if (isConversationBlocked(conversation)) {
+            pendingOutboundMessages.remove(queuedReply.displayMessageId)
+            updateMessageState(queuedReply.displayMessageId, DeliveryState.Failed)
+            trustState = "已阻止此联系人"
+            return
+        }
+        val targets = targetsForFingerprints(queuedReply.remainingTargetFingerprints)
         if (targets.isEmpty()) {
             return
         }
@@ -2485,6 +2586,10 @@ internal fun SpotChatApp(
         message: ChatBubble,
         reactionCode: String
     ) {
+        if (isConversationBlocked(conversation)) {
+            trustState = "已阻止此联系人"
+            return
+        }
         val targetMessageId = message.messageId ?: return
         applyMessageReaction(
             conversationId = conversation.id,
@@ -2605,7 +2710,7 @@ internal fun SpotChatApp(
                         PendingOutboundVoiceMessage(
                             conversationId = conversation.id,
                             displayMessageId = displayMessageId,
-                            targetFingerprints = conversation.memberFingerprints,
+                            remainingTargetFingerprints = targets.map { (fingerprint, _) -> fingerprint },
                             durationMs = durationMs,
                             audioBytes = audioBytes
                         )
@@ -2623,7 +2728,13 @@ internal fun SpotChatApp(
 
     fun trySendPendingOutboundVoiceMessage(queuedVoice: PendingOutboundVoiceMessage) {
         val conversation = conversationById(queuedVoice.conversationId) ?: return
-        val targets = targetsForConversation(conversation)
+        if (isConversationBlocked(conversation)) {
+            pendingOutboundVoiceMessages.remove(queuedVoice.displayMessageId)
+            updateMessageState(queuedVoice.displayMessageId, DeliveryState.Failed)
+            trustState = "已阻止此联系人"
+            return
+        }
+        val targets = targetsForFingerprints(queuedVoice.remainingTargetFingerprints)
         if (targets.isEmpty()) {
             return
         }
@@ -2642,6 +2753,16 @@ internal fun SpotChatApp(
         conversation: ChatConversation,
         recordedVoice: RecordedVoiceMessage
     ) {
+        if (isConversationBlocked(conversation)) {
+            trustState = "已阻止此联系人"
+            recordedVoice.file.delete()
+            appendSystemMessage(
+                text = "已阻止此联系人，未发送语音",
+                encrypted = true,
+                conversationId = conversation.id
+            )
+            return
+        }
         if (conversation.memberFingerprints.isEmpty()) {
             trustState = if (pendingPeer == null) "等待配对" else "请先确认校验码"
             recordedVoice.file.delete()
@@ -2676,16 +2797,28 @@ internal fun SpotChatApp(
 
         val targets = targetsForConversation(conversation)
         if (targets.isEmpty()) {
-            pendingOutboundVoiceMessages[displayMessageId] =
-                PendingOutboundVoiceMessage(
-                    conversationId = conversation.id,
-                    displayMessageId = displayMessageId,
-                    targetFingerprints = conversation.memberFingerprints,
-                    durationMs = recordedVoice.durationMs,
-                    audioBytes = recordedVoice.audioBytes
-                )
-            updateMessageState(displayMessageId, DeliveryState.Waiting)
-            trustState = "成员未在线"
+            val allowedTargetFingerprints = conversation.memberFingerprints.filterNot(::isPeerBlocked)
+            if (allowedTargetFingerprints.isEmpty()) {
+                updateMessageState(displayMessageId, DeliveryState.Failed)
+            } else {
+                pendingOutboundVoiceMessages[displayMessageId] =
+                    PendingOutboundVoiceMessage(
+                        conversationId = conversation.id,
+                        displayMessageId = displayMessageId,
+                        remainingTargetFingerprints = allowedTargetFingerprints,
+                        durationMs = recordedVoice.durationMs,
+                        audioBytes = recordedVoice.audioBytes
+                    )
+                updateMessageState(displayMessageId, DeliveryState.Waiting)
+            }
+            trustState =
+                if (allowedTargetFingerprints.isEmpty()) {
+                    "成员均已阻止"
+                } else if (conversation.memberFingerprints.any(::isPeerBlocked)) {
+                    "可发送成员未在线"
+                } else {
+                    "成员未在线"
+                }
             recordedVoice.file.delete()
             return
         }
@@ -2713,7 +2846,18 @@ internal fun SpotChatApp(
             return
         }
 
+        if (isConversationBlocked(conversation)) {
+            trustState = "已阻止此联系人"
+            appendSystemMessage(
+                text = "已阻止此联系人，未发送消息",
+                encrypted = true,
+                conversationId = conversation.id
+            )
+            return
+        }
+
         val displayMessageId = UUID.randomUUID().toString()
+        val remainingTargetFingerprints = conversation.memberFingerprints.filterNot(::isPeerBlocked)
         if (transportMode == TransportMode.Lan && !hasLanConnection()) {
             trustState = "局域网未连接"
             appendMessage(
@@ -2727,20 +2871,20 @@ internal fun SpotChatApp(
                     quotedMessage = quotedMessage,
                     forwarded = forwarded,
                     deliveryState =
-                        if (requeueWhenOffline && conversation.memberFingerprints.isNotEmpty()) {
+                        if (requeueWhenOffline && remainingTargetFingerprints.isNotEmpty()) {
                             DeliveryState.Waiting
                         } else {
                             DeliveryState.Failed
                         }
                 )
             )
-            if (requeueWhenOffline && conversation.memberFingerprints.isNotEmpty()) {
+            if (requeueWhenOffline && remainingTargetFingerprints.isNotEmpty()) {
                 pendingOutboundMessages[displayMessageId] =
                     PendingOutboundMessage(
                         conversationId = conversation.id,
                         text = cleanText,
                         displayMessageId = displayMessageId,
-                        targetFingerprints = conversation.memberFingerprints,
+                        remainingTargetFingerprints = remainingTargetFingerprints,
                         quotedMessage = quotedMessage,
                         forwarded = forwarded
                     )
@@ -2766,7 +2910,12 @@ internal fun SpotChatApp(
 
         val targets = targetsForConversation(conversation)
         if (targets.isEmpty()) {
-            trustState = "成员未在线"
+            trustState =
+                if (conversation.memberFingerprints.any(::isPeerBlocked)) {
+                    "可发送成员未在线"
+                } else {
+                    "成员未在线"
+                }
             appendMessage(
                 conversation.id,
                 ChatBubble(
@@ -2781,15 +2930,21 @@ internal fun SpotChatApp(
                 )
             )
             if (requeueWhenOffline) {
-                pendingOutboundMessages[displayMessageId] =
-                    PendingOutboundMessage(
-                        conversationId = conversation.id,
-                        text = cleanText,
-                        displayMessageId = displayMessageId,
-                        targetFingerprints = conversation.memberFingerprints,
-                        quotedMessage = quotedMessage,
-                        forwarded = forwarded
-                    )
+                val allowedTargetFingerprints = conversation.memberFingerprints.filterNot(::isPeerBlocked)
+                if (allowedTargetFingerprints.isEmpty()) {
+                    updateMessageState(displayMessageId, DeliveryState.Failed)
+                    trustState = "成员均已阻止"
+                } else {
+                    pendingOutboundMessages[displayMessageId] =
+                        PendingOutboundMessage(
+                            conversationId = conversation.id,
+                            text = cleanText,
+                            displayMessageId = displayMessageId,
+                            remainingTargetFingerprints = allowedTargetFingerprints,
+                            quotedMessage = quotedMessage,
+                            forwarded = forwarded
+                        )
+                }
             }
             return
         }
@@ -2869,12 +3024,23 @@ internal fun SpotChatApp(
         message: ChatBubble
     ) {
         val displayMessageId = message.messageId ?: return
+        if (isConversationBlocked(conversation)) {
+            updateMessageState(displayMessageId, DeliveryState.Failed)
+            trustState = "已阻止此联系人"
+            return
+        }
         if (!message.canRetry()) {
             trustState = "这条消息不需要重发"
             return
         }
         val targets = targetsForConversation(conversation)
         if (targets.isEmpty()) {
+            val allowedTargetFingerprints = conversation.memberFingerprints.filterNot(::isPeerBlocked)
+            if (allowedTargetFingerprints.isEmpty()) {
+                updateMessageState(displayMessageId, DeliveryState.Failed)
+                trustState = "成员均已阻止"
+                return
+            }
             updateMessageState(displayMessageId, DeliveryState.Waiting)
             trustState = "等待对方上线"
             when (message.kind) {
@@ -2884,7 +3050,7 @@ internal fun SpotChatApp(
                             conversationId = conversation.id,
                             text = message.text,
                             displayMessageId = displayMessageId,
-                            targetFingerprints = conversation.memberFingerprints,
+                            remainingTargetFingerprints = allowedTargetFingerprints,
                             quotedMessage = message.quotedMessage,
                             forwarded = message.forwarded
                         )
@@ -2894,7 +3060,7 @@ internal fun SpotChatApp(
                         PendingOutboundVoiceMessage(
                             conversationId = conversation.id,
                             displayMessageId = displayMessageId,
-                            targetFingerprints = conversation.memberFingerprints,
+                            remainingTargetFingerprints = allowedTargetFingerprints,
                             durationMs = message.voiceDurationMs ?: return,
                             audioBytes = message.voiceAudioBytes ?: return
                         )
@@ -3024,16 +3190,16 @@ internal fun SpotChatApp(
         pendingOutboundMessages.values
             .toList()
             .filter { queuedReply ->
-                queuedReply.targetFingerprints.any { fingerprint ->
-                    knownPeersByFingerprint[fingerprint] != null
+                queuedReply.remainingTargetFingerprints.any { fingerprint ->
+                    !isPeerBlocked(fingerprint) && knownPeersByFingerprint[fingerprint] != null
                 }
             }
             .forEach { queuedReply -> trySendPendingOutboundMessage(queuedReply) }
         pendingOutboundVoiceMessages.values
             .toList()
             .filter { queuedVoice ->
-                queuedVoice.targetFingerprints.any { fingerprint ->
-                    knownPeersByFingerprint[fingerprint] != null
+                queuedVoice.remainingTargetFingerprints.any { fingerprint ->
+                    !isPeerBlocked(fingerprint) && knownPeersByFingerprint[fingerprint] != null
                 }
             }
             .forEach { queuedVoice -> trySendPendingOutboundVoiceMessage(queuedVoice) }
@@ -3478,6 +3644,7 @@ internal fun SpotChatApp(
                             messages = messagesForConversation(selectedConversation.id),
                             pinnedMessage = pinnedMessage(selectedConversation.id),
                             starredMessageIds = starredMessageIds(selectedConversation.id),
+                            isBlocked = isConversationBlocked(selectedConversation),
                             onSelectMode = ::selectMode,
                             onConfirmPairing = ::confirmPairing,
                             onRejectPairing = ::rejectPairing,
@@ -3523,6 +3690,7 @@ internal fun SpotChatApp(
                             muteStatus = muteStatusLabel(selectedConversation.id),
                             muteAction = muteActionLabel(selectedConversation.id),
                             isArchived = archivedConversationIds[selectedConversation.id] == true,
+                            isBlocked = isConversationBlocked(selectedConversation),
                             unreadCount = unreadCounts[selectedConversation.id] ?: 0,
                             starredCount = starredMessageIds(selectedConversation.id).size,
                             retryableCount =
@@ -3564,6 +3732,9 @@ internal fun SpotChatApp(
                                 if (!wasArchived) {
                                     appSurface = AppSurface.ConversationList
                                 }
+                            },
+                            onToggleBlocked = {
+                                toggleConversationBlocked(selectedConversation)
                             },
                             onToggleUnread = {
                                 toggleConversationUnread(selectedConversation)
@@ -5238,6 +5409,7 @@ private fun WatchChatInfoSurface(
     muteStatus: String,
     muteAction: String,
     isArchived: Boolean,
+    isBlocked: Boolean,
     unreadCount: Int,
     starredCount: Int,
     retryableCount: Int,
@@ -5252,6 +5424,7 @@ private fun WatchChatInfoSurface(
     onToggleFavorite: () -> Unit,
     onToggleMuted: () -> Unit,
     onToggleArchived: () -> Unit,
+    onToggleBlocked: () -> Unit,
     onToggleUnread: () -> Unit,
     onRetryFailedMessages: () -> Unit,
     onToggleDisappearingMessages: () -> Unit,
@@ -5414,8 +5587,8 @@ private fun WatchChatInfoSurface(
                             modifier = Modifier.weight(1f)
                         )
                         InfoMetricPill(
-                            label = "重发",
-                            value = if (retryableCount > 0) "可用" else "无",
+                            label = "阻止",
+                            value = if (isBlocked) "是" else "否",
                             compact = compact,
                             modifier = Modifier.weight(1f)
                         )
@@ -5612,6 +5785,14 @@ private fun WatchChatInfoSurface(
                             onClick = onClearConversation
                         )
                         if (conversation.kind == ConversationKind.Direct) {
+                            MessageActionButton(
+                                icon = Icons.Filled.PersonRemove,
+                                text = if (isBlocked) "解除阻止" else "阻止联系人",
+                                selected = isBlocked,
+                                destructive = !isBlocked,
+                                compact = compact,
+                                onClick = onToggleBlocked
+                            )
                             MessageActionButton(
                                 icon = Icons.Filled.PersonRemove,
                                 text = "移除信任",
@@ -8038,6 +8219,7 @@ private fun WatchChatSurface(
     messages: List<ChatBubble>,
     pinnedMessage: ChatBubble?,
     starredMessageIds: Set<String>,
+    isBlocked: Boolean,
     onSelectMode: (TransportMode) -> Unit,
     onConfirmPairing: () -> Unit,
     onRejectPairing: () -> Unit,
@@ -8136,14 +8318,21 @@ private fun WatchChatSurface(
                         }
                     }
 
-                    ReplyDock(
-                        quickReplyHeight = quickReplyHeight,
-                        surfaceSpec = surfaceSpec,
-                        onSendQuickReply = onSendQuickReply,
-                        onOpenCustomMessageInput = onOpenCustomMessageInput,
-                        onToggleVoiceRecording = onToggleVoiceRecording,
-                        isRecordingVoice = isRecordingVoice
-                    )
+                    if (isBlocked) {
+                        BlockedReplyNotice(
+                            surfaceSpec = surfaceSpec,
+                            height = quickReplyHeight
+                        )
+                    } else {
+                        ReplyDock(
+                            quickReplyHeight = quickReplyHeight,
+                            surfaceSpec = surfaceSpec,
+                            onSendQuickReply = onSendQuickReply,
+                            onOpenCustomMessageInput = onOpenCustomMessageInput,
+                            onToggleVoiceRecording = onToggleVoiceRecording,
+                            isRecordingVoice = isRecordingVoice
+                        )
+                    }
                 }
             }
         }
@@ -8539,6 +8728,35 @@ private fun ReplyDock(
             height = quickReplyHeight - 6.dp,
             recording = isRecordingVoice,
             onClick = onToggleVoiceRecording
+        )
+    }
+}
+
+@Composable
+private fun BlockedReplyNotice(
+    surfaceSpec: WatchSurfaceSpec,
+    height: Dp
+) {
+    Box(
+        modifier =
+            Modifier
+                .padding(bottom = surfaceSpec.chatBottomPadding)
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.86f else 0.94f)
+                .height(height + 4.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatRose.copy(alpha = 0.22f))
+                .border(1.dp, chatRose.copy(alpha = 0.58f), RoundedCornerShape(8.dp))
+                .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "已阻止此联系人",
+            color = Color.White,
+            fontSize = if (surfaceSpec.compact) 11.sp else 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
         )
     }
 }
