@@ -383,6 +383,13 @@ private data class ConversationContentSummary(
         get() = voiceCount + forwardedCount + quotedCount + reactedCount + disappearingCount > 0
 }
 
+private data class ChatManagementInsight(
+    val icon: ImageVector,
+    val label: String,
+    val value: String,
+    val accent: Color
+)
+
 private data class OutgoingMessageRef(
     val conversationId: String,
     val displayMessageId: String,
@@ -6248,6 +6255,21 @@ private fun WatchChatInfoSurface(
         }
         val messageCount = messages.count { message -> message.deliveryState != DeliveryState.System }
         val contentSummary = conversationContentSummary(messages)
+        val contentMessageCount = contentMessages(messages).size
+        val managementInsights =
+            chatManagementInsights(
+                messageCount = messageCount,
+                contentMessageCount = contentMessageCount,
+                contentSummary = contentSummary,
+                unreadCount = unreadCount,
+                starredCount = starredCount,
+                retryableCount = retryableCount,
+                isMuted = isMuted,
+                isArchived = isArchived,
+                isLocked = isLocked,
+                readReceiptsEnabled = readReceiptsEnabled,
+                disappearingMode = disappearingMode
+            )
 
         WatchFrame(
             surfaceSpec = surfaceSpec,
@@ -6411,6 +6433,11 @@ private fun WatchChatInfoSurface(
                             modifier = Modifier.weight(1f)
                         )
                     }
+
+                    ChatManagementInsightPanel(
+                        insights = managementInsights,
+                        surfaceSpec = surfaceSpec
+                    )
 
                     ChatInfoLine(
                         icon =
@@ -8160,6 +8187,73 @@ private fun InfoMetricPill(
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center
         )
+    }
+}
+
+@Composable
+private fun ChatManagementInsightPanel(
+    insights: List<ChatManagementInsight>,
+    surfaceSpec: WatchSurfaceSpec
+) {
+    val compact = surfaceSpec.compact
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.82f))
+                .border(1.dp, chatAmber.copy(alpha = 0.22f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 8.dp),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
+    ) {
+        Text(
+            text = "整理建议",
+            color = chatRowMuted,
+            fontSize = if (compact) 9.sp else 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        insights.forEach { insight ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier =
+                        Modifier
+                            .size(if (compact) 22.dp else 24.dp)
+                            .clip(CircleShape)
+                            .background(insight.accent.copy(alpha = 0.16f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = insight.icon,
+                        contentDescription = insight.label,
+                        tint = insight.accent,
+                        modifier = Modifier.size(if (compact) 12.dp else 14.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(if (compact) 7.dp else 8.dp))
+                Text(
+                    text = insight.label,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    fontSize = if (compact) 10.sp else 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(0.78f)
+                )
+                Text(
+                    text = insight.value,
+                    color = chatRowMuted,
+                    fontSize = if (compact) 9.sp else 10.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.weight(1.18f)
+                )
+            }
+        }
     }
 }
 
@@ -10131,6 +10225,111 @@ private fun contentMessages(messages: List<ChatBubble>): List<ChatBubble> =
                     message.expiresAtEpochMillis != null
             )
     }
+
+private fun chatManagementInsights(
+    messageCount: Int,
+    contentMessageCount: Int,
+    contentSummary: ConversationContentSummary,
+    unreadCount: Int,
+    starredCount: Int,
+    retryableCount: Int,
+    isMuted: Boolean,
+    isArchived: Boolean,
+    isLocked: Boolean,
+    readReceiptsEnabled: Boolean,
+    disappearingMode: DisappearingMessageMode
+): List<ChatManagementInsight> {
+    val insights = mutableListOf<ChatManagementInsight>()
+
+    if (retryableCount > 0) {
+        insights +=
+            ChatManagementInsight(
+                icon = Icons.Filled.Refresh,
+                label = "优先处理",
+                value = "${retryableCount.coerceAtMost(99)} 条未发送",
+                accent = chatRose
+            )
+    }
+    if (unreadCount > 0) {
+        insights +=
+            ChatManagementInsight(
+                icon = Icons.Filled.MarkChatUnread,
+                label = "未读提醒",
+                value = "${unreadCount.coerceAtMost(99)} 条待读",
+                accent = chatAmber
+            )
+    }
+    if (contentMessageCount > 0) {
+        insights +=
+            ChatManagementInsight(
+                icon = Icons.AutoMirrored.Filled.Chat,
+                label = "内容整理",
+                value = "$contentMessageCount 条 · 语音 ${contentSummary.voiceCount.coerceAtMost(99)}",
+                accent = chatBlue
+            )
+    }
+    if (starredCount > 0) {
+        insights +=
+            ChatManagementInsight(
+                icon = Icons.Filled.StarRate,
+                label = "星标保护",
+                value = "${starredCount.coerceAtMost(99)} 条会保留",
+                accent = chatAmber
+            )
+    }
+    if (isArchived || isMuted) {
+        val quietStates =
+            listOfNotNull(
+                if (isArchived) "已归档" else null,
+                if (isMuted) "静音中" else null
+            )
+        insights +=
+            ChatManagementInsight(
+                icon = Icons.Filled.NotificationsOff,
+                label = "安静收纳",
+                value = quietStates.joinToString(separator = " · "),
+                accent = chatGreen
+            )
+    }
+    if (isLocked || !readReceiptsEnabled || disappearingMode != DisappearingMessageMode.Off) {
+        val privacyStates =
+            listOfNotNull(
+                if (isLocked) "预览锁定" else null,
+                if (!readReceiptsEnabled) "回执关闭" else null,
+                if (disappearingMode != DisappearingMessageMode.Off) {
+                    "限时 ${disappearingMode.label}"
+                } else {
+                    null
+                }
+            )
+        insights +=
+            ChatManagementInsight(
+                icon = Icons.Filled.Lock,
+                label = "隐私状态",
+                value = privacyStates.joinToString(separator = " · "),
+                accent = chatGreen
+            )
+    }
+    if (messageCount == 0) {
+        insights +=
+            ChatManagementInsight(
+                icon = Icons.Filled.DoneAll,
+                label = "空聊天",
+                value = "还没有可整理消息",
+                accent = chatBlue
+            )
+    }
+    if (insights.isEmpty()) {
+        insights +=
+            ChatManagementInsight(
+                icon = Icons.Filled.DoneAll,
+                label = "聊天正常",
+                value = "没有紧急整理项",
+                accent = chatGreen
+            )
+    }
+    return insights.take(3)
+}
 
 private fun ChatBubble.matchesContentFilter(filter: ContentMessageFilter): Boolean =
     when (filter) {
