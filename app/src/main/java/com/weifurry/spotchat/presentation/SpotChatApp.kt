@@ -197,7 +197,8 @@ private enum class AppSurface {
     StarredMessages,
     ForwardMessage,
     SecurityCheck,
-    Profile
+    Profile,
+    BlockedContacts
 }
 
 private data class ConversationDraft(
@@ -1988,6 +1989,18 @@ internal fun SpotChatApp(
             encrypted = true,
             conversationId = conversation.id
         )
+    }
+
+    fun unblockPeer(peer: StoredTrustedPeer) {
+        blockedPeerFingerprints.remove(peer.fingerprint)
+        trustState = "已解除阻止 ${peerDisplayName(peer)}"
+        conversationById(directConversationId(peer.fingerprint))?.let { conversation ->
+            appendSystemMessage(
+                text = "已解除阻止 ${peerDisplayName(peer)}",
+                encrypted = true,
+                conversationId = conversation.id
+            )
+        }
     }
 
     fun toggleConversationLocked(conversation: ChatConversation) {
@@ -4823,7 +4836,28 @@ internal fun SpotChatApp(
                                 updateProfile(profile.copy(defaultDisappearingMode = mode.profileKey))
                                 trustState = "默认限时消息${mode.label}"
                             },
+                            onOpenBlockedContacts = {
+                                appSurface = AppSurface.BlockedContacts
+                            },
                             onProfileChange = ::updateProfile
+                        )
+                    }
+                }
+
+                if (appSurface == AppSurface.BlockedContacts) {
+                    SlideInOverlay(
+                        onDismissed = {
+                            appSurface = AppSurface.Profile
+                        }
+                    ) { dismissOverlay ->
+                        WatchBlockedContactsSurface(
+                            isRoundScreen = isRoundScreen,
+                            blockedPeers =
+                                trustedPeers.filter { peer ->
+                                    blockedPeerFingerprints[peer.fingerprint] == true
+                                },
+                            onNavigateBack = dismissOverlay,
+                            onUnblockPeer = ::unblockPeer
                         )
                     }
                 }
@@ -8756,6 +8790,220 @@ private fun MessageMetaRow(
 }
 
 @Composable
+private fun WatchBlockedContactsSurface(
+    isRoundScreen: Boolean,
+    blockedPeers: List<StoredTrustedPeer>,
+    onNavigateBack: () -> Unit,
+    onUnblockPeer: (StoredTrustedPeer) -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
+        val listState =
+            rememberScalingLazyListState(
+                initialCenterItemIndex = 1
+            )
+
+        WatchFrame(
+            surfaceSpec = surfaceSpec,
+            accent = chatRose,
+            modifier = Modifier.padding(horizontal = surfaceSpec.profileHorizontalPadding)
+        ) {
+            ScreenScaffold(
+                scrollState = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding =
+                    PaddingValues(
+                        top = surfaceSpec.profileTopPadding,
+                        bottom = surfaceSpec.profileBottomPadding
+                    ),
+                scrollIndicator = {
+                    ScrollIndicator(
+                        state = listState,
+                        modifier = Modifier.padding(end = surfaceSpec.scrollIndicatorEndPadding)
+                    )
+                }
+            ) { scaffoldPadding ->
+                ScalingLazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    state = listState,
+                    contentPadding = scaffoldPadding,
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 9.dp else 11.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    anchorType = ScalingLazyListAnchorType.ItemCenter
+                ) {
+                    item {
+                        ProfileListHeader(
+                            title = "已阻止联系人",
+                            subtitle =
+                                if (blockedPeers.isEmpty()) {
+                                    "没有阻止联系人"
+                                } else {
+                                    "${blockedPeers.size.coerceAtMost(99)} 人不会再发来消息"
+                                },
+                            compact = compact,
+                            onNavigateBack = onNavigateBack
+                        )
+                    }
+
+                    if (blockedPeers.isEmpty()) {
+                        item {
+                            ProfileEmptyBlockedContacts(
+                                compact = compact,
+                                surfaceSpec = surfaceSpec
+                            )
+                        }
+                    } else {
+                        blockedPeers.forEach { peer ->
+                            item {
+                                BlockedContactRow(
+                                    peer = peer,
+                                    surfaceSpec = surfaceSpec,
+                                    onUnblockPeer = { onUnblockPeer(peer) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileListHeader(
+    title: String,
+    subtitle: String,
+    compact: Boolean,
+    onNavigateBack: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(if (compact) 0.82f else 0.88f),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ProfileBackButton(
+                compact = compact,
+                contentDescription = "返回隐私设置",
+                onClick = onNavigateBack
+            )
+            Spacer(modifier = Modifier.width(if (compact) 8.dp else 10.dp))
+            Icon(
+                imageVector = Icons.Filled.PersonRemove,
+                contentDescription = title,
+                tint = chatRose,
+                modifier = Modifier.size(if (compact) 22.dp else 25.dp)
+            )
+        }
+        Text(
+            text = title,
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = if (compact) 17.sp else 20.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            text = subtitle,
+            color = chatRowMuted,
+            fontSize = if (compact) 10.sp else 11.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+private fun ProfileEmptyBlockedContacts(
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec
+) {
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(surfaceSpec.profileSummaryWidth)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.82f))
+                .border(1.dp, chatGreen.copy(alpha = 0.22f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.VerifiedUser,
+            contentDescription = "没有阻止联系人",
+            tint = chatGreen,
+            modifier = Modifier.size(if (compact) 14.dp else 16.dp)
+        )
+        Spacer(modifier = Modifier.width(if (compact) 7.dp else 9.dp))
+        Text(
+            text = "阻止名单为空",
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = if (compact) 11.sp else 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun BlockedContactRow(
+    peer: StoredTrustedPeer,
+    surfaceSpec: WatchSurfaceSpec,
+    onUnblockPeer: () -> Unit
+) {
+    val compact = surfaceSpec.compact
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth(surfaceSpec.profileSummaryWidth)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.82f))
+                .border(1.dp, chatRose.copy(alpha = 0.24f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 9.dp),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
+    ) {
+        ProfileInfoRow(
+            icon = Icons.Filled.PersonRemove,
+            label = "联系人",
+            value = peerDisplayName(peer),
+            accent = chatRose,
+            compact = compact
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.VerifiedUser,
+            label = "设备",
+            value = trustedPeerSubtitle(peer),
+            accent = chatBlue,
+            compact = compact
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.Lock,
+            label = "指纹",
+            value = SpotChatCrypto.displayFingerprint(peer.fingerprint),
+            accent = chatAmber,
+            compact = compact
+        )
+        MessageActionButton(
+            icon = Icons.Filled.PersonRemove,
+            text = "解除阻止",
+            selected = true,
+            compact = compact,
+            onClick = onUnblockPeer
+        )
+    }
+}
+
+@Composable
 private fun WatchProfileSurface(
     isRoundScreen: Boolean,
     profile: ProfileSettings,
@@ -8774,6 +9022,7 @@ private fun WatchProfileSurface(
     starredMessageCount: Int,
     onNavigateBack: () -> Unit,
     onDefaultDisappearingModeChange: (DisappearingMessageMode) -> Unit,
+    onOpenBlockedContacts: () -> Unit,
     onProfileChange: (ProfileSettings) -> Unit
 ) {
     BoxWithConstraints(
@@ -8927,6 +9176,7 @@ private fun WatchProfileSurface(
                             blockedPeers = blockedPeers,
                             defaultDisappearingMode = defaultDisappearingMode,
                             surfaceSpec = surfaceSpec,
+                            onOpenBlockedContacts = onOpenBlockedContacts,
                             onCycleDefaultDisappearingMode = {
                                 onDefaultDisappearingModeChange(defaultDisappearingMode.next())
                             }
@@ -9291,6 +9541,7 @@ private fun ProfilePrivacyPanel(
     blockedPeers: List<StoredTrustedPeer>,
     defaultDisappearingMode: DisappearingMessageMode,
     surfaceSpec: WatchSurfaceSpec,
+    onOpenBlockedContacts: () -> Unit,
     onCycleDefaultDisappearingMode: () -> Unit
 ) {
     val compact = surfaceSpec.compact
@@ -9331,7 +9582,8 @@ private fun ProfilePrivacyPanel(
             label = "屏蔽名单",
             value = blockedSummary,
             accent = if (blockedPeers.isEmpty()) chatGreen else chatRose,
-            compact = compact
+            compact = compact,
+            onClick = onOpenBlockedContacts
         )
         ProfileInfoRow(
             icon = Icons.Filled.AutoDelete,
