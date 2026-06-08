@@ -223,6 +223,7 @@ private enum class ChatListFilter(
     Retryable("未发送"),
     Locked("锁定"),
     Muted("静音"),
+    Disappearing("限时"),
     Direct("私聊"),
     Group("群聊")
 }
@@ -254,6 +255,7 @@ private fun ChatConversation.matchesFilter(
     mentionCounts: Map<String, Int>,
     favoriteConversationIds: Map<String, Boolean>,
     lockedConversationIds: Map<String, Boolean>,
+    disappearingModesByConversation: Map<String, DisappearingMessageMode>,
     isConversationMuted: (String) -> Boolean,
     hasRetryableMessages: (String) -> Boolean
 ): Boolean =
@@ -265,6 +267,8 @@ private fun ChatConversation.matchesFilter(
         ChatListFilter.Retryable -> hasRetryableMessages(id)
         ChatListFilter.Locked -> lockedConversationIds[id] == true
         ChatListFilter.Muted -> isConversationMuted(id)
+        ChatListFilter.Disappearing ->
+            (disappearingModesByConversation[id] ?: DisappearingMessageMode.Off) != DisappearingMessageMode.Off
         ChatListFilter.Direct -> kind == ConversationKind.Direct
         ChatListFilter.Group -> kind == ConversationKind.Group
     }
@@ -4174,6 +4178,7 @@ internal fun SpotChatApp(
                             mentionCounts = mentionCounts,
                             favoriteConversationIds = favoriteConversationIds,
                             lockedConversationIds = lockedConversationIds,
+                            disappearingModesByConversation = disappearingModesByConversation,
                             isConversationMuted = ::isConversationMuted,
                             hasRetryableMessages = ::hasRetryableMessages
                         )
@@ -4207,6 +4212,7 @@ internal fun SpotChatApp(
                         messagesByConversation = conversationMessages,
                         draftsByConversation = draftsByConversation,
                         lockedConversationIds = lockedConversationIds,
+                        disappearingModesByConversation = disappearingModesByConversation,
                         transportMode = transportMode,
                         trustState = trustState,
                         fingerprint = localFingerprint,
@@ -4990,6 +4996,7 @@ private fun WatchConversationListSurface(
     messagesByConversation: Map<String, List<ChatBubble>>,
     draftsByConversation: Map<String, ConversationDraft>,
     lockedConversationIds: Map<String, Boolean>,
+    disappearingModesByConversation: Map<String, DisappearingMessageMode>,
     transportMode: TransportMode,
     trustState: String,
     fingerprint: String,
@@ -5116,6 +5123,13 @@ private fun WatchConversationListSurface(
                         mutedCount =
                             allVisibleConversations.count { conversation ->
                                 isConversationMuted(conversation.id)
+                            },
+                        disappearingCount =
+                            allVisibleConversations.count { conversation ->
+                                (
+                                    disappearingModesByConversation[conversation.id]
+                                        ?: DisappearingMessageMode.Off
+                                ) != DisappearingMessageMode.Off
                             },
                         directCount =
                             allVisibleConversations.count { conversation ->
@@ -5461,6 +5475,7 @@ private fun ChatFilterStrip(
     retryableCount: Int,
     lockedCount: Int,
     mutedCount: Int,
+    disappearingCount: Int,
     directCount: Int,
     groupCount: Int,
     compact: Boolean,
@@ -5503,6 +5518,7 @@ private fun ChatFilterStrip(
                         ChatListFilter.Retryable -> retryableCount
                         ChatListFilter.Locked -> lockedCount
                         ChatListFilter.Muted -> mutedCount
+                        ChatListFilter.Disappearing -> disappearingCount
                         ChatListFilter.Direct -> directCount
                         ChatListFilter.Group -> groupCount
                     },
@@ -5537,6 +5553,7 @@ private fun FilterSegment(
                 ChatListFilter.Mentions -> 48.dp
                 ChatListFilter.Locked -> 48.dp
                 ChatListFilter.Muted -> 48.dp
+                ChatListFilter.Disappearing -> 48.dp
                 else -> 45.dp
             }
         } else {
@@ -5545,6 +5562,7 @@ private fun FilterSegment(
                 ChatListFilter.Mentions -> 54.dp
                 ChatListFilter.Locked -> 54.dp
                 ChatListFilter.Muted -> 54.dp
+                ChatListFilter.Disappearing -> 54.dp
                 else -> 50.dp
             }
         }
@@ -5767,6 +5785,7 @@ private fun EmptyFilterCapsule(
                     ChatListFilter.Retryable -> "没有未发送消息"
                     ChatListFilter.Locked -> "没有锁定聊天"
                     ChatListFilter.Muted -> "没有静音聊天"
+                    ChatListFilter.Disappearing -> "没有限时消息聊天"
                     ChatListFilter.Direct -> "没有私聊"
                     ChatListFilter.Group -> "没有群聊"
                 },
