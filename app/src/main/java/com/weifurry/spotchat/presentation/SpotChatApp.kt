@@ -2603,6 +2603,34 @@ internal fun SpotChatApp(
         trustState = "已复制限时摘要"
     }
 
+    fun copyReadReceiptsSummary(conversations: List<ChatConversation>) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            readReceiptsSummaryText(
+                conversations = conversations,
+                messagesByConversation = conversationMessages,
+                unreadCounts = unreadCounts,
+                draftsByConversation = draftsByConversation,
+                archivedConversationIds = archivedConversationIds,
+                lockedConversationIds = lockedConversationIds,
+                readReceiptsDisabledByConversation = readReceiptsDisabledByConversation,
+                isConversationMuted = ::isConversationMuted
+            )
+        if (summary.isBlank()) {
+            trustState = "没有回执摘要"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat read receipts summary", summary)
+        )
+        trustState = "已复制回执摘要"
+    }
+
     fun applyMessageReaction(
         conversationId: String,
         targetMessageId: String,
@@ -4906,6 +4934,9 @@ internal fun SpotChatApp(
                         onCopyDisappearingSummary = {
                             copyDisappearingSummary(visibleConversationList)
                         },
+                        onCopyReadReceiptsSummary = {
+                            copyReadReceiptsSummary(visibleConversationList)
+                        },
                         onEnableReadReceiptsVisible = {
                             val readReceiptOffConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5757,6 +5788,7 @@ private fun WatchConversationListSurface(
     onUnlockVisible: () -> Unit,
     onDisableDisappearingVisible: () -> Unit,
     onCopyDisappearingSummary: () -> Unit,
+    onCopyReadReceiptsSummary: () -> Unit,
     onEnableReadReceiptsVisible: () -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
@@ -6264,6 +6296,13 @@ private fun WatchConversationListSurface(
 
                     if (activeFilter == ChatListFilter.ReadReceiptsOff && conversations.isNotEmpty()) {
                         ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Keyboard,
+                                text = "复制回执摘要",
+                                selected = true,
+                                compact = compact,
+                                onClick = onCopyReadReceiptsSummary
+                            )
                             MessageActionButton(
                                 icon = Icons.Filled.DoneAll,
                                 text = "开启全部回执",
@@ -12904,6 +12943,68 @@ private fun disappearingSummaryText(
                             ?: "暂无限时消息"
                     )
             )
+            appendLine("   最新：${lastMessage?.copyText() ?: "没有消息"}")
+        }
+    }.trim()
+}
+
+private fun readReceiptsSummaryText(
+    conversations: List<ChatConversation>,
+    messagesByConversation: Map<String, List<ChatBubble>>,
+    unreadCounts: Map<String, Int>,
+    draftsByConversation: Map<String, ConversationDraft>,
+    archivedConversationIds: Map<String, Boolean>,
+    lockedConversationIds: Map<String, Boolean>,
+    readReceiptsDisabledByConversation: Map<String, Boolean>,
+    isConversationMuted: (String) -> Boolean
+): String {
+    val receiptOffConversations =
+        conversations.filter { conversation ->
+            readReceiptsDisabledByConversation[conversation.id] == true
+        }
+    if (receiptOffConversations.isEmpty()) {
+        return ""
+    }
+    val directCount =
+        receiptOffConversations.count { conversation -> conversation.kind == ConversationKind.Direct }
+    val groupCount =
+        receiptOffConversations.count { conversation -> conversation.kind == ConversationKind.Group }
+    val unreadConversationCount =
+        receiptOffConversations.count { conversation -> (unreadCounts[conversation.id] ?: 0) > 0 }
+    return buildString {
+        appendLine("SpotChat 回执摘要")
+        appendLine("聊天：${receiptOffConversations.size} 个")
+        appendLine("私聊：$directCount 个")
+        appendLine("群聊：$groupCount 个")
+        appendLine("未读：$unreadConversationCount 个")
+        appendLine()
+        receiptOffConversations.forEachIndexed { index, conversation ->
+            val messages = messagesByConversation[conversation.id].orEmpty()
+            val lastMessage =
+                messages.lastOrNull { message -> message.deliveryState != DeliveryState.System }
+            val stateLabels =
+                buildList {
+                    add("回执关闭")
+                    val unreadCount = unreadCounts[conversation.id] ?: 0
+                    if (unreadCount > 0) {
+                        add("未读 $unreadCount")
+                    }
+                    if (draftsByConversation[conversation.id] != null) {
+                        add("有草稿")
+                    }
+                    if (isConversationMuted(conversation.id)) {
+                        add("静音")
+                    }
+                    if (archivedConversationIds[conversation.id] == true) {
+                        add("已归档")
+                    }
+                    if (lockedConversationIds[conversation.id] == true) {
+                        add("锁定")
+                    }
+                }
+            appendLine("${index + 1}. ${conversation.title}")
+            appendLine("   类型：${conversation.kind.label}")
+            appendLine("   状态：${stateLabels.joinToString(separator = " · ")}")
             appendLine("   最新：${lastMessage?.copyText() ?: "没有消息"}")
         }
     }.trim()
