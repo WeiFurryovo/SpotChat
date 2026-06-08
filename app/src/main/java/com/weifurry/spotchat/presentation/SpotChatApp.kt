@@ -2580,6 +2580,34 @@ internal fun SpotChatApp(
         trustState = "已复制静音摘要"
     }
 
+    fun copyLockedSummary(conversations: List<ChatConversation>) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            lockedSummaryText(
+                conversations = conversations,
+                messagesByConversation = conversationMessages,
+                unreadCounts = unreadCounts,
+                draftsByConversation = draftsByConversation,
+                archivedConversationIds = archivedConversationIds,
+                lockedConversationIds = lockedConversationIds,
+                readReceiptsDisabledByConversation = readReceiptsDisabledByConversation,
+                isConversationMuted = ::isConversationMuted
+            )
+        if (summary.isBlank()) {
+            trustState = "没有锁定摘要"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat locked summary", summary)
+        )
+        trustState = "已复制锁定摘要"
+    }
+
     fun copyDisappearingSummary(conversations: List<ChatConversation>) {
         val clipboardManager =
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -4916,6 +4944,9 @@ internal fun SpotChatApp(
                                 trustState = "已解锁聊天预览"
                             }
                         },
+                        onCopyLockedSummary = {
+                            copyLockedSummary(visibleConversationList)
+                        },
                         onDisableDisappearingVisible = {
                             val disappearingVisibleConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5786,6 +5817,7 @@ private fun WatchConversationListSurface(
     onLockVisibleDirects: () -> Unit,
     onDisableDirectReceiptsVisible: () -> Unit,
     onUnlockVisible: () -> Unit,
+    onCopyLockedSummary: () -> Unit,
     onDisableDisappearingVisible: () -> Unit,
     onCopyDisappearingSummary: () -> Unit,
     onCopyReadReceiptsSummary: () -> Unit,
@@ -6265,6 +6297,13 @@ private fun WatchConversationListSurface(
 
                     if (activeFilter == ChatListFilter.Locked && conversations.isNotEmpty()) {
                         ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Keyboard,
+                                text = "复制锁定摘要",
+                                selected = true,
+                                compact = compact,
+                                onClick = onCopyLockedSummary
+                            )
                             MessageActionButton(
                                 icon = Icons.Filled.Lock,
                                 text = "解锁全部预览",
@@ -12893,6 +12932,72 @@ private fun mutedSummaryText(
             appendLine("${index + 1}. ${conversation.title}")
             appendLine("   状态：${stateLabels.joinToString(separator = " · ")}")
             appendLine("   最新：${lastMessage?.copyText() ?: "没有消息"}")
+        }
+    }.trim()
+}
+
+private fun lockedSummaryText(
+    conversations: List<ChatConversation>,
+    messagesByConversation: Map<String, List<ChatBubble>>,
+    unreadCounts: Map<String, Int>,
+    draftsByConversation: Map<String, ConversationDraft>,
+    archivedConversationIds: Map<String, Boolean>,
+    lockedConversationIds: Map<String, Boolean>,
+    readReceiptsDisabledByConversation: Map<String, Boolean>,
+    isConversationMuted: (String) -> Boolean
+): String {
+    val lockedConversations =
+        conversations.filter { conversation ->
+            lockedConversationIds[conversation.id] == true
+        }
+    if (lockedConversations.isEmpty()) {
+        return ""
+    }
+    val directCount =
+        lockedConversations.count { conversation -> conversation.kind == ConversationKind.Direct }
+    val groupCount =
+        lockedConversations.count { conversation -> conversation.kind == ConversationKind.Group }
+    val unreadConversationCount =
+        lockedConversations.count { conversation -> (unreadCounts[conversation.id] ?: 0) > 0 }
+    return buildString {
+        appendLine("SpotChat 锁定摘要")
+        appendLine("聊天：${lockedConversations.size} 个")
+        appendLine("私聊：$directCount 个")
+        appendLine("群聊：$groupCount 个")
+        appendLine("未读：$unreadConversationCount 个")
+        appendLine("内容：已隐藏")
+        appendLine()
+        lockedConversations.forEachIndexed { index, conversation ->
+            val visibleMessages =
+                messagesByConversation[conversation.id]
+                    .orEmpty()
+                    .filter { message -> message.deliveryState != DeliveryState.System }
+            val latestMessage = visibleMessages.lastOrNull()
+            val stateLabels =
+                buildList {
+                    add("预览锁定")
+                    val unreadCount = unreadCounts[conversation.id] ?: 0
+                    if (unreadCount > 0) {
+                        add("未读 $unreadCount")
+                    }
+                    if (draftsByConversation[conversation.id] != null) {
+                        add("有草稿")
+                    }
+                    if (isConversationMuted(conversation.id)) {
+                        add("静音")
+                    }
+                    if (archivedConversationIds[conversation.id] == true) {
+                        add("已归档")
+                    }
+                    if (readReceiptsDisabledByConversation[conversation.id] == true) {
+                        add("回执关闭")
+                    }
+                }
+            appendLine("${index + 1}. ${conversation.title}")
+            appendLine("   类型：${conversation.kind.label}")
+            appendLine("   状态：${stateLabels.joinToString(separator = " · ")}")
+            appendLine("   消息：${visibleMessages.size} 条")
+            appendLine("   最近活动：${latestMessage?.timestamp ?: "没有消息"}")
         }
     }.trim()
 }
