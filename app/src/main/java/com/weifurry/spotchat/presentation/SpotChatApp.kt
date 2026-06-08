@@ -2580,6 +2580,29 @@ internal fun SpotChatApp(
         trustState = "已复制静音摘要"
     }
 
+    fun copyDisappearingSummary(conversations: List<ChatConversation>) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            disappearingSummaryText(
+                conversations = conversations,
+                messagesByConversation = conversationMessages,
+                disappearingModesByConversation = disappearingModesByConversation
+            )
+        if (summary.isBlank()) {
+            trustState = "没有限时摘要"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat disappearing summary", summary)
+        )
+        trustState = "已复制限时摘要"
+    }
+
     fun applyMessageReaction(
         conversationId: String,
         targetMessageId: String,
@@ -4880,6 +4903,9 @@ internal fun SpotChatApp(
                                 trustState = "已关闭限时消息"
                             }
                         },
+                        onCopyDisappearingSummary = {
+                            copyDisappearingSummary(visibleConversationList)
+                        },
                         onEnableReadReceiptsVisible = {
                             val readReceiptOffConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5730,6 +5756,7 @@ private fun WatchConversationListSurface(
     onDisableDirectReceiptsVisible: () -> Unit,
     onUnlockVisible: () -> Unit,
     onDisableDisappearingVisible: () -> Unit,
+    onCopyDisappearingSummary: () -> Unit,
     onEnableReadReceiptsVisible: () -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
@@ -6218,6 +6245,13 @@ private fun WatchConversationListSurface(
 
                     if (activeFilter == ChatListFilter.Disappearing && conversations.isNotEmpty()) {
                         ConversationBulkActionGroup(surfaceSpec = surfaceSpec) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Keyboard,
+                                text = "复制限时摘要",
+                                selected = true,
+                                compact = compact,
+                                onClick = onCopyDisappearingSummary
+                            )
                             MessageActionButton(
                                 icon = Icons.Filled.AutoDelete,
                                 text = "关闭全部限时",
@@ -12819,6 +12853,57 @@ private fun mutedSummaryText(
                 }
             appendLine("${index + 1}. ${conversation.title}")
             appendLine("   状态：${stateLabels.joinToString(separator = " · ")}")
+            appendLine("   最新：${lastMessage?.copyText() ?: "没有消息"}")
+        }
+    }.trim()
+}
+
+private fun disappearingSummaryText(
+    conversations: List<ChatConversation>,
+    messagesByConversation: Map<String, List<ChatBubble>>,
+    disappearingModesByConversation: Map<String, DisappearingMessageMode>
+): String {
+    val disappearingConversations =
+        conversations.mapNotNull { conversation ->
+            val mode =
+                disappearingModesByConversation[conversation.id]
+                    ?: DisappearingMessageMode.Off
+            mode
+                .takeIf { currentMode -> currentMode != DisappearingMessageMode.Off }
+                ?.let { currentMode -> conversation to currentMode }
+        }
+    if (disappearingConversations.isEmpty()) {
+        return ""
+    }
+    val timedMessageCount =
+        disappearingConversations.sumOf { (conversation, _) ->
+            messagesByConversation[conversation.id]
+                .orEmpty()
+                .count { message -> message.expiresAtEpochMillis != null }
+        }
+    return buildString {
+        appendLine("SpotChat 限时摘要")
+        appendLine("聊天：${disappearingConversations.size} 个")
+        appendLine("限时消息：$timedMessageCount 条")
+        appendLine()
+        disappearingConversations.forEachIndexed { index, (conversation, mode) ->
+            val messages = messagesByConversation[conversation.id].orEmpty()
+            val lastMessage =
+                messages.lastOrNull { message -> message.deliveryState != DeliveryState.System }
+            val nextExpiringMessage =
+                messages
+                    .filter { message -> message.expiresAtEpochMillis != null }
+                    .minByOrNull { message -> message.expiresAtEpochMillis ?: Long.MAX_VALUE }
+            appendLine("${index + 1}. ${conversation.title}")
+            appendLine("   模式：${mode.label}")
+            appendLine(
+                "   最近过期：" +
+                    (
+                        nextExpiringMessage?.expiresAtEpochMillis
+                            ?.let(::formatTimeRemaining)
+                            ?: "暂无限时消息"
+                    )
+            )
             appendLine("   最新：${lastMessage?.copyText() ?: "没有消息"}")
         }
     }.trim()
