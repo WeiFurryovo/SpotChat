@@ -4349,6 +4349,7 @@ internal fun SpotChatApp(
                                     groupReachabilityText(selectedConversation.memberFingerprints)
                             },
                             messages = messagesForConversation(selectedConversation.id),
+                            pinnedMessage = pinnedMessage(selectedConversation.id),
                             groupAbout =
                                 if (selectedConversation.id == NEARBY_GROUP_CONVERSATION_ID) {
                                     nearbyGroupAbout
@@ -4393,6 +4394,12 @@ internal fun SpotChatApp(
                             },
                             onOpenContentMessages = {
                                 appSurface = AppSurface.ChatContentMessages
+                            },
+                            onOpenPinnedMessage = { message ->
+                                messageActionsBackStack.clear()
+                                messageActionsReturnSurface = AppSurface.ChatInfo
+                                selectedActionMessage = message
+                                appSurface = AppSurface.MessageActions
                             },
                             onSearchMessages = {
                                 appSurface = AppSurface.MessageSearch
@@ -6193,6 +6200,7 @@ private fun WatchChatInfoSurface(
     fingerprint: String,
     reachability: String,
     messages: List<ChatBubble>,
+    pinnedMessage: ChatBubble?,
     groupAbout: String?,
     isPinned: Boolean,
     isFavorite: Boolean,
@@ -6213,6 +6221,7 @@ private fun WatchChatInfoSurface(
     onEditGroupAbout: (() -> Unit)?,
     onOpenStarredMessages: () -> Unit,
     onOpenContentMessages: () -> Unit,
+    onOpenPinnedMessage: (ChatBubble) -> Unit,
     onSearchMessages: () -> Unit,
     onTogglePinned: () -> Unit,
     onToggleFavorite: () -> Unit,
@@ -6439,6 +6448,15 @@ private fun WatchChatInfoSurface(
                         surfaceSpec = surfaceSpec
                     )
 
+                    pinnedMessage?.let { message ->
+                        ChatInfoPinnedMessagePreview(
+                            message = message,
+                            accent = accent,
+                            surfaceSpec = surfaceSpec,
+                            onClick = { onOpenPinnedMessage(message) }
+                        )
+                    }
+
                     ChatInfoLine(
                         icon =
                             if (conversation.kind == ConversationKind.Group) {
@@ -6626,6 +6644,15 @@ private fun WatchChatInfoSurface(
                             compact = compact,
                             onClick = onOpenContentMessages
                         )
+                        pinnedMessage?.let { message ->
+                            MessageActionButton(
+                                icon = Icons.Filled.PushPin,
+                                text = "查看置顶消息",
+                                selected = true,
+                                compact = compact,
+                                onClick = { onOpenPinnedMessage(message) }
+                            )
+                        }
                         MessageActionButton(
                             icon = Icons.Filled.AutoDelete,
                             text = disappearingActionLabel(disappearingMode),
@@ -8187,6 +8214,65 @@ private fun InfoMetricPill(
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center
         )
+    }
+}
+
+@Composable
+private fun ChatInfoPinnedMessagePreview(
+    message: ChatBubble,
+    accent: Color,
+    surfaceSpec: WatchSurfaceSpec,
+    onClick: () -> Unit
+) {
+    val compact = surfaceSpec.compact
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.82f))
+                .border(1.dp, accent.copy(alpha = 0.34f), RoundedCornerShape(8.dp))
+                .clickable(onClick = onClick)
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .size(if (compact) 24.dp else 28.dp)
+                    .clip(CircleShape)
+                    .background(accent.copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.PushPin,
+                contentDescription = "置顶消息",
+                tint = accent,
+                modifier = Modifier.size(if (compact) 13.dp else 15.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(if (compact) 7.dp else 9.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(1.dp)
+        ) {
+            Text(
+                text = "置顶消息",
+                color = chatRowMuted,
+                fontSize = if (compact) 9.sp else 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = message.previewText(),
+                color = MaterialTheme.colorScheme.onBackground,
+                fontSize = if (compact) 11.sp else 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
 
