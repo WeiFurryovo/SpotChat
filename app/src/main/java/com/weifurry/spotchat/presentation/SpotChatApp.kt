@@ -5165,6 +5165,13 @@ private fun WatchConversationListSurface(
                         allVisibleConversations.count { conversation ->
                             readReceiptsDisabledByConversation[conversation.id] == true
                         }
+                    val attentionChatCount =
+                        allVisibleConversations.count { conversation ->
+                            (unreadCounts[conversation.id] ?: 0) > 0 ||
+                                (mentionCounts[conversation.id] ?: 0) > 0 ||
+                                draftsByConversation[conversation.id] != null ||
+                                hasRetryableMessages(conversation.id)
+                        }
                     val privacyChatCount =
                         allVisibleConversations.count { conversation ->
                             val hasDisappearingMessages =
@@ -5201,6 +5208,17 @@ private fun WatchConversationListSurface(
                         readReceiptsOffCount = readReceiptsOffCount,
                         directCount = directCount,
                         groupCount = groupCount,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec,
+                        onSelectFilter = onSelectFilter
+                    )
+
+                    AttentionOverviewCapsule(
+                        attentionChatCount = attentionChatCount,
+                        unreadCount = unreadCount,
+                        mentionCount = mentionCount,
+                        draftCount = draftCount,
+                        retryableCount = retryableCount,
                         compact = compact,
                         surfaceSpec = surfaceSpec,
                         onSelectFilter = onSelectFilter
@@ -5679,6 +5697,84 @@ private fun FilterSegment(
 }
 
 @Composable
+private fun AttentionOverviewCapsule(
+    attentionChatCount: Int,
+    unreadCount: Int,
+    mentionCount: Int,
+    draftCount: Int,
+    retryableCount: Int,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    onSelectFilter: (ChatListFilter) -> Unit
+) {
+    val summary =
+        if (attentionChatCount == 0) {
+            "待处理 0"
+        } else {
+            "待处理 $attentionChatCount"
+        }
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.74f))
+                .border(1.dp, chatAmber.copy(alpha = 0.22f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 6.dp else 8.dp, vertical = if (compact) 6.dp else 7.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.MarkChatUnread,
+            contentDescription = "待处理总览",
+            tint = if (attentionChatCount == 0) chatGreen else chatAmber,
+            modifier = Modifier.size(if (compact) 12.dp else 14.dp)
+        )
+        Text(
+            text = summary,
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = if (compact) 9.sp else 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        OverviewMetricPill(
+            label = "未",
+            count = unreadCount,
+            filter = ChatListFilter.Unread,
+            activeColor = chatAmber,
+            compact = compact,
+            onSelectFilter = onSelectFilter
+        )
+        OverviewMetricPill(
+            label = "@",
+            count = mentionCount,
+            filter = ChatListFilter.Mentions,
+            activeColor = chatBlue,
+            compact = compact,
+            onSelectFilter = onSelectFilter
+        )
+        OverviewMetricPill(
+            label = "草",
+            count = draftCount,
+            filter = ChatListFilter.Drafts,
+            activeColor = chatAmber,
+            compact = compact,
+            onSelectFilter = onSelectFilter
+        )
+        OverviewMetricPill(
+            label = "发",
+            count = retryableCount,
+            filter = ChatListFilter.Retryable,
+            activeColor = chatRose,
+            compact = compact,
+            onSelectFilter = onSelectFilter
+        )
+    }
+}
+
+@Composable
 private fun PrivacyOverviewCapsule(
     privacyChatCount: Int,
     lockedCount: Int,
@@ -5725,6 +5821,7 @@ private fun PrivacyOverviewCapsule(
             label = "锁",
             count = lockedCount,
             filter = ChatListFilter.Locked,
+            activeColor = chatGreen,
             compact = compact,
             onSelectFilter = onSelectFilter
         )
@@ -5732,6 +5829,7 @@ private fun PrivacyOverviewCapsule(
             label = "静",
             count = mutedCount,
             filter = ChatListFilter.Muted,
+            activeColor = chatGreen,
             compact = compact,
             onSelectFilter = onSelectFilter
         )
@@ -5739,6 +5837,7 @@ private fun PrivacyOverviewCapsule(
             label = "限",
             count = disappearingCount,
             filter = ChatListFilter.Disappearing,
+            activeColor = chatGreen,
             compact = compact,
             onSelectFilter = onSelectFilter
         )
@@ -5746,6 +5845,7 @@ private fun PrivacyOverviewCapsule(
             label = "回",
             count = readReceiptsOffCount,
             filter = ChatListFilter.ReadReceiptsOff,
+            activeColor = chatGreen,
             compact = compact,
             onSelectFilter = onSelectFilter
         )
@@ -5757,12 +5857,31 @@ private fun PrivacyMetricPill(
     label: String,
     count: Int,
     filter: ChatListFilter,
+    activeColor: Color,
+    compact: Boolean,
+    onSelectFilter: (ChatListFilter) -> Unit
+) =
+    OverviewMetricPill(
+        label = label,
+        count = count,
+        filter = filter,
+        activeColor = activeColor,
+        compact = compact,
+        onSelectFilter = onSelectFilter
+    )
+
+@Composable
+private fun OverviewMetricPill(
+    label: String,
+    count: Int,
+    filter: ChatListFilter,
+    activeColor: Color,
     compact: Boolean,
     onSelectFilter: (ChatListFilter) -> Unit
 ) {
     val hasCount = count > 0
-    val background = if (hasCount) chatGreen.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.045f)
-    val foreground = if (hasCount) chatGreen else chatRowMuted
+    val background = if (hasCount) activeColor.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.045f)
+    val foreground = if (hasCount) activeColor else chatRowMuted
     Text(
         text = "$label${count.coerceAtMost(99)}",
         color = foreground,
