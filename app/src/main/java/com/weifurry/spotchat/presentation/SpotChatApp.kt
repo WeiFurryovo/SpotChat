@@ -1591,6 +1591,20 @@ internal fun SpotChatApp(
         return conversationId
     }
 
+    fun appendSecurityChangeAlert(
+        storedPeer: StoredTrustedPeer,
+        text: String
+    ) {
+        if (!profile.securityChangeAlertsEnabled) {
+            return
+        }
+        appendSystemMessage(
+            text = text,
+            encrypted = true,
+            conversationId = ensureDirectConversation(storedPeer)
+        )
+    }
+
     fun trustedPeer(fingerprint: String): StoredTrustedPeer? =
         trustedPeers.firstOrNull { peer -> peer.fingerprint == fingerprint }
 
@@ -3661,11 +3675,10 @@ internal fun SpotChatApp(
         activePeerFingerprint = storedPeer.fingerprint
         pairingCode = storedPeer.pairingCode
         trustState = "已信任 ${storedPeer.deviceName}"
-        val directConversationKey = ensureDirectConversation(storedPeer)
-        appendSystemMessage(
-            text = "已信任 ${storedPeer.deviceName}，可以开始加密聊天",
-            encrypted = true,
-            conversationId = directConversationKey
+        ensureDirectConversation(storedPeer)
+        appendSecurityChangeAlert(
+            storedPeer = storedPeer,
+            text = "安全提醒：已信任 ${storedPeer.deviceName}，可以开始加密聊天"
         )
     }
 
@@ -6250,6 +6263,7 @@ internal fun SpotChatApp(
                             blockedPeerFingerprints = blockedPeerFingerprints.toMap(),
                             defaultDisappearingMode = profile.defaultDisappearingMode.toDisappearingMode(),
                             defaultReadReceiptsEnabled = profile.defaultReadReceiptsEnabled,
+                            securityChangeAlertsEnabled = profile.securityChangeAlertsEnabled,
                             archivedChatCount =
                                 archivedConversationIds.count { (_, archived) -> archived },
                             mutedChatCount =
@@ -6273,6 +6287,11 @@ internal fun SpotChatApp(
                                 val enabled = !profile.defaultReadReceiptsEnabled
                                 updateProfile(profile.copy(defaultReadReceiptsEnabled = enabled))
                                 trustState = if (enabled) "默认已读回执开启" else "默认已读回执关闭"
+                            },
+                            onToggleSecurityChangeAlerts = {
+                                val enabled = !profile.securityChangeAlertsEnabled
+                                updateProfile(profile.copy(securityChangeAlertsEnabled = enabled))
+                                trustState = if (enabled) "安全变化提醒开启" else "安全变化提醒关闭"
                             },
                             onCopyIdentitySafetySummary = ::copyIdentitySafetySummary,
                             onCopyTrustedDevicesSummary = ::copyTrustedDevicesSummary,
@@ -11827,6 +11846,7 @@ private fun WatchProfileSurface(
     blockedPeerFingerprints: Map<String, Boolean>,
     defaultDisappearingMode: DisappearingMessageMode,
     defaultReadReceiptsEnabled: Boolean,
+    securityChangeAlertsEnabled: Boolean,
     archivedChatCount: Int,
     mutedChatCount: Int,
     lockedChatCount: Int,
@@ -11836,6 +11856,7 @@ private fun WatchProfileSurface(
     onNavigateBack: () -> Unit,
     onDefaultDisappearingModeChange: (DisappearingMessageMode) -> Unit,
     onToggleDefaultReadReceipts: () -> Unit,
+    onToggleSecurityChangeAlerts: () -> Unit,
     onCopyIdentitySafetySummary: () -> Unit,
     onCopyTrustedDevicesSummary: () -> Unit,
     onCopyPrivacySummary: () -> Unit,
@@ -12002,13 +12023,15 @@ private fun WatchProfileSurface(
                             blockedPeers = blockedPeers,
                             defaultDisappearingMode = defaultDisappearingMode,
                             defaultReadReceiptsEnabled = defaultReadReceiptsEnabled,
+                            securityChangeAlertsEnabled = securityChangeAlertsEnabled,
                             surfaceSpec = surfaceSpec,
                             onOpenBlockedContacts = onOpenBlockedContacts,
                             onCycleDefaultDisappearingMode = {
                                 onDefaultDisappearingModeChange(defaultDisappearingMode.next())
                             },
                             onCopyPrivacySummary = onCopyPrivacySummary,
-                            onToggleDefaultReadReceipts = onToggleDefaultReadReceipts
+                            onToggleDefaultReadReceipts = onToggleDefaultReadReceipts,
+                            onToggleSecurityChangeAlerts = onToggleSecurityChangeAlerts
                         )
                     }
 
@@ -12380,11 +12403,13 @@ private fun ProfilePrivacyPanel(
     blockedPeers: List<StoredTrustedPeer>,
     defaultDisappearingMode: DisappearingMessageMode,
     defaultReadReceiptsEnabled: Boolean,
+    securityChangeAlertsEnabled: Boolean,
     surfaceSpec: WatchSurfaceSpec,
     onOpenBlockedContacts: () -> Unit,
     onCycleDefaultDisappearingMode: () -> Unit,
     onCopyPrivacySummary: () -> Unit,
-    onToggleDefaultReadReceipts: () -> Unit
+    onToggleDefaultReadReceipts: () -> Unit,
+    onToggleSecurityChangeAlerts: () -> Unit
 ) {
     val compact = surfaceSpec.compact
     val blockedSummary =
@@ -12450,6 +12475,14 @@ private fun ProfilePrivacyPanel(
             accent = if (defaultReadReceiptsEnabled) chatGreen else chatAmber,
             compact = compact,
             onClick = onToggleDefaultReadReceipts
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.VerifiedUser,
+            label = "安全提醒",
+            value = if (securityChangeAlertsEnabled) "开启" else "关闭",
+            accent = if (securityChangeAlertsEnabled) chatGreen else chatAmber,
+            compact = compact,
+            onClick = onToggleSecurityChangeAlerts
         )
     }
 }
@@ -15335,6 +15368,7 @@ private fun identitySafetySummaryText(
         appendLine("当前传输：${transportMode.label}")
         appendLine("信任状态：$trustState")
         appendLine("可信设备：$trustedPeerCount 台")
+        appendLine("安全变化提醒：${if (profile.securityChangeAlertsEnabled) "开启" else "关闭"}")
         appendLine("待确认设备：${pendingPeer?.deviceName ?: "无"}")
         pairingCode?.let { code ->
             appendLine("当前校验码：$code")
@@ -15409,6 +15443,7 @@ private fun privacySummaryText(
         appendLine("阻止联系人：${blockedPeers.size} 人")
         appendLine("默认限时：${defaultDisappearingMode.label}")
         appendLine("默认回执：${if (profile.defaultReadReceiptsEnabled) "开启" else "关闭"}")
+        appendLine("安全变化提醒：${if (profile.securityChangeAlertsEnabled) "开启" else "关闭"}")
         appendLine()
         appendLine("聊天状态")
         appendLine("聊天：${conversations.size} 个")
