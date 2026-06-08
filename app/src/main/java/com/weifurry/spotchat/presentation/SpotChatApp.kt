@@ -2477,6 +2477,33 @@ internal fun SpotChatApp(
         trustState = "已复制 ${peer.deviceName} 的校验码"
     }
 
+    fun copyIdentitySafetySummary() {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            identitySafetySummaryText(
+                profile = profile,
+                localFingerprint = localFingerprint,
+                transportMode = transportMode,
+                trustState = trustState,
+                trustedPeerCount = trustedPeers.size,
+                pendingPeer = pendingPeer,
+                pairingCode = pairingCode
+            )
+        if (summary.isBlank()) {
+            trustState = "没有身份摘要"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat identity safety", summary)
+        )
+        trustState = "已复制身份摘要"
+    }
+
     fun copyTrustedDevicesSummary() {
         val clipboardManager =
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -5869,6 +5896,7 @@ internal fun SpotChatApp(
                                 updateProfile(profile.copy(defaultReadReceiptsEnabled = enabled))
                                 trustState = if (enabled) "默认已读回执开启" else "默认已读回执关闭"
                             },
+                            onCopyIdentitySafetySummary = ::copyIdentitySafetySummary,
                             onCopyTrustedDevicesSummary = ::copyTrustedDevicesSummary,
                             onCopyPrivacySummary = ::copyPrivacySummary,
                             onOpenBlockedContacts = {
@@ -10970,6 +10998,7 @@ private fun WatchProfileSurface(
     onNavigateBack: () -> Unit,
     onDefaultDisappearingModeChange: (DisappearingMessageMode) -> Unit,
     onToggleDefaultReadReceipts: () -> Unit,
+    onCopyIdentitySafetySummary: () -> Unit,
     onCopyTrustedDevicesSummary: () -> Unit,
     onCopyPrivacySummary: () -> Unit,
     onOpenBlockedContacts: () -> Unit,
@@ -11076,7 +11105,8 @@ private fun WatchProfileSurface(
                             transportMode = transportMode,
                             trustState = trustState,
                             trustedPeerCount = trustedPeers.size,
-                            surfaceSpec = surfaceSpec
+                            surfaceSpec = surfaceSpec,
+                            onCopyIdentitySafetySummary = onCopyIdentitySafetySummary
                         )
                     }
 
@@ -11459,7 +11489,8 @@ private fun ProfileSecurityPanel(
     transportMode: TransportMode,
     trustState: String,
     trustedPeerCount: Int,
-    surfaceSpec: WatchSurfaceSpec
+    surfaceSpec: WatchSurfaceSpec,
+    onCopyIdentitySafetySummary: () -> Unit
 ) {
     val compact = surfaceSpec.compact
     Column(
@@ -11472,6 +11503,14 @@ private fun ProfileSecurityPanel(
                 .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 9.dp),
         verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
     ) {
+        ProfileInfoRow(
+            icon = Icons.Filled.Keyboard,
+            label = "身份摘要",
+            value = "复制安全信息",
+            accent = chatBlue,
+            compact = compact,
+            onClick = onCopyIdentitySafetySummary
+        )
         ProfileInfoRow(
             icon = Icons.Filled.Lock,
             label = "我的指纹",
@@ -14047,6 +14086,29 @@ private fun conversationSafetySummaryText(
         }
     }.trim()
 }
+
+private fun identitySafetySummaryText(
+    profile: ProfileSettings,
+    localFingerprint: String,
+    transportMode: TransportMode,
+    trustState: String,
+    trustedPeerCount: Int,
+    pendingPeer: TrustedPeer?,
+    pairingCode: String?
+): String =
+    buildString {
+        appendLine("SpotChat 身份安全摘要")
+        appendLine("昵称：${profile.displayName}")
+        appendLine("简介：${profile.about.ifBlank { ProfileStore.DEFAULT_ABOUT }}")
+        appendLine("我的指纹：${SpotChatCrypto.displayFingerprint(localFingerprint)}")
+        appendLine("当前传输：${transportMode.label}")
+        appendLine("信任状态：$trustState")
+        appendLine("可信设备：$trustedPeerCount 台")
+        appendLine("待确认设备：${pendingPeer?.deviceName ?: "无"}")
+        pairingCode?.let { code ->
+            appendLine("当前校验码：$code")
+        }
+    }.trim()
 
 private fun trustedDevicesSummaryText(
     peers: List<StoredTrustedPeer>,
