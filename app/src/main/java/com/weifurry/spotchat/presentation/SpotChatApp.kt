@@ -2058,7 +2058,7 @@ internal fun SpotChatApp(
             disappearingModesByConversation[conversation.id] = mode
         }
         appendSystemMessage(
-            text = "限时消息：${mode.label}",
+            text = disappearingSystemMessage(mode),
             encrypted = true,
             conversationId = conversation.id
         )
@@ -6880,6 +6880,11 @@ private fun WatchDisappearingSettingsSurface(
                         onNavigateBack = onNavigateBack
                     )
 
+                    DisappearingMessageNotice(
+                        currentMode = currentMode,
+                        surfaceSpec = surfaceSpec
+                    )
+
                     Column(
                         modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
                         verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
@@ -6902,6 +6907,46 @@ private fun WatchDisappearingSettingsSurface(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DisappearingMessageNotice(
+    currentMode: DisappearingMessageMode,
+    surfaceSpec: WatchSurfaceSpec
+) {
+    val compact = surfaceSpec.compact
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.82f))
+                .border(1.dp, chatGreen.copy(alpha = 0.22f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 8.dp),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp)
+    ) {
+        ProfileInfoRow(
+            icon = Icons.Filled.AutoDelete,
+            label = "当前模式",
+            value = currentMode.label,
+            accent = if (currentMode == DisappearingMessageMode.Off) chatRowMuted else chatGreen,
+            compact = compact
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.Schedule,
+            label = "生效范围",
+            value = if (currentMode == DisappearingMessageMode.Off) "新消息保留" else "仅新消息",
+            accent = chatBlue,
+            compact = compact
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.Lock,
+            label = "聊天记录",
+            value = disappearingPreviewLabel(currentMode),
+            accent = chatAmber,
+            compact = compact
+        )
     }
 }
 
@@ -10320,6 +10365,20 @@ private fun disappearingActionLabel(mode: DisappearingMessageMode): String =
         "开启限时消息"
     } else {
         "限时消息${mode.label}"
+    }
+
+private fun disappearingSystemMessage(mode: DisappearingMessageMode): String =
+    if (mode == DisappearingMessageMode.Off) {
+        "已关闭限时消息，后续新消息会保留"
+    } else {
+        "已开启限时消息，后续新消息将在${mode.label}后自动删除"
+    }
+
+private fun disappearingPreviewLabel(mode: DisappearingMessageMode): String =
+    if (mode == DisappearingMessageMode.Off) {
+        "现有消息不变"
+    } else {
+        "旧消息不受影响"
     }
 
 private fun conversationContentSummary(messages: List<ChatBubble>): ConversationContentSummary {
