@@ -25,6 +25,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -32,6 +33,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -204,6 +206,7 @@ private enum class ChatListFilter(
     All("全部"),
     Favorites("收藏"),
     Unread("未读"),
+    Retryable("未发送"),
     Direct("私聊"),
     Group("群聊")
 }
@@ -211,12 +214,14 @@ private enum class ChatListFilter(
 private fun ChatConversation.matchesFilter(
     filter: ChatListFilter,
     unreadCounts: Map<String, Int>,
-    favoriteConversationIds: Map<String, Boolean>
+    favoriteConversationIds: Map<String, Boolean>,
+    hasRetryableMessages: (String) -> Boolean
 ): Boolean =
     when (filter) {
         ChatListFilter.All -> true
         ChatListFilter.Favorites -> favoriteConversationIds[id] == true
         ChatListFilter.Unread -> (unreadCounts[id] ?: 0) > 0
+        ChatListFilter.Retryable -> hasRetryableMessages(id)
         ChatListFilter.Direct -> kind == ConversationKind.Direct
         ChatListFilter.Group -> kind == ConversationKind.Group
     }
@@ -1295,12 +1300,15 @@ internal fun SpotChatApp(
             capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
     }
 
+    fun hasRetryableMessages(conversationId: String): Boolean =
+        messagesForConversation(conversationId).any { message -> message.canRetry() }
+
     fun sortConversations(conversations: List<ChatConversation>): List<ChatConversation> =
         conversations.sortedWith(
             compareByDescending<ChatConversation> { conversation ->
                 pinnedConversationIds[conversation.id] == true
             }.thenByDescending { conversation ->
-                messagesForConversation(conversation.id).any { message -> message.canRetry() }
+                hasRetryableMessages(conversation.id)
             }.thenByDescending { conversation ->
                 (unreadCounts[conversation.id] ?: 0) > 0
             }.thenByDescending { conversation ->
@@ -3025,7 +3033,12 @@ internal fun SpotChatApp(
                     }
                 val visibleConversationList =
                     visibleConversationListBase.filter { conversation ->
-                        conversation.matchesFilter(chatListFilter, unreadCounts, favoriteConversationIds)
+                        conversation.matchesFilter(
+                            filter = chatListFilter,
+                            unreadCounts = unreadCounts,
+                            favoriteConversationIds = favoriteConversationIds,
+                            hasRetryableMessages = ::hasRetryableMessages
+                        )
                     }
                 val archivedConversationList =
                     currentConversations.filter { conversation ->
@@ -3049,6 +3062,7 @@ internal fun SpotChatApp(
                         archivedCount = archivedConversationList.size,
                         archivedUnreadCount = archivedUnreadCount,
                         unreadCounts = unreadCounts,
+                        hasRetryableMessages = ::hasRetryableMessages,
                         pinnedConversationIds = pinnedConversationIds,
                         isConversationMuted = ::isConversationMuted,
                         messagesByConversation = conversationMessages,
@@ -3076,6 +3090,18 @@ internal fun SpotChatApp(
                                 conversations = visibleConversationList,
                                 statusText = "未读聊天已读"
                             )
+                        },
+                        onRetryVisible = {
+                            val retryableConversations =
+                                visibleConversationList.filter { conversation ->
+                                    hasRetryableMessages(conversation.id)
+                                }
+                            retryableConversations.forEach { conversation ->
+                                retryConversationMessages(conversation)
+                            }
+                            if (retryableConversations.isNotEmpty()) {
+                                trustState = "正在重发未发送聊天"
+                            }
                         },
                         onOpenProfile = {
                             appSurface = AppSurface.Profile
@@ -3587,6 +3613,7 @@ private fun WatchConversationListSurface(
     archivedCount: Int,
     archivedUnreadCount: Int,
     unreadCounts: Map<String, Int>,
+    hasRetryableMessages: (String) -> Boolean,
     pinnedConversationIds: Map<String, Boolean>,
     isConversationMuted: (String) -> Boolean,
     messagesByConversation: Map<String, List<ChatBubble>>,
@@ -3604,6 +3631,7 @@ private fun WatchConversationListSurface(
     onOpenGlobalSearch: () -> Unit,
     onOpenArchivedChats: () -> Unit,
     onMarkVisibleRead: () -> Unit,
+    onRetryVisible: () -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
 ) {
@@ -3700,6 +3728,10 @@ private fun WatchConversationListSurface(
                             allVisibleConversations.count { conversation ->
                                 (unreadCounts[conversation.id] ?: 0) > 0
                             },
+                        retryableCount =
+                            allVisibleConversations.count { conversation ->
+                                hasRetryableMessages(conversation.id)
+                            },
                         directCount =
                             allVisibleConversations.count { conversation ->
                                 conversation.kind == ConversationKind.Direct
@@ -3729,6 +3761,20 @@ private fun WatchConversationListSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onMarkVisibleRead
+                            )
+                        }
+                    }
+
+                    if (activeFilter == ChatListFilter.Retryable && conversations.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Refresh,
+                                text = "全部重发",
+                                selected = true,
+                                compact = compact,
+                                onClick = onRetryVisible
                             )
                         }
                     }
@@ -4023,12 +4069,14 @@ private fun ChatFilterStrip(
     activeFilter: ChatListFilter,
     favoriteCount: Int,
     unreadCount: Int,
+    retryableCount: Int,
     directCount: Int,
     groupCount: Int,
     compact: Boolean,
     surfaceSpec: WatchSurfaceSpec,
     onSelectFilter: (ChatListFilter) -> Unit
 ) {
+    val filterScrollState = rememberScrollState()
     Row(
         modifier =
             Modifier
@@ -4037,6 +4085,7 @@ private fun ChatFilterStrip(
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color.Black.copy(alpha = 0.18f))
                 .border(1.dp, chatDivider.copy(alpha = 0.52f), RoundedCornerShape(8.dp))
+                .horizontalScroll(filterScrollState)
                 .padding(3.dp),
         horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -4049,12 +4098,12 @@ private fun ChatFilterStrip(
                         ChatListFilter.All -> directCount + groupCount
                         ChatListFilter.Favorites -> favoriteCount
                         ChatListFilter.Unread -> unreadCount
+                        ChatListFilter.Retryable -> retryableCount
                         ChatListFilter.Direct -> directCount
                         ChatListFilter.Group -> groupCount
                     },
                 selected = activeFilter == filter,
                 compact = compact,
-                modifier = Modifier.weight(1f),
                 onClick = { onSelectFilter(filter) }
             )
         }
@@ -4077,10 +4126,17 @@ private fun FilterSegment(
         } else {
             Color.Transparent
         }
+    val segmentWidth =
+        if (compact) {
+            if (filter == ChatListFilter.Retryable) 54.dp else 45.dp
+        } else {
+            if (filter == ChatListFilter.Retryable) 60.dp else 50.dp
+        }
     Box(
         modifier =
             modifier
-                .fillMaxSize()
+                .width(segmentWidth)
+                .fillMaxHeight()
                 .clip(RoundedCornerShape(7.dp))
                 .background(background)
                 .clickable(onClick = onClick)
@@ -4291,6 +4347,7 @@ private fun EmptyFilterCapsule(
                     ChatListFilter.All -> "还没有聊天"
                     ChatListFilter.Favorites -> "没有收藏聊天"
                     ChatListFilter.Unread -> "没有未读聊天"
+                    ChatListFilter.Retryable -> "没有未发送消息"
                     ChatListFilter.Direct -> "没有私聊"
                     ChatListFilter.Group -> "没有群聊"
                 },
