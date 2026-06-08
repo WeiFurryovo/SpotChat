@@ -2,5 +2,6 @@
 <resources>
     <string name="app_name">SpotChat</string>
     <string name="recent_chats_tile_label">SpotChat 最近聊天</string>
+    <string name="quick_voice_tile_label">SpotChat 语音消息</string>
     <string name="unread_complication_label">SpotChat 未读</string>
 </resources>

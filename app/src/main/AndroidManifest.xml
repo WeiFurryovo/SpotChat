@@ -63,6 +63,16 @@
         </service>
 
         <service
+            android:name=".wear.QuickVoiceTileService"
+            android:exported="true"
+            android:label="@string/quick_voice_tile_label"
+            android:permission="com.google.android.wearable.permission.BIND_TILE_PROVIDER">
+            <intent-filter>
+                <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
+            </intent-filter>
+        </service>
+
+        <service
             android:name=".wear.UnreadThreadsComplicationDataSourceService"
             android:exported="true"
             android:label="@string/unread_complication_label"

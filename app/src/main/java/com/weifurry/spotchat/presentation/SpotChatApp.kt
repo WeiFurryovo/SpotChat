@@ -140,6 +140,7 @@ import com.weifurry.spotchat.transport.TransportKind
 import com.weifurry.spotchat.transport.TransportPeer
 import com.weifurry.spotchat.voice.RecordedVoiceMessage
 import com.weifurry.spotchat.voice.SpotChatVoiceRecorder
+import com.weifurry.spotchat.wear.QuickVoiceTileService
 import com.weifurry.spotchat.wear.RecentChatsTileService
 import com.weifurry.spotchat.wear.SpotChatWearStateStore
 import com.weifurry.spotchat.wear.WearChatSnapshot
@@ -3580,8 +3581,25 @@ internal fun SpotChatApp(
         openConversation(conversation)
     }
 
+    fun handleVoiceTileIntent(intent: Intent) {
+        if (!intent.getBooleanExtra(QuickVoiceTileService.EXTRA_VOICE_TILE_OPEN, false)) {
+            return
+        }
+        val conversationId =
+            intent.getStringExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID)
+        val conversation = conversationId?.let(::conversationById)
+        if (conversation == null) {
+            appSurface = AppSurface.ConversationList
+            trustState = "选择聊天后点麦克风录音"
+            return
+        }
+        openConversation(conversation)
+        trustState = "点麦克风开始语音"
+    }
+
     LaunchedEffect(notificationIntent, trustedPeers.size) {
         val intent = notificationIntent ?: return@LaunchedEffect
+        handleVoiceTileIntent(intent)
         handleTileIntent(intent)
         handleNotificationIntent(intent)
         onNotificationIntentHandled(intent)
