@@ -186,6 +186,7 @@ private enum class AppSurface {
     ChatInfo,
     MessageActions,
     MessageSearch,
+    GroupMembers,
     ChatContentMessages,
     GlobalSearch,
     StarredMessages,
@@ -3486,6 +3487,9 @@ internal fun SpotChatApp(
                             onOpenSecurityCheck = {
                                 appSurface = AppSurface.SecurityCheck
                             },
+                            onOpenGroupMembers = {
+                                appSurface = AppSurface.GroupMembers
+                            },
                             onOpenStarredMessages = {
                                 appSurface = AppSurface.StarredMessages
                             },
@@ -3544,6 +3548,28 @@ internal fun SpotChatApp(
                             trustedPeers = trustedPeers,
                             localFingerprint = localFingerprint,
                             onNavigateBack = dismissOverlay
+                        )
+                    }
+                }
+
+                if (appSurface == AppSurface.GroupMembers) {
+                    SlideInOverlay(
+                        onDismissed = {
+                            appSurface = AppSurface.ChatInfo
+                        }
+                    ) { dismissOverlay ->
+                        WatchGroupMembersSurface(
+                            isRoundScreen = isRoundScreen,
+                            conversation = selectedConversation,
+                            trustedPeers = trustedPeers,
+                            peerReachability = ::peerReachabilityText,
+                            onNavigateBack = dismissOverlay,
+                            onOpenDirectChat = { peer ->
+                                val directConversationId = ensureDirectConversation(peer)
+                                conversationById(directConversationId)?.let { directConversation ->
+                                    openConversation(directConversation)
+                                }
+                            }
                         )
                     }
                 }
@@ -5123,6 +5149,7 @@ private fun WatchChatInfoSurface(
     disappearingMode: DisappearingMessageMode,
     onNavigateBack: () -> Unit,
     onOpenSecurityCheck: () -> Unit,
+    onOpenGroupMembers: () -> Unit,
     onOpenStarredMessages: () -> Unit,
     onOpenContentMessages: () -> Unit,
     onSearchMessages: () -> Unit,
@@ -5436,6 +5463,15 @@ private fun WatchChatInfoSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onRetryFailedMessages
+                            )
+                        }
+                        if (conversation.kind == ConversationKind.Group) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Group,
+                                text = "群成员",
+                                selected = memberPeers.isNotEmpty(),
+                                compact = compact,
+                                onClick = onOpenGroupMembers
                             )
                         }
                         MessageActionButton(
@@ -6056,6 +6092,140 @@ private fun WatchStarredMessagesSurface(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun WatchGroupMembersSurface(
+    isRoundScreen: Boolean,
+    conversation: ChatConversation,
+    trustedPeers: List<StoredTrustedPeer>,
+    peerReachability: (String) -> String,
+    onNavigateBack: () -> Unit,
+    onOpenDirectChat: (StoredTrustedPeer) -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
+        val accent = conversationAccentColor(conversation)
+        val scrollState = rememberScrollState()
+        val trustedByFingerprint = trustedPeers.associateBy { peer -> peer.fingerprint }
+        val memberPeers =
+            conversation.memberFingerprints.mapNotNull { fingerprint ->
+                trustedByFingerprint[fingerprint]
+            }
+
+        WatchFrame(
+            surfaceSpec = surfaceSpec,
+            accent = accent,
+            modifier = Modifier.padding(horizontal = surfaceSpec.chatHorizontalPadding)
+        ) {
+            ScreenScaffold(
+                scrollState = scrollState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(),
+                scrollIndicator = {}
+            ) { scaffoldPadding ->
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .padding(scaffoldPadding)
+                            .padding(
+                                top = surfaceSpec.chatTopPadding,
+                                bottom = surfaceSpec.chatBottomPadding
+                            ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp)
+                ) {
+                    ChatInfoHeader(
+                        conversation = conversation,
+                        accent = accent,
+                        title = "群成员",
+                        subtitle = "${memberPeers.size} 位成员",
+                        surfaceSpec = surfaceSpec,
+                        onNavigateBack = onNavigateBack
+                    )
+
+                    if (memberPeers.isEmpty()) {
+                        SearchEmptyState(
+                            text = "还没有可信成员",
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
+                        )
+                    } else {
+                        memberPeers.forEach { peer ->
+                            GroupMemberRow(
+                                peer = peer,
+                                reachability = peerReachability(peer.fingerprint),
+                                compact = compact,
+                                surfaceSpec = surfaceSpec,
+                                onClick = { onOpenDirectChat(peer) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GroupMemberRow(
+    peer: StoredTrustedPeer,
+    reachability: String,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    onClick: () -> Unit
+) {
+    val accent = if (reachability.contains("当前可发送")) chatGreen else chatAmber
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatSurfaceHigh.copy(alpha = 0.82f))
+                .border(1.dp, chatDivider.copy(alpha = 0.56f), RoundedCornerShape(8.dp))
+                .clickable(onClick = onClick)
+                .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 7.dp else 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .size(if (compact) 26.dp else 30.dp)
+                    .clip(CircleShape)
+                    .background(accent.copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.VerifiedUser,
+                contentDescription = peer.deviceName,
+                tint = accent,
+                modifier = Modifier.size(if (compact) 14.dp else 16.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(if (compact) 7.dp else 9.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = peer.deviceName,
+                color = MaterialTheme.colorScheme.onBackground,
+                fontSize = if (compact) 11.sp else 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = "${peerReachabilityShortLabel(reachability)} · ${SpotChatCrypto.displayFingerprint(peer.fingerprint)}",
+                color = chatRowMuted,
+                fontSize = if (compact) 9.sp else 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -8125,6 +8295,14 @@ private fun String.shortReachabilityLabel(): String =
         contains("最近发现") -> "最近"
         contains("等待") -> "等待"
         else -> take(4)
+    }
+
+private fun peerReachabilityShortLabel(reachability: String): String =
+    when {
+        reachability.contains("当前可发送") -> "在线"
+        reachability.contains("最近发现") -> "最近"
+        reachability.contains("等待") -> "离线"
+        else -> reachability.take(4)
     }
 
 private fun disappearingActionLabel(mode: DisappearingMessageMode): String =
