@@ -523,6 +523,7 @@ private const val MAX_SEARCH_RESULTS = 12
 private const val MAX_GLOBAL_SEARCH_RESULTS = 20
 private const val MAX_STARRED_RESULTS = 24
 private const val MAX_TRANSCRIPT_MESSAGES = 80
+private const val MAX_CONTENT_SUMMARY_MESSAGES = 40
 private const val MAX_QUOTED_MESSAGE_CHARS = 72
 private const val DISAPPEARING_SWEEP_INTERVAL_MS = 15_000L
 private const val MUTE_SWEEP_INTERVAL_MS = 60_000L
@@ -2247,6 +2248,28 @@ internal fun SpotChatApp(
             ClipData.newPlainText("SpotChat starred summary", summary)
         )
         trustState = "已复制星标摘要"
+    }
+
+    fun copyConversationContentSummary(conversation: ChatConversation) {
+        val clipboardManager =
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboardManager == null) {
+            trustState = "无法访问剪贴板"
+            return
+        }
+        val summary =
+            conversationContentSummaryText(
+                conversation = conversation,
+                messages = messagesForConversation(conversation.id)
+            )
+        if (summary.isBlank()) {
+            trustState = "没有内容消息"
+            return
+        }
+        clipboardManager.setPrimaryClip(
+            ClipData.newPlainText("SpotChat content summary", summary)
+        )
+        trustState = "已复制内容摘要"
     }
 
     fun copySafetyCode(peer: StoredTrustedPeer) {
@@ -4858,6 +4881,9 @@ internal fun SpotChatApp(
                             onCopyTranscript = {
                                 copyConversationTranscript(selectedConversation)
                             },
+                            onCopyContentSummary = {
+                                copyConversationContentSummary(selectedConversation)
+                            },
                             onClearKeepingStarred = {
                                 clearConversationKeepingStarred(selectedConversation)
                                 appSurface = AppSurface.Chat
@@ -7367,6 +7393,7 @@ private fun WatchChatInfoSurface(
     onRetryFailedMessages: () -> Unit,
     onToggleDisappearingMessages: () -> Unit,
     onCopyTranscript: () -> Unit,
+    onCopyContentSummary: () -> Unit,
     onClearKeepingStarred: () -> Unit,
     onClearConversation: () -> Unit,
     onForgetPeer: () -> Unit
@@ -7800,6 +7827,15 @@ private fun WatchChatInfoSurface(
                             compact = compact,
                             onClick = onOpenContentMessages
                         )
+                        if (contentSummary.hasContent) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Keyboard,
+                                text = "复制内容摘要",
+                                selected = true,
+                                compact = compact,
+                                onClick = onCopyContentSummary
+                            )
+                        }
                         pinnedMessage?.let { message ->
                             MessageActionButton(
                                 icon = Icons.Filled.PushPin,
@@ -12090,6 +12126,66 @@ private fun conversationTranscript(
         }
     }.trim()
 }
+
+private fun conversationContentSummaryText(
+    conversation: ChatConversation,
+    messages: List<ChatBubble>
+): String {
+    val content = contentMessages(messages)
+    if (content.isEmpty()) {
+        return ""
+    }
+    val summary = conversationContentSummary(messages)
+    val exportableMessages = content.takeLast(MAX_CONTENT_SUMMARY_MESSAGES)
+    val omittedCount = content.size - exportableMessages.size
+    return buildString {
+        appendLine("SpotChat 内容摘要")
+        appendLine("聊天：${conversation.title}")
+        appendLine("类型：${conversation.kind.label}")
+        appendLine("概览：${summary.summaryLabel()}")
+        if (omittedCount > 0) {
+            appendLine("范围：最近 ${exportableMessages.size} 条内容，已省略 $omittedCount 条更早内容")
+        } else {
+            appendLine("范围：${exportableMessages.size} 条内容")
+        }
+        appendLine()
+        exportableMessages.forEach { message ->
+            val sender =
+                when {
+                    message.mine -> "我"
+                    message.senderName != null -> message.senderName
+                    conversation.kind == ConversationKind.Direct -> conversation.title
+                    else -> "SpotChat"
+                }
+            val labels =
+                message.contentLabels()
+                    .joinToString(separator = " · ", prefix = "[", postfix = "]")
+            appendLine("[${message.timestamp}] $sender $labels：${message.copyText()}")
+        }
+    }.trim()
+}
+
+private fun ChatBubble.contentLabels(): List<String> =
+    buildList {
+        if (kind == ChatMessageKind.Voice) {
+            add("语音")
+        }
+        if (forwarded) {
+            add("转发")
+        }
+        if (quotedMessage != null) {
+            add("引用")
+        }
+        if (reactions.isNotEmpty()) {
+            add("回应 ${reactions.size}")
+        }
+        if (expiresAtEpochMillis != null) {
+            add("限时")
+        }
+        if (hasLinkPreview()) {
+            add("链接")
+        }
+    }
 
 private fun ChatBubble.searchText(): String =
     buildList {
