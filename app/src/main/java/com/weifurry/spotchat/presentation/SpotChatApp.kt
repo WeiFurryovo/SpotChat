@@ -325,7 +325,9 @@ private data class MessageReceiptSummary(
     val deliveredCount: Int,
     val readCount: Int,
     val deliveredNames: List<String>,
-    val readNames: List<String>
+    val readNames: List<String>,
+    val undeliveredNames: List<String>,
+    val unreadNames: List<String>
 )
 
 private data class OutgoingMessageRef(
@@ -895,18 +897,19 @@ internal fun SpotChatApp(
         }
         val expectedCount = conversation.memberFingerprints.size.coerceAtLeast(1)
         val trustedByFingerprint = trustedPeers.associateBy { peer -> peer.fingerprint }
+        fun displayName(fingerprint: String): String =
+            trustedByFingerprint[fingerprint]?.deviceName ?: fingerprint.take(6)
+
         val memberNames =
             conversation.memberFingerprints.map { fingerprint ->
-                trustedByFingerprint[fingerprint]?.deviceName ?: fingerprint.take(6)
+                displayName(fingerprint)
             }
+        val deliveredFingerprints = deliveredReceiptsByMessage[messageId].orEmpty()
+        val readFingerprints = readReceiptsByMessage[messageId].orEmpty()
         val deliveredReceiptNames =
-            deliveredReceiptsByMessage[messageId]
-                .orEmpty()
-                .map { fingerprint -> trustedByFingerprint[fingerprint]?.deviceName ?: fingerprint.take(6) }
+            deliveredFingerprints.map(::displayName)
         val readReceiptNames =
-            readReceiptsByMessage[messageId]
-                .orEmpty()
-                .map { fingerprint -> trustedByFingerprint[fingerprint]?.deviceName ?: fingerprint.take(6) }
+            readFingerprints.map(::displayName)
         val deliveredCount =
             maxOf(
                 deliveredCounts[messageId] ?: 0,
@@ -940,6 +943,22 @@ internal fun SpotChatApp(
                     memberNames
                 } else {
                     readReceiptNames
+                },
+            undeliveredNames =
+                if (deliveredCount >= expectedCount) {
+                    emptyList()
+                } else {
+                    conversation.memberFingerprints
+                        .filterNot { fingerprint -> fingerprint in deliveredFingerprints }
+                        .map(::displayName)
+                },
+            unreadNames =
+                if (readCount >= expectedCount) {
+                    emptyList()
+                } else {
+                    conversation.memberFingerprints
+                        .filterNot { fingerprint -> fingerprint in readFingerprints }
+                        .map(::displayName)
                 }
         )
     }
@@ -6262,6 +6281,22 @@ private fun MessageMetaStrip(
                     icon = Icons.Filled.VerifiedUser,
                     label = "已读者",
                     value = receiptNamesLabel(summary.readNames),
+                    compact = compact
+                )
+            }
+            if (summary.undeliveredNames.isNotEmpty()) {
+                MessageMetaRow(
+                    icon = Icons.Filled.VerifiedUser,
+                    label = "未送达",
+                    value = receiptNamesLabel(summary.undeliveredNames),
+                    compact = compact
+                )
+            }
+            if (summary.unreadNames.isNotEmpty()) {
+                MessageMetaRow(
+                    icon = Icons.Filled.VerifiedUser,
+                    label = "未读",
+                    value = receiptNamesLabel(summary.unreadNames),
                     compact = compact
                 )
             }
