@@ -8,6 +8,7 @@ import javax.crypto.AEADBadTagException
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -213,5 +214,64 @@ class SpotChatEngineTest {
         assertEquals(watch.localFingerprint, plain.senderFingerprint)
         assertEquals("message-99", plain.targetMessageId)
         assertEquals("like", plain.emoji)
+    }
+
+    @Test
+    fun relayEnvelopesCarryOnlyEncryptedPacketsWithoutChangingCiphertext() {
+        val watch = SpotChatEngine("手表", SpotChatCrypto.generateIdentity())
+        val phone = SpotChatEngine("手机", SpotChatCrypto.generateIdentity())
+
+        val trustedPhone =
+            watch.openSession(phone.helloPacket().hello ?: error("missing phone hello"))
+        phone.openSession(watch.helloPacket().hello ?: error("missing watch hello"))
+        val packet =
+            watch.encryptTextForPeer(
+                peerFingerprint = trustedPhone.fingerprint,
+                text = "通过中继也不能让服务器看到明文",
+                sentAtEpochMillis = 1_700_000_000_000L
+            )
+        val encrypted = packet.encryptedMessage ?: error("missing encrypted message")
+        val envelope =
+            RelayEnvelope.fromEncryptedPacket(
+                packet = packet,
+                recipientFingerprint = trustedPhone.fingerprint,
+                ttlMillis = 60_000L
+            )
+
+        val decodedEnvelope =
+            ChatCodec.decodeRelayEnvelope(
+                ChatCodec.encodeRelayEnvelope(envelope)
+            )
+        val relayedMessage =
+            decodedEnvelope.packet.encryptedMessage ?: error("missing relayed encrypted message")
+        val plain = phone.decryptText(relayedMessage)
+
+        assertEquals(PacketKind.ENCRYPTED_MESSAGE, decodedEnvelope.packet.kind)
+        assertEquals(watch.localFingerprint, decodedEnvelope.senderFingerprint)
+        assertEquals(trustedPhone.fingerprint, decodedEnvelope.recipientFingerprint)
+        assertEquals(encrypted.messageId, relayedMessage.messageId)
+        assertEquals(encrypted.nonce, relayedMessage.nonce)
+        assertEquals(encrypted.ciphertext, relayedMessage.ciphertext)
+        assertEquals(
+            "通过中继也不能让服务器看到明文",
+            plain.text
+        )
+    }
+
+    @Test
+    fun relayEnvelopesRejectPlainHelloPackets() {
+        val watch = SpotChatEngine("手表", SpotChatCrypto.generateIdentity())
+        val helloPacket = watch.helloPacket()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            RelayEnvelope(
+                envelopeId = "relay:hello",
+                senderFingerprint = watch.localFingerprint,
+                recipientFingerprint = "phone",
+                createdAtEpochMillis = 1_700_000_000_000L,
+                expiresAtEpochMillis = 1_700_000_060_000L,
+                packet = helloPacket
+            )
+        }
     }
 }

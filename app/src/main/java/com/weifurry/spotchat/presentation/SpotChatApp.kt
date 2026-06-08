@@ -67,6 +67,7 @@ import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.StarBorder
@@ -139,6 +140,7 @@ import com.weifurry.spotchat.protocol.PeerHello
 import com.weifurry.spotchat.protocol.WirePacket
 import com.weifurry.spotchat.transport.BluetoothChatTransport
 import com.weifurry.spotchat.transport.LanChatTransport
+import com.weifurry.spotchat.transport.RelayChatTransport
 import com.weifurry.spotchat.transport.SpotChatTransport
 import com.weifurry.spotchat.transport.TransportEvent
 import com.weifurry.spotchat.transport.TransportKind
@@ -171,7 +173,8 @@ private enum class TransportMode(
     val icon: ImageVector
 ) {
     Lan("局域网", Icons.Filled.Lan),
-    Bluetooth("蓝牙", Icons.Filled.Bluetooth)
+    Bluetooth("蓝牙", Icons.Filled.Bluetooth),
+    Relay("中继", Icons.Filled.Sync)
 }
 
 private enum class DeliveryState(
@@ -774,6 +777,10 @@ internal fun SpotChatApp(
         remember(context) {
             BluetoothChatTransport(context)
         }
+    val relayTransport =
+        remember {
+            RelayChatTransport()
+        }
     val notifier =
         remember(context) {
             SpotChatNotifier(context)
@@ -988,17 +995,17 @@ internal fun SpotChatApp(
     }
 
     fun currentTransport(): SpotChatTransport =
-        if (transportMode == TransportMode.Lan) {
-            lanTransport
-        } else {
-            bluetoothTransport
+        when (transportMode) {
+            TransportMode.Lan -> lanTransport
+            TransportMode.Bluetooth -> bluetoothTransport
+            TransportMode.Relay -> relayTransport
         }
 
     fun transportHints(): List<String> =
-        if (transportMode == TransportMode.Lan) {
-            listOf("lan:${LanChatTransport.DEFAULT_SERVICE_PORT}")
-        } else {
-            listOf("bluetooth:${BluetoothChatTransport.SPOTCHAT_SERVICE_UUID}")
+        when (transportMode) {
+            TransportMode.Lan -> listOf("lan:${LanChatTransport.DEFAULT_SERVICE_PORT}")
+            TransportMode.Bluetooth -> listOf("bluetooth:${BluetoothChatTransport.SPOTCHAT_SERVICE_UUID}")
+            TransportMode.Relay -> listOf("relay:encrypted-mailbox:v1")
         }
 
     suspend fun sendPacket(
@@ -3105,8 +3112,22 @@ internal fun SpotChatApp(
             }
             return
         }
+        if (mode == TransportMode.Relay) {
+            transportMode = mode
+            trustState = "中继预留"
+            appendSystemMessage(
+                text = "中继只会转发端到端加密消息；服务器连接稍后再配置",
+                encrypted = true
+            )
+            return
+        }
         transportMode = mode
-        trustState = if (mode == TransportMode.Lan) "局域网发现中" else "蓝牙待连接"
+        trustState =
+            when (mode) {
+                TransportMode.Lan -> "局域网发现中"
+                TransportMode.Bluetooth -> "蓝牙待连接"
+                TransportMode.Relay -> "中继预留"
+            }
     }
 
     fun updateProfile(updated: ProfileSettings) {
@@ -4673,6 +4694,10 @@ internal fun SpotChatApp(
                 trustState = error.readableMessage("传输启动失败")
                 return@LaunchedEffect
             }
+
+        if (transportMode == TransportMode.Relay) {
+            trustState = "中继预留"
+        }
 
         if (transportMode == TransportMode.Bluetooth) {
             runCatching { bluetoothTransport.bondedPeers() }

@@ -4,7 +4,8 @@ import kotlinx.coroutines.flow.Flow
 
 enum class TransportKind {
     LAN,
-    BLUETOOTH
+    BLUETOOTH,
+    RELAY
 }
 
 data class TransportPeer(
