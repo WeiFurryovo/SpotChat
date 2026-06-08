@@ -424,6 +424,11 @@ private data class PendingDirectReply(
     val title: String
 )
 
+private data class PendingMessageEdit(
+    val conversationId: String,
+    val messageId: String
+)
+
 private fun ChatBubble.canRetry(): Boolean =
     mine &&
         messageId != null &&
@@ -775,6 +780,7 @@ internal fun SpotChatApp(
     var selectedActionMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var selectedSecurityPeerFingerprint by remember { mutableStateOf<String?>(null) }
     var pendingForwardMessage by remember { mutableStateOf<ChatBubble?>(null) }
+    var pendingMessageEdit by remember { mutableStateOf<PendingMessageEdit?>(null) }
     var draftSaveConversationId by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var searchTargetSurface by remember { mutableStateOf(AppSurface.MessageSearch) }
@@ -1431,6 +1437,7 @@ internal fun SpotChatApp(
         pendingQuotedMessage = null
         pendingDirectReply = null
         pendingForwardMessage = null
+        pendingMessageEdit = null
         trustState = "聊天已清空"
     }
 
@@ -1460,6 +1467,7 @@ internal fun SpotChatApp(
         pendingQuotedMessage = null
         pendingDirectReply = null
         pendingForwardMessage = null
+        pendingMessageEdit = null
         activeConversationId = NEARBY_GROUP_CONVERSATION_ID
         appSurface = AppSurface.ConversationList
         trustState = "已移除 ${storedPeer.deviceName}"
@@ -2085,6 +2093,10 @@ internal fun SpotChatApp(
             pendingForwardMessage?.takeIf { message ->
                 message.stableStarId() in starredIds
             }
+        pendingMessageEdit =
+            pendingMessageEdit?.takeIf { edit ->
+                keptMessages.any { message -> message.messageId == edit.messageId }
+            }
         trustState = "已保留星标消息"
     }
 
@@ -2103,6 +2115,10 @@ internal fun SpotChatApp(
         pendingForwardMessage =
             pendingForwardMessage?.takeUnless { pendingMessage ->
                 pendingMessage.stableStarId() == message.stableStarId()
+            }
+        pendingMessageEdit =
+            pendingMessageEdit?.takeUnless { edit ->
+                edit.messageId == message.messageId
             }
         appSurface = AppSurface.Chat
         trustState = "已删除本机消息"
@@ -3210,6 +3226,113 @@ internal fun SpotChatApp(
         return true
     }
 
+    fun saveEditedRetryMessage(
+        edit: PendingMessageEdit,
+        editedText: String
+    ) {
+        val conversation = conversationById(edit.conversationId)
+        val cleanText = editedText.trim().take(MAX_CUSTOM_MESSAGE_CHARS)
+        if (conversation == null || cleanText.isBlank()) {
+            trustState = if (cleanText.isBlank()) "编辑内容为空" else "聊天不可用"
+            return
+        }
+        val currentMessage =
+            messagesForConversation(conversation.id)
+                .firstOrNull { message ->
+                    message.messageId == edit.messageId &&
+                        message.kind == ChatMessageKind.Text &&
+                        message.canRetry()
+                }
+        if (currentMessage == null) {
+            trustState = "消息不可编辑"
+            return
+        }
+        val oldStableId = currentMessage.stableStarId()
+        val editedMessage = currentMessage.copy(text = cleanText)
+        val newStableId = editedMessage.stableStarId()
+        conversationMessages[conversation.id] =
+            messagesForConversation(conversation.id).map { message ->
+                if (message.messageId == edit.messageId) {
+                    editedMessage
+                } else {
+                    message
+                }
+            }
+        if (oldStableId != newStableId) {
+            val starredIds = starredMessageIds(conversation.id)
+            if (oldStableId in starredIds) {
+                starredMessageIdsByConversation[conversation.id] = starredIds - oldStableId + newStableId
+            }
+            if (pinnedMessageIdsByConversation[conversation.id] == oldStableId) {
+                pinnedMessageIdsByConversation[conversation.id] = newStableId
+            }
+        }
+        pendingOutboundMessages[edit.messageId] =
+            PendingOutboundMessage(
+                conversationId = conversation.id,
+                text = cleanText,
+                displayMessageId = edit.messageId,
+                remainingTargetFingerprints = conversation.memberFingerprints.filterNot(::isPeerBlocked),
+                quotedMessage = editedMessage.quotedMessage,
+                forwarded = editedMessage.forwarded
+            )
+        selectedActionMessage =
+            selectedActionMessage?.let { actionMessage ->
+                if (actionMessage.messageId == edit.messageId) editedMessage else actionMessage
+            }
+        activeConversationId = conversation.id
+        appSurface = AppSurface.Chat
+        val targets = targetsForConversation(conversation)
+        if (targets.isEmpty()) {
+            val allowedTargetFingerprints = conversation.memberFingerprints.filterNot(::isPeerBlocked)
+            if (allowedTargetFingerprints.isEmpty()) {
+                updateMessageState(edit.messageId, DeliveryState.Failed)
+                trustState = "成员均已阻止"
+                return
+            }
+            updateMessageState(edit.messageId, DeliveryState.Waiting)
+            pendingOutboundMessages[edit.messageId] =
+                PendingOutboundMessage(
+                    conversationId = conversation.id,
+                    text = cleanText,
+                    displayMessageId = edit.messageId,
+                    remainingTargetFingerprints = allowedTargetFingerprints,
+                    quotedMessage = editedMessage.quotedMessage,
+                    forwarded = editedMessage.forwarded
+                )
+            trustState = "已编辑，等待重发"
+            return
+        }
+        updateMessageState(edit.messageId, DeliveryState.Sending)
+        sendPreparedMessage(
+            conversation = conversation,
+            text = cleanText,
+            displayMessageId = edit.messageId,
+            targets = targets,
+            requeueOnFailure = true,
+            quotedMessage = editedMessage.quotedMessage,
+            forwarded = editedMessage.forwarded
+        )
+        trustState = "已编辑，正在重发"
+    }
+
+    fun prepareEditRetryMessage(
+        conversation: ChatConversation,
+        message: ChatBubble
+    ): Boolean {
+        val messageId = message.messageId
+        if (messageId == null || message.kind != ChatMessageKind.Text || !message.canRetry()) {
+            trustState = "只能编辑未发送文字"
+            return false
+        }
+        pendingMessageEdit =
+            PendingMessageEdit(
+                conversationId = conversation.id,
+                messageId = messageId
+            )
+        return true
+    }
+
     fun retryMessage(
         conversation: ChatConversation,
         message: ChatBubble
@@ -3454,6 +3577,7 @@ internal fun SpotChatApp(
         ) { result ->
             if (result.resultCode != Activity.RESULT_OK) {
                 draftSaveConversationId = null
+                pendingMessageEdit = null
                 if (pendingDirectReply != null) {
                     pendingDirectReply = null
                     pendingQuotedMessage = null
@@ -3476,6 +3600,15 @@ internal fun SpotChatApp(
                 conversationById(draftConversationId)?.let { conversation ->
                     saveDraft(conversation, message)
                 }
+                pendingDirectReply = null
+                pendingQuotedMessage = null
+                return@rememberLauncherForActivityResult
+            }
+
+            val messageEdit = pendingMessageEdit
+            pendingMessageEdit = null
+            if (messageEdit != null) {
+                saveEditedRetryMessage(messageEdit, message)
                 pendingDirectReply = null
                 pendingQuotedMessage = null
                 return@rememberLauncherForActivityResult
@@ -3549,13 +3682,18 @@ internal fun SpotChatApp(
             inputIntent,
             if (saveAsDraft) {
                 "草稿 ${conversation.title}"
+            } else if (pendingMessageEdit != null) {
+                "编辑消息"
             } else when {
                 directReply != null && quotedMessage != null -> "私聊回复 ${directReply.title}"
                 quotedMessage != null -> "回复 ${quotedMessage.senderName}"
                 else -> conversation.title
             }
         )
-        RemoteInputIntentHelper.putConfirmLabelExtra(inputIntent, if (saveAsDraft) "保存" else "发送")
+        RemoteInputIntentHelper.putConfirmLabelExtra(
+            inputIntent,
+            if (saveAsDraft || pendingMessageEdit != null) "保存" else "发送"
+        )
         RemoteInputIntentHelper.putCancelLabelExtra(inputIntent, "取消")
         RemoteInputIntentHelper.putRemoteInputsExtra(inputIntent, listOf(remoteInputBuilder.build()))
 
@@ -4237,6 +4375,12 @@ internal fun SpotChatApp(
                                 onForwardMessage = {
                                     pendingForwardMessage = actionMessage
                                     appSurface = AppSurface.ForwardMessage
+                                },
+                                onEditRetryMessage = {
+                                    if (prepareEditRetryMessage(selectedConversation, actionMessage)) {
+                                        appSurface = AppSurface.Chat
+                                        openCustomMessageInput()
+                                    }
                                 },
                                 onRetryMessage = {
                                     appSurface = AppSurface.Chat
@@ -6243,6 +6387,7 @@ private fun WatchMessageActionsSurface(
     onReplyToMessage: () -> Unit,
     onReplyPrivately: () -> Unit,
     onForwardMessage: () -> Unit,
+    onEditRetryMessage: () -> Unit,
     onRetryMessage: () -> Unit
 ) {
     BoxWithConstraints(
@@ -6310,6 +6455,15 @@ private fun WatchMessageActionsSurface(
                                 compact = compact,
                                 onClick = onRetryMessage
                             )
+                            if (message.kind == ChatMessageKind.Text) {
+                                MessageActionButton(
+                                    icon = Icons.Filled.Keyboard,
+                                    text = "编辑重发",
+                                    selected = true,
+                                    compact = compact,
+                                    onClick = onEditRetryMessage
+                                )
+                            }
                         }
                         if (message.kind == ChatMessageKind.Voice && !message.canRetry()) {
                             MessageActionButton(
