@@ -763,6 +763,7 @@ internal fun SpotChatApp(
     var messageActionsReturnSurface by remember { mutableStateOf(AppSurface.Chat) }
     val messageActionsBackStack = remember { mutableStateListOf<ChatBubble>() }
     var selectedActionMessage by remember { mutableStateOf<ChatBubble?>(null) }
+    var selectedSecurityPeerFingerprint by remember { mutableStateOf<String?>(null) }
     var pendingForwardMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var searchTargetSurface by remember { mutableStateOf(AppSurface.MessageSearch) }
@@ -1395,6 +1396,7 @@ internal fun SpotChatApp(
         conversationUpdateSequence += 1
         conversationUpdateOrder[conversation.id] = conversationUpdateSequence
         selectedActionMessage = null
+        selectedSecurityPeerFingerprint = null
         pendingQuotedMessage = null
         pendingDirectReply = null
         pendingForwardMessage = null
@@ -1421,6 +1423,7 @@ internal fun SpotChatApp(
         pinnedMessageIdsByConversation.remove(conversation.id)
         disappearingModesByConversation.remove(conversation.id)
         selectedActionMessage = null
+        selectedSecurityPeerFingerprint = null
         pendingQuotedMessage = null
         pendingDirectReply = null
         pendingForwardMessage = null
@@ -3494,6 +3497,7 @@ internal fun SpotChatApp(
                                     ?: DisappearingMessageMode.Off,
                             onNavigateBack = dismissOverlay,
                             onOpenSecurityCheck = {
+                                selectedSecurityPeerFingerprint = null
                                 appSurface = AppSurface.SecurityCheck
                             },
                             onOpenGroupMembers = {
@@ -3556,6 +3560,7 @@ internal fun SpotChatApp(
                             conversation = selectedConversation,
                             trustedPeers = trustedPeers,
                             localFingerprint = localFingerprint,
+                            selectedPeerFingerprint = selectedSecurityPeerFingerprint,
                             onNavigateBack = dismissOverlay
                         )
                     }
@@ -3578,6 +3583,10 @@ internal fun SpotChatApp(
                                 conversationById(directConversationId)?.let { directConversation ->
                                     openConversation(directConversation)
                                 }
+                            },
+                            onOpenSecurityCheck = { peer ->
+                                selectedSecurityPeerFingerprint = peer.fingerprint
+                                appSurface = AppSurface.SecurityCheck
                             }
                         )
                     }
@@ -6112,7 +6121,8 @@ private fun WatchGroupMembersSurface(
     trustedPeers: List<StoredTrustedPeer>,
     peerReachability: (String) -> String,
     onNavigateBack: () -> Unit,
-    onOpenDirectChat: (StoredTrustedPeer) -> Unit
+    onOpenDirectChat: (StoredTrustedPeer) -> Unit,
+    onOpenSecurityCheck: (StoredTrustedPeer) -> Unit
 ) {
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize()
@@ -6199,7 +6209,8 @@ private fun WatchGroupMembersSurface(
                                 reachability = memberReachability[peer].orEmpty(),
                                 compact = compact,
                                 surfaceSpec = surfaceSpec,
-                                onClick = { onOpenDirectChat(peer) }
+                                onClick = { onOpenDirectChat(peer) },
+                                onOpenSecurityCheck = { onOpenSecurityCheck(peer) }
                             )
                         }
                     }
@@ -6215,7 +6226,8 @@ private fun GroupMemberRow(
     reachability: String,
     compact: Boolean,
     surfaceSpec: WatchSurfaceSpec,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onOpenSecurityCheck: () -> Unit
 ) {
     val accent = if (reachability.contains("当前可发送")) chatGreen else chatAmber
     Row(
@@ -6260,6 +6272,28 @@ private fun GroupMemberRow(
                 fontSize = if (compact) 9.sp else 10.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(modifier = Modifier.width(if (compact) 6.dp else 8.dp))
+        Box(
+            modifier =
+                Modifier
+                    .height(if (compact) 26.dp else 28.dp)
+                    .width(if (compact) 44.dp else 48.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(chatGreen.copy(alpha = 0.18f))
+                    .border(1.dp, chatGreen.copy(alpha = 0.38f), RoundedCornerShape(8.dp))
+                    .clickable(onClick = onOpenSecurityCheck),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "校验",
+                color = chatGreen,
+                fontSize = if (compact) 9.sp else 10.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
             )
         }
     }
@@ -6549,6 +6583,7 @@ private fun WatchSecurityCheckSurface(
     conversation: ChatConversation,
     trustedPeers: List<StoredTrustedPeer>,
     localFingerprint: String,
+    selectedPeerFingerprint: String?,
     onNavigateBack: () -> Unit
 ) {
     BoxWithConstraints(
@@ -6563,7 +6598,10 @@ private fun WatchSecurityCheckSurface(
             conversation.memberFingerprints.mapNotNull { fingerprint ->
                 trustedByFingerprint[fingerprint]
             }
-        val primaryPeer = memberPeers.firstOrNull()
+        val selectedPeer =
+            selectedPeerFingerprint?.let { fingerprint -> trustedByFingerprint[fingerprint] }
+        val displayedPeers = selectedPeer?.let(::listOf) ?: memberPeers
+        val primaryPeer = selectedPeer ?: memberPeers.firstOrNull()
 
         WatchFrame(
             surfaceSpec = surfaceSpec,
@@ -6596,6 +6634,8 @@ private fun WatchSecurityCheckSurface(
                         subtitle =
                             if (conversation.kind == ConversationKind.Direct) {
                                 primaryPeer?.deviceName ?: conversation.title
+                            } else if (selectedPeer != null) {
+                                selectedPeer.deviceName
                             } else {
                                 "${memberPeers.size} 位成员"
                             },
@@ -6620,14 +6660,14 @@ private fun WatchSecurityCheckSurface(
                         surfaceSpec = surfaceSpec
                     )
 
-                    if (memberPeers.isEmpty()) {
+                    if (displayedPeers.isEmpty()) {
                         SearchEmptyState(
                             text = "还没有可信成员可校验",
                             compact = compact,
                             surfaceSpec = surfaceSpec
                         )
                     } else {
-                        memberPeers.forEach { peer ->
+                        displayedPeers.forEach { peer ->
                             ChatInfoLine(
                                 icon = Icons.Filled.VerifiedUser,
                                 label = peer.deviceName,
