@@ -1300,6 +1300,8 @@ internal fun SpotChatApp(
             compareByDescending<ChatConversation> { conversation ->
                 pinnedConversationIds[conversation.id] == true
             }.thenByDescending { conversation ->
+                messagesForConversation(conversation.id).any { message -> message.canRetry() }
+            }.thenByDescending { conversation ->
                 (unreadCounts[conversation.id] ?: 0) > 0
             }.thenByDescending { conversation ->
                 conversationUpdateOrder[conversation.id] ?: 0L
@@ -1351,13 +1353,15 @@ internal fun SpotChatApp(
     fun updateWearStateSnapshot() {
         val summaries =
             visibleConversations().map { conversation ->
+                val messages = messagesForConversation(conversation.id)
                 val lastMessage =
-                    messagesForConversation(conversation.id)
-                        .lastOrNull { message -> message.deliveryState != DeliveryState.System }
+                    messages.lastOrNull { message -> message.deliveryState != DeliveryState.System }
+                val retryableCount =
+                    messages.count { message -> message.canRetry() }
                 WearConversationSummary(
                     id = conversation.id,
                     title = conversation.title,
-                    subtitle = conversationPreview(conversation, lastMessage),
+                    subtitle = conversationPreview(conversation, lastMessage, retryableCount),
                     unreadCount = unreadCounts[conversation.id] ?: 0,
                     updatedAtEpochMillis = conversationUpdateOrder[conversation.id] ?: 0L,
                     isPinned = pinnedConversationIds[conversation.id] == true,
@@ -4383,12 +4387,7 @@ private fun ConversationCapsule(
 ) {
     val compact = surfaceSpec.compact
     val accent = conversationAccentColor(conversation)
-    val preview =
-        if (retryableCount > 0) {
-            "未发送 $retryableCount 条 · ${conversationPreview(conversation, lastMessage)}"
-        } else {
-            conversationPreview(conversation, lastMessage)
-        }
+    val preview = conversationPreview(conversation, lastMessage, retryableCount)
     val width =
         if (surfaceSpec.isRound) {
             if (featured) 0.86f else 0.82f
@@ -7448,9 +7447,10 @@ private fun conversationAccentColor(conversation: ChatConversation): Color {
 
 private fun conversationPreview(
     conversation: ChatConversation,
-    lastMessage: ChatBubble?
-): String =
-    lastMessage?.let { message ->
+    lastMessage: ChatBubble?,
+    retryableCount: Int = 0
+): String {
+    val basePreview = lastMessage?.let { message ->
         val text = message.previewText()
         val replyPrefix = if (message.quotedMessage == null) "" else "回复 "
         when {
@@ -7459,6 +7459,12 @@ private fun conversationPreview(
             else -> "$replyPrefix$text"
         }
     } ?: conversation.subtitle
+    return if (retryableCount > 0) {
+        "未发送 $retryableCount 条 · $basePreview"
+    } else {
+        basePreview
+    }
+}
 
 private fun directConversationId(peerFingerprint: String): String =
     "$DIRECT_CONVERSATION_PREFIX$peerFingerprint"
