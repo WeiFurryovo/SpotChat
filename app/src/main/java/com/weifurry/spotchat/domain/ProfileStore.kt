@@ -6,7 +6,8 @@ data class ProfileSettings(
     val displayName: String,
     val avatarId: String,
     val about: String,
-    val defaultDisappearingMode: String = ProfileStore.DEFAULT_DISAPPEARING_MODE
+    val defaultDisappearingMode: String = ProfileStore.DEFAULT_DISAPPEARING_MODE,
+    val defaultReadReceiptsEnabled: Boolean = true
 )
 
 class ProfileStore(context: Context) {
@@ -24,7 +25,8 @@ class ProfileStore(context: Context) {
             defaultDisappearingMode =
                 normalizeDefaultDisappearingMode(
                     prefs.getString(KEY_DEFAULT_DISAPPEARING_MODE, null)
-                )
+                ),
+            defaultReadReceiptsEnabled = prefs.getBoolean(KEY_DEFAULT_READ_RECEIPTS_ENABLED, true)
         )
 
     fun save(profile: ProfileSettings): ProfileSettings {
@@ -41,6 +43,7 @@ class ProfileStore(context: Context) {
             .putString(KEY_AVATAR_ID, normalized.avatarId)
             .putString(KEY_ABOUT, normalized.about)
             .putString(KEY_DEFAULT_DISAPPEARING_MODE, normalized.defaultDisappearingMode)
+            .putBoolean(KEY_DEFAULT_READ_RECEIPTS_ENABLED, normalized.defaultReadReceiptsEnabled)
             .apply()
         return normalized
     }
@@ -70,5 +73,6 @@ class ProfileStore(context: Context) {
         private const val KEY_AVATAR_ID = "avatar_id"
         private const val KEY_ABOUT = "about"
         private const val KEY_DEFAULT_DISAPPEARING_MODE = "default_disappearing_mode"
+        private const val KEY_DEFAULT_READ_RECEIPTS_ENABLED = "default_read_receipts_enabled"
     }
 }

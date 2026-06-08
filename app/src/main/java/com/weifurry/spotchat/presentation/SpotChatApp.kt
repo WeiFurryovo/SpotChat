@@ -1437,6 +1437,9 @@ internal fun SpotChatApp(
             if (defaultDisappearingMode != DisappearingMessageMode.Off) {
                 disappearingModesByConversation[conversationId] = defaultDisappearingMode
             }
+            if (!profile.defaultReadReceiptsEnabled) {
+                readReceiptsDisabledByConversation[conversationId] = true
+            }
             conversationMessages[conversationId] =
                 listOfNotNull(
                     ChatBubble(
@@ -1451,6 +1454,17 @@ internal fun SpotChatApp(
                         ?.let { mode ->
                             ChatBubble(
                                 text = "已套用默认限时消息，后续新消息将在${mode.label}后自动删除",
+                                mine = false,
+                                encrypted = true,
+                                timestamp = nowTime(),
+                                deliveryState = DeliveryState.System
+                            )
+                        },
+                    profile.defaultReadReceiptsEnabled
+                        .takeUnless { enabled -> enabled }
+                        ?.let {
+                            ChatBubble(
+                                text = "已套用默认隐私设置，本聊天不会发送已读回执",
                                 mine = false,
                                 encrypted = true,
                                 timestamp = nowTime(),
@@ -4817,6 +4831,7 @@ internal fun SpotChatApp(
                             trustedPeers = trustedPeers,
                             blockedPeerFingerprints = blockedPeerFingerprints.toMap(),
                             defaultDisappearingMode = profile.defaultDisappearingMode.toDisappearingMode(),
+                            defaultReadReceiptsEnabled = profile.defaultReadReceiptsEnabled,
                             archivedChatCount =
                                 archivedConversationIds.count { (_, archived) -> archived },
                             mutedChatCount =
@@ -4835,6 +4850,11 @@ internal fun SpotChatApp(
                             onDefaultDisappearingModeChange = { mode ->
                                 updateProfile(profile.copy(defaultDisappearingMode = mode.profileKey))
                                 trustState = "默认限时消息${mode.label}"
+                            },
+                            onToggleDefaultReadReceipts = {
+                                val enabled = !profile.defaultReadReceiptsEnabled
+                                updateProfile(profile.copy(defaultReadReceiptsEnabled = enabled))
+                                trustState = if (enabled) "默认已读回执开启" else "默认已读回执关闭"
                             },
                             onOpenBlockedContacts = {
                                 appSurface = AppSurface.BlockedContacts
@@ -9014,6 +9034,7 @@ private fun WatchProfileSurface(
     trustedPeers: List<StoredTrustedPeer>,
     blockedPeerFingerprints: Map<String, Boolean>,
     defaultDisappearingMode: DisappearingMessageMode,
+    defaultReadReceiptsEnabled: Boolean,
     archivedChatCount: Int,
     mutedChatCount: Int,
     lockedChatCount: Int,
@@ -9022,6 +9043,7 @@ private fun WatchProfileSurface(
     starredMessageCount: Int,
     onNavigateBack: () -> Unit,
     onDefaultDisappearingModeChange: (DisappearingMessageMode) -> Unit,
+    onToggleDefaultReadReceipts: () -> Unit,
     onOpenBlockedContacts: () -> Unit,
     onProfileChange: (ProfileSettings) -> Unit
 ) {
@@ -9175,11 +9197,13 @@ private fun WatchProfileSurface(
                         ProfilePrivacyPanel(
                             blockedPeers = blockedPeers,
                             defaultDisappearingMode = defaultDisappearingMode,
+                            defaultReadReceiptsEnabled = defaultReadReceiptsEnabled,
                             surfaceSpec = surfaceSpec,
                             onOpenBlockedContacts = onOpenBlockedContacts,
                             onCycleDefaultDisappearingMode = {
                                 onDefaultDisappearingModeChange(defaultDisappearingMode.next())
-                            }
+                            },
+                            onToggleDefaultReadReceipts = onToggleDefaultReadReceipts
                         )
                     }
 
@@ -9540,9 +9564,11 @@ private fun ProfileSecurityPanel(
 private fun ProfilePrivacyPanel(
     blockedPeers: List<StoredTrustedPeer>,
     defaultDisappearingMode: DisappearingMessageMode,
+    defaultReadReceiptsEnabled: Boolean,
     surfaceSpec: WatchSurfaceSpec,
     onOpenBlockedContacts: () -> Unit,
-    onCycleDefaultDisappearingMode: () -> Unit
+    onCycleDefaultDisappearingMode: () -> Unit,
+    onToggleDefaultReadReceipts: () -> Unit
 ) {
     val compact = surfaceSpec.compact
     val blockedSummary =
@@ -9592,6 +9618,14 @@ private fun ProfilePrivacyPanel(
             accent = if (defaultDisappearingMode == DisappearingMessageMode.Off) chatRowMuted else chatGreen,
             compact = compact,
             onClick = onCycleDefaultDisappearingMode
+        )
+        ProfileInfoRow(
+            icon = Icons.Filled.DoneAll,
+            label = "默认回执",
+            value = if (defaultReadReceiptsEnabled) "开启" else "关闭",
+            accent = if (defaultReadReceiptsEnabled) chatGreen else chatAmber,
+            compact = compact,
+            onClick = onToggleDefaultReadReceipts
         )
     }
 }
