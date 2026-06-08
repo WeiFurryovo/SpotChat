@@ -8303,6 +8303,23 @@ private fun WatchProfileSurface(
                     }
 
                     item {
+                        ProfileAboutField(
+                            about = profile.about,
+                            surfaceSpec = surfaceSpec,
+                            onAboutChange = { about ->
+                                onProfileChange(
+                                    profile.copy(
+                                        about =
+                                            about
+                                                .replace("\n", " ")
+                                                .take(ProfileStore.MAX_ABOUT_CHARS)
+                                    )
+                                )
+                            }
+                        )
+                    }
+
+                    item {
                         ProfileSectionLabel(
                             text = "身份",
                             compact = compact
@@ -8377,6 +8394,7 @@ private fun WatchProfileSurface(
                     item {
                         ProfileIdentityPill(
                             displayName = profile.displayName.ifBlank { "SpotChat Watch" },
+                            about = profile.about,
                             trustedPeerCount = trustedPeers.size,
                             modifier = Modifier.fillMaxWidth(surfaceSpec.profileSummaryWidth),
                             compact = compact
@@ -8430,7 +8448,7 @@ private fun ProfileHeader(
                 textAlign = TextAlign.Center
             )
             Text(
-                text = "身份与可信设备",
+                text = profile.about.ifBlank { ProfileStore.DEFAULT_ABOUT },
                 color = chatRowMuted,
                 fontSize = if (compact) 10.sp else 11.sp,
                 maxLines = 1,
@@ -8546,6 +8564,51 @@ private fun ProfileNameField(
 }
 
 @Composable
+private fun ProfileAboutField(
+    about: String,
+    surfaceSpec: WatchSurfaceSpec,
+    onAboutChange: (String) -> Unit
+) {
+    val compact = surfaceSpec.compact
+    Column(
+        modifier = Modifier.fillMaxWidth(surfaceSpec.profileFieldWidth),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 5.dp)
+    ) {
+        Text(
+            text = "关于",
+            color = chatRowMuted,
+            fontSize = if (compact) 9.sp else 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+        Box(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .height(if (compact) 34.dp else 38.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(chatSurfaceHigh.copy(alpha = 0.82f))
+                    .border(1.dp, chatDivider.copy(alpha = 0.58f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 12.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            BasicTextField(
+                value = about,
+                onValueChange = onAboutChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                textStyle =
+                    TextStyle(
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = if (compact) 12.sp else 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+            )
+        }
+    }
+}
+
+@Composable
 private fun ProfileSectionLabel(
     text: String,
     compact: Boolean
@@ -8562,24 +8625,35 @@ private fun ProfileSectionLabel(
 @Composable
 private fun ProfileIdentityPill(
     displayName: String,
+    about: String,
     trustedPeerCount: Int,
     modifier: Modifier,
     compact: Boolean
 ) {
-    Box(
+    Column(
         modifier =
             modifier
                 .clip(RoundedCornerShape(8.dp))
                 .background(chatSurfaceHigh.copy(alpha = 0.82f))
                 .border(1.dp, chatRose.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
                 .padding(horizontal = 10.dp, vertical = if (compact) 5.dp else 6.dp),
-        contentAlignment = Alignment.Center
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         Text(
             text = "$displayName · 可信 $trustedPeerCount",
             color = MaterialTheme.colorScheme.onBackground,
             fontSize = if (compact) 10.sp else 11.sp,
             fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            text = about.ifBlank { ProfileStore.DEFAULT_ABOUT },
+            color = chatRowMuted,
+            fontSize = if (compact) 9.sp else 10.sp,
+            fontWeight = FontWeight.Normal,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center
