@@ -4345,6 +4345,18 @@ internal fun SpotChatApp(
                                 trustState = "已取消置顶聊天"
                             }
                         },
+                        onUnmuteVisible = {
+                            val mutedVisibleConversations =
+                                visibleConversationList.filter { conversation ->
+                                    isConversationMuted(conversation.id)
+                                }
+                            mutedVisibleConversations.forEach { conversation ->
+                                setConversationMute(conversation, null)
+                            }
+                            if (mutedVisibleConversations.isNotEmpty()) {
+                                trustState = "已恢复静音聊天通知"
+                            }
+                        },
                         onOpenProfile = {
                             appSurface = AppSurface.Profile
                         },
@@ -5112,6 +5124,7 @@ private fun WatchConversationListSurface(
     onSendVisibleDrafts: () -> Unit,
     onCopyVisibleStarredSummary: () -> Unit,
     onUnpinVisible: () -> Unit,
+    onUnmuteVisible: () -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
 ) {
@@ -5413,6 +5426,20 @@ private fun WatchConversationListSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onUnpinVisible
+                            )
+                        }
+                    }
+
+                    if (activeFilter == ChatListFilter.Muted && conversations.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.NotificationsOff,
+                                text = "恢复全部通知",
+                                selected = true,
+                                compact = compact,
+                                onClick = onUnmuteVisible
                             )
                         }
                     }
