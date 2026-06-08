@@ -476,8 +476,10 @@ private const val PROFILE_AVATARS_PER_ROW = 3
 private const val CUSTOM_MESSAGE_REMOTE_INPUT_KEY = "spotchat_custom_message"
 private const val SEARCH_MESSAGE_REMOTE_INPUT_KEY = "spotchat_search_message"
 private const val ALIAS_REMOTE_INPUT_KEY = "spotchat_alias"
+private const val GROUP_ABOUT_REMOTE_INPUT_KEY = "spotchat_group_about"
 private const val MAX_CUSTOM_MESSAGE_CHARS = 280
 private const val MAX_SEARCH_QUERY_CHARS = 48
+private const val MAX_GROUP_ABOUT_CHARS = 48
 private const val MAX_SEARCH_RESULTS = 12
 private const val MAX_GLOBAL_SEARCH_RESULTS = 20
 private const val MAX_STARRED_RESULTS = 24
@@ -810,6 +812,8 @@ internal fun SpotChatApp(
     var searchQuery by remember { mutableStateOf("") }
     var searchTargetSurface by remember { mutableStateOf(AppSurface.MessageSearch) }
     var pendingAliasPeerFingerprint by remember { mutableStateOf<String?>(null) }
+    var editingGroupAboutConversationId by remember { mutableStateOf<String?>(null) }
+    var nearbyGroupAbout by remember { mutableStateOf("附近设备加密群聊") }
     var chatListFilter by remember { mutableStateOf(ChatListFilter.All) }
     var voicePlaybackSpeed by remember { mutableStateOf(VoicePlaybackSpeed.Normal) }
     var isRecordingVoice by remember { mutableStateOf(false) }
@@ -1137,9 +1141,9 @@ internal fun SpotChatApp(
                 title = NEARBY_GROUP_TITLE,
                 subtitle =
                     if (trustedPeers.isEmpty()) {
-                        "群聊 · 等待成员"
+                        "$nearbyGroupAbout · 等待成员"
                     } else {
-                        "群聊 · ${trustedPeers.size} 位成员 · ${groupReachabilityText(memberFingerprints)}"
+                        "$nearbyGroupAbout · ${trustedPeers.size} 位成员 · ${groupReachabilityText(memberFingerprints)}"
                     },
                 memberFingerprints = memberFingerprints,
                 themeColor = conversationThemeColors[NEARBY_GROUP_CONVERSATION_ID]
@@ -1464,6 +1468,28 @@ internal fun SpotChatApp(
             }
     }
 
+    fun updateGroupAbout(
+        conversation: ChatConversation,
+        about: String
+    ) {
+        if (conversation.id != NEARBY_GROUP_CONVERSATION_ID) {
+            return
+        }
+        val normalizedAbout =
+            about
+                .replace("\n", " ")
+                .trim()
+                .take(MAX_GROUP_ABOUT_CHARS)
+                .ifBlank { "附近设备加密群聊" }
+        nearbyGroupAbout = normalizedAbout
+        trustState = "已更新群公告"
+        appendSystemMessage(
+            text = "群公告：$normalizedAbout",
+            encrypted = true,
+            conversationId = conversation.id
+        )
+    }
+
     fun removeConversationRuntimeState(conversationId: String) {
         val displayMessageIds =
             messagesForConversation(conversationId)
@@ -1617,9 +1643,9 @@ internal fun SpotChatApp(
                     title = NEARBY_GROUP_TITLE,
                     subtitle =
                         if (trustedPeers.isEmpty()) {
-                            "群聊 · 等待成员"
+                            "$nearbyGroupAbout · 等待成员"
                         } else {
-                            "群聊 · ${trustedPeers.size} 位成员 · ${groupReachabilityText(groupMemberFingerprints)}"
+                            "$nearbyGroupAbout · ${trustedPeers.size} 位成员 · ${groupReachabilityText(groupMemberFingerprints)}"
                         },
                     memberFingerprints = groupMemberFingerprints,
                     themeColor = conversationThemeColors[NEARBY_GROUP_CONVERSATION_ID]
@@ -1697,7 +1723,8 @@ internal fun SpotChatApp(
         disappearingModesByConversation.toMap(),
         trustedPeers.size,
         knownPeersByFingerprint.toMap(),
-        peerLastSeenAt.toMap()
+        peerLastSeenAt.toMap(),
+        nearbyGroupAbout
     ) {
         updateWearStateSnapshot()
     }
@@ -3871,6 +3898,28 @@ internal fun SpotChatApp(
             }
         }
 
+    val groupAboutInputLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            val conversationId = editingGroupAboutConversationId
+            editingGroupAboutConversationId = null
+            if (result.resultCode != Activity.RESULT_OK || conversationId == null) {
+                return@rememberLauncherForActivityResult
+            }
+            val about =
+                result.data
+                    ?.let { intent -> RemoteInput.getResultsFromIntent(intent) }
+                    ?.getCharSequence(GROUP_ABOUT_REMOTE_INPUT_KEY)
+                    ?.toString()
+                    ?.trim()
+                    ?.take(MAX_GROUP_ABOUT_CHARS)
+                    .orEmpty()
+            conversationById(conversationId)?.let { conversation ->
+                updateGroupAbout(conversation, about)
+            }
+        }
+
     fun openCustomMessageInput(saveAsDraft: Boolean = false) {
         val conversation = activeConversation()
         draftSaveConversationId = if (saveAsDraft) conversation.id else null
@@ -3935,6 +3984,26 @@ internal fun SpotChatApp(
         RemoteInputIntentHelper.putRemoteInputsExtra(inputIntent, listOf(remoteInputBuilder.build()))
 
         aliasInputLauncher.launch(inputIntent)
+    }
+
+    fun openGroupAboutInput(conversation: ChatConversation) {
+        editingGroupAboutConversationId = conversation.id
+        val remoteInputBuilder =
+            RemoteInput.Builder(GROUP_ABOUT_REMOTE_INPUT_KEY)
+                .setLabel("群公告")
+                .setChoices(arrayOf("附近设备加密群聊", "临时讨论", "只发重要消息"))
+                .setAllowFreeFormInput(true)
+        WearableRemoteInputExtender(remoteInputBuilder)
+            .setEmojisAllowed(true)
+            .setInputActionType(EditorInfo.IME_ACTION_DONE)
+
+        val inputIntent = RemoteInputIntentHelper.createActionRemoteInputIntent()
+        RemoteInputIntentHelper.putTitleExtra(inputIntent, "群公告")
+        RemoteInputIntentHelper.putConfirmLabelExtra(inputIntent, "保存")
+        RemoteInputIntentHelper.putCancelLabelExtra(inputIntent, "取消")
+        RemoteInputIntentHelper.putRemoteInputsExtra(inputIntent, listOf(remoteInputBuilder.build()))
+
+        groupAboutInputLauncher.launch(inputIntent)
     }
 
     fun openMessageSearchInput() {
@@ -4273,6 +4342,12 @@ internal fun SpotChatApp(
                                     groupReachabilityText(selectedConversation.memberFingerprints)
                             },
                             messages = messagesForConversation(selectedConversation.id),
+                            groupAbout =
+                                if (selectedConversation.id == NEARBY_GROUP_CONVERSATION_ID) {
+                                    nearbyGroupAbout
+                                } else {
+                                    null
+                                },
                             isPinned = pinnedConversationIds[selectedConversation.id] == true,
                             isFavorite = favoriteConversationIds[selectedConversation.id] == true,
                             isMuted = isConversationMuted(selectedConversation.id),
@@ -4298,6 +4373,14 @@ internal fun SpotChatApp(
                             onOpenGroupMembers = {
                                 appSurface = AppSurface.GroupMembers
                             },
+                            onEditGroupAbout =
+                                if (selectedConversation.id == NEARBY_GROUP_CONVERSATION_ID) {
+                                    {
+                                        openGroupAboutInput(selectedConversation)
+                                    }
+                                } else {
+                                    null
+                                },
                             onOpenStarredMessages = {
                                 appSurface = AppSurface.StarredMessages
                             },
@@ -6088,6 +6171,7 @@ private fun WatchChatInfoSurface(
     fingerprint: String,
     reachability: String,
     messages: List<ChatBubble>,
+    groupAbout: String?,
     isPinned: Boolean,
     isFavorite: Boolean,
     isMuted: Boolean,
@@ -6104,6 +6188,7 @@ private fun WatchChatInfoSurface(
     onNavigateBack: () -> Unit,
     onOpenSecurityCheck: () -> Unit,
     onOpenGroupMembers: () -> Unit,
+    onEditGroupAbout: (() -> Unit)?,
     onOpenStarredMessages: () -> Unit,
     onOpenContentMessages: () -> Unit,
     onSearchMessages: () -> Unit,
@@ -6340,6 +6425,17 @@ private fun WatchChatInfoSurface(
                         surfaceSpec = surfaceSpec
                     )
 
+                    groupAbout?.let { about ->
+                        ChatInfoLine(
+                            icon = Icons.Filled.Group,
+                            label = "群公告",
+                            value = about,
+                            accent = chatGreen,
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
+                        )
+                    }
+
                     ChatInfoLine(
                         icon = Icons.AutoMirrored.Filled.Chat,
                         label = "类型",
@@ -6463,6 +6559,15 @@ private fun WatchChatInfoSurface(
                                 selected = memberPeers.isNotEmpty(),
                                 compact = compact,
                                 onClick = onOpenGroupMembers
+                            )
+                        }
+                        onEditGroupAbout?.let { editGroupAbout ->
+                            MessageActionButton(
+                                icon = Icons.Filled.Group,
+                                text = "编辑群公告",
+                                selected = !groupAbout.isNullOrBlank(),
+                                compact = compact,
+                                onClick = editGroupAbout
                             )
                         }
                         MessageActionButton(
