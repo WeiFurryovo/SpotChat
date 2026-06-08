@@ -191,6 +191,7 @@ private enum class AppSurface {
     ChatInfo,
     MessageActions,
     ReactionUsers,
+    VoicePlayback,
     MessageSearch,
     MuteSettings,
     DisappearingSettings,
@@ -853,6 +854,7 @@ internal fun SpotChatApp(
     var pairingCode by remember { mutableStateOf<String?>(null) }
     var appSurface by remember { mutableStateOf(AppSurface.ConversationList) }
     var messageActionsReturnSurface by remember { mutableStateOf(AppSurface.Chat) }
+    var voicePlaybackReturnSurface by remember { mutableStateOf(AppSurface.MessageActions) }
     val messageActionsBackStack = remember { mutableStateListOf<ChatBubble>() }
     var selectedActionMessage by remember { mutableStateOf<ChatBubble?>(null) }
     var selectedSecurityPeerFingerprint by remember { mutableStateOf<String?>(null) }
@@ -4759,6 +4761,20 @@ internal fun SpotChatApp(
         }
     }
 
+    fun openVoicePlayback(message: ChatBubble) {
+        if (message.kind != ChatMessageKind.Voice || message.voiceAudioBytes == null || message.canRetry()) {
+            messageActionsBackStack.clear()
+            messageActionsReturnSurface = appSurface
+            selectedActionMessage = message
+            appSurface = AppSurface.MessageActions
+            return
+        }
+        messageActionsBackStack.clear()
+        selectedActionMessage = message
+        voicePlaybackReturnSurface = appSurface
+        appSurface = AppSurface.VoicePlayback
+    }
+
     LaunchedEffect(pendingOutboundMessages.size, pendingOutboundVoiceMessages.size, knownPeersByFingerprint.size) {
         pendingOutboundMessages.values
             .toList()
@@ -5705,6 +5721,7 @@ internal fun SpotChatApp(
                     appSurface == AppSurface.ChatInfo ||
                     appSurface == AppSurface.MessageActions ||
                     appSurface == AppSurface.ReactionUsers ||
+                    appSurface == AppSurface.VoicePlayback ||
                     appSurface == AppSurface.MessageSearch ||
                     appSurface == AppSurface.StarredMessages ||
                     appSurface == AppSurface.ForwardMessage ||
@@ -5753,7 +5770,11 @@ internal fun SpotChatApp(
                                 appSurface = AppSurface.ChatInfo
                             },
                             onOpenMessageActions = { message ->
-                                playVoiceMessage(message)
+                                if (message.kind == ChatMessageKind.Voice && message.voiceAudioBytes != null && !message.canRetry()) {
+                                    openVoicePlayback(message)
+                                } else {
+                                    playVoiceMessage(message)
+                                }
                             },
                             onNavigateBack = dismissOverlay
                         )
@@ -6115,7 +6136,8 @@ internal fun SpotChatApp(
                                 reactionDetails = reactionDetails(actionMessage),
                                 onNavigateBack = dismissOverlay,
                                 onPlayVoiceMessage = {
-                                    playVoiceMessage(actionMessage)
+                                    voicePlaybackReturnSurface = AppSurface.MessageActions
+                                    appSurface = AppSurface.VoicePlayback
                                 },
                                 onCycleVoicePlaybackSpeed = {
                                     val nextSpeed = voicePlaybackSpeed.next()
@@ -6193,6 +6215,47 @@ internal fun SpotChatApp(
                                 onRetryMessage = {
                                     appSurface = AppSurface.Chat
                                     retryMessage(selectedConversation, actionMessage)
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if (appSurface == AppSurface.VoicePlayback) {
+                    val actionMessage = selectedActionMessage
+                    if (actionMessage != null) {
+                        SlideInOverlay(
+                            onDismissed = {
+                                appSurface = voicePlaybackReturnSurface
+                            },
+                            animationKey = "voice:${actionMessage.stableStarId()}"
+                        ) { dismissOverlay ->
+                            WatchVoicePlaybackSurface(
+                                isRoundScreen = isRoundScreen,
+                                conversation = selectedConversation,
+                                message = actionMessage,
+                                voicePlaybackSpeed = voicePlaybackSpeed,
+                                onNavigateBack = dismissOverlay,
+                                onPlayVoiceMessage = {
+                                    playVoiceMessage(actionMessage)
+                                },
+                                onCycleVoicePlaybackSpeed = {
+                                    val nextSpeed = voicePlaybackSpeed.next()
+                                    voicePlaybackSpeed = nextSpeed
+                                    trustState = "语音倍速 ${nextSpeed.label}"
+                                },
+                                onCopyMessageInfo = {
+                                    copyMessageInfo(selectedConversation, actionMessage)
+                                },
+                                onViewInChat = {
+                                    selectedActionMessage = null
+                                    activeConversationId = selectedConversation.id
+                                    clearConversationAlerts(selectedConversation.id)
+                                    markConversationRead(selectedConversation.id)
+                                    appSurface = AppSurface.Chat
+                                },
+                                onOpenMessageActions = {
+                                    appSurface = AppSurface.MessageActions
                                 }
                             )
                         }
@@ -9783,6 +9846,197 @@ private fun WatchMessageActionsSurface(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun WatchVoicePlaybackSurface(
+    isRoundScreen: Boolean,
+    conversation: ChatConversation,
+    message: ChatBubble,
+    voicePlaybackSpeed: VoicePlaybackSpeed,
+    onNavigateBack: () -> Unit,
+    onPlayVoiceMessage: () -> Unit,
+    onCycleVoicePlaybackSpeed: () -> Unit,
+    onCopyMessageInfo: () -> Unit,
+    onViewInChat: () -> Unit,
+    onOpenMessageActions: () -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val compact = maxWidth < 260.dp || maxHeight < 260.dp
+        val surfaceSpec = WatchSurfaceSpec(isRound = isRoundScreen, compact = compact)
+        val accent = conversationAccentColor(conversation)
+        val scrollState = rememberScrollState()
+        val durationLabel = formatDuration(message.voiceDurationMs ?: 0L)
+        val senderLabel =
+            if (message.mine) {
+                "我"
+            } else {
+                message.senderName ?: conversation.title
+            }
+
+        WatchFrame(
+            surfaceSpec = surfaceSpec,
+            accent = accent,
+            modifier = Modifier.padding(horizontal = surfaceSpec.chatHorizontalPadding)
+        ) {
+            ScreenScaffold(
+                scrollState = scrollState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(),
+                scrollIndicator = {}
+            ) { scaffoldPadding ->
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .padding(scaffoldPadding)
+                            .padding(
+                                top = surfaceSpec.chatTopPadding,
+                                bottom = surfaceSpec.chatBottomPadding
+                            ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp)
+                ) {
+                    ChatInfoHeader(
+                        conversation = conversation,
+                        accent = accent,
+                        title = "语音播放",
+                        subtitle = "$senderLabel · $durationLabel",
+                        surfaceSpec = surfaceSpec,
+                        onNavigateBack = onNavigateBack
+                    )
+
+                    VoicePlaybackPanel(
+                        durationLabel = durationLabel,
+                        speedLabel = voicePlaybackSpeed.label,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec
+                    )
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
+                        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp)
+                    ) {
+                        MessageCapsule(
+                            message = message,
+                            compact = compact,
+                            accent = accent,
+                            voicePlaybackSpeed = voicePlaybackSpeed
+                        )
+                    }
+
+                    ChatInfoLine(
+                        icon = Icons.Filled.Mic,
+                        label = "语音",
+                        value = "$durationLabel · ${voicePlaybackSpeed.label}",
+                        accent = chatGreen,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec
+                    )
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
+                        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp)
+                    ) {
+                        MessageActionButton(
+                            icon = Icons.Filled.Mic,
+                            text = "播放 ${voicePlaybackSpeed.label}",
+                            selected = true,
+                            compact = compact,
+                            onClick = onPlayVoiceMessage
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.Schedule,
+                            text = "倍速 ${voicePlaybackSpeed.next().label}",
+                            selected = voicePlaybackSpeed != VoicePlaybackSpeed.Normal,
+                            compact = compact,
+                            onClick = onCycleVoicePlaybackSpeed
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.DoneAll,
+                            text = "复制语音信息",
+                            selected = false,
+                            compact = compact,
+                            onClick = onCopyMessageInfo
+                        )
+                        MessageActionButton(
+                            icon = Icons.AutoMirrored.Filled.Chat,
+                            text = "查看所在聊天",
+                            selected = false,
+                            compact = compact,
+                            onClick = onViewInChat
+                        )
+                        MessageActionButton(
+                            icon = Icons.Filled.Keyboard,
+                            text = "更多消息操作",
+                            selected = false,
+                            compact = compact,
+                            onClick = onOpenMessageActions
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoicePlaybackPanel(
+    durationLabel: String,
+    speedLabel: String,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec
+) {
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatGreen.copy(alpha = 0.14f))
+                .border(1.dp, chatGreen.copy(alpha = 0.36f), RoundedCornerShape(8.dp))
+                .padding(horizontal = if (compact) 9.dp else 11.dp, vertical = if (compact) 8.dp else 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 8.dp)
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .size(if (compact) 38.dp else 44.dp)
+                    .clip(CircleShape)
+                    .background(chatGreen.copy(alpha = 0.9f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Mic,
+                contentDescription = "语音消息",
+                tint = Color(0xFF001F1B),
+                modifier = Modifier.size(if (compact) 20.dp else 22.dp)
+            )
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            VoiceWaveBar(level = 0.42f, compact = compact)
+            VoiceWaveBar(level = 0.76f, compact = compact)
+            VoiceWaveBar(level = 0.58f, compact = compact)
+            VoiceWaveBar(level = 0.9f, compact = compact)
+            VoiceWaveBar(level = 0.52f, compact = compact)
+            VoiceWaveBar(level = 0.7f, compact = compact)
+        }
+        Text(
+            text = "$durationLabel · $speedLabel",
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = if (compact) 12.sp else 13.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
