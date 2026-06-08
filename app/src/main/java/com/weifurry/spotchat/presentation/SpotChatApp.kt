@@ -816,6 +816,7 @@ internal fun SpotChatApp(
     val draftsByConversation = remember { mutableStateMapOf<String, ConversationDraft>() }
     val blockedPeerFingerprints = remember { mutableStateMapOf<String, Boolean>() }
     val readReceiptsDisabledByConversation = remember { mutableStateMapOf<String, Boolean>() }
+    val frequentlyForwardedAllowedByConversation = remember { mutableStateMapOf<String, Boolean>() }
     val starredMessageIdsByConversation = remember { mutableStateMapOf<String, Set<String>>() }
     val pinnedMessageIdsByConversation = remember { mutableStateMapOf<String, String>() }
     val disappearingModesByConversation = remember { mutableStateMapOf<String, DisappearingMessageMode>() }
@@ -1176,18 +1177,37 @@ internal fun SpotChatApp(
             ?: "等待发现"
     }
 
+    fun allowsFrequentlyForwarded(conversationId: String): Boolean =
+        frequentlyForwardedAllowedByConversation[conversationId] != false
+
+    fun shouldBlockFrequentlyForwarded(
+        conversationId: String,
+        forwardCount: Int
+    ): Boolean =
+        conversationId == NEARBY_GROUP_CONVERSATION_ID &&
+            !allowsFrequentlyForwarded(conversationId) &&
+            forwardCount >= FREQUENTLY_FORWARDED_THRESHOLD
+
+    fun frequentlyForwardedPolicyLabel(conversationId: String): String =
+        if (allowsFrequentlyForwarded(conversationId)) {
+            "允许多次转发"
+        } else {
+            "禁止多次转发"
+        }
+
     fun conversationById(conversationId: String): ChatConversation? {
         if (conversationId == NEARBY_GROUP_CONVERSATION_ID) {
             val memberFingerprints = trustedPeers.map { peer -> peer.fingerprint }
+            val policyLabel = frequentlyForwardedPolicyLabel(NEARBY_GROUP_CONVERSATION_ID)
             return ChatConversation(
                 id = NEARBY_GROUP_CONVERSATION_ID,
                 kind = ConversationKind.Group,
                 title = NEARBY_GROUP_TITLE,
                 subtitle =
                     if (trustedPeers.isEmpty()) {
-                        "$nearbyGroupAbout · 等待成员"
+                        "$nearbyGroupAbout · 等待成员 · $policyLabel"
                     } else {
-                        "$nearbyGroupAbout · ${trustedPeers.size} 位成员 · ${groupReachabilityText(memberFingerprints)}"
+                        "$nearbyGroupAbout · ${trustedPeers.size} 位成员 · ${groupReachabilityText(memberFingerprints)} · $policyLabel"
                     },
                 memberFingerprints = memberFingerprints,
                 themeColor = conversationThemeColors[NEARBY_GROUP_CONVERSATION_ID]
@@ -1558,6 +1578,27 @@ internal fun SpotChatApp(
         trustState = "已更新群公告"
         appendSystemMessage(
             text = "群公告：$normalizedAbout",
+            encrypted = true,
+            conversationId = conversation.id
+        )
+    }
+
+    fun toggleFrequentlyForwardedAllowed(conversation: ChatConversation) {
+        if (conversation.id != NEARBY_GROUP_CONVERSATION_ID) {
+            trustState = "仅群聊支持转发限制"
+            return
+        }
+        val newAllowed = !allowsFrequentlyForwarded(conversation.id)
+        frequentlyForwardedAllowedByConversation[conversation.id] = newAllowed
+        val policyLabel = frequentlyForwardedPolicyLabel(conversation.id)
+        trustState = policyLabel
+        appendSystemMessage(
+            text =
+                if (newAllowed) {
+                    "群聊已允许多次转发消息"
+                } else {
+                    "群聊已禁止多次转发消息"
+                },
             encrypted = true,
             conversationId = conversation.id
         )
@@ -2692,6 +2733,7 @@ internal fun SpotChatApp(
                 pinnedConversationIds = pinnedConversationIds,
                 archivedConversationIds = archivedConversationIds,
                 lockedConversationIds = lockedConversationIds,
+                frequentlyForwardedAllowedByConversation = frequentlyForwardedAllowedByConversation,
                 starredMessageIdsByConversation = starredMessageIdsByConversation,
                 isConversationMuted = ::isConversationMuted,
                 hasRetryableMessages = ::hasRetryableMessages
@@ -2804,6 +2846,7 @@ internal fun SpotChatApp(
                 archivedConversationIds = archivedConversationIds,
                 pinnedConversationIds = pinnedConversationIds,
                 readReceiptsDisabledByConversation = readReceiptsDisabledByConversation,
+                frequentlyForwardedAllowedByConversation = frequentlyForwardedAllowedByConversation,
                 isConversationMuted = ::isConversationMuted
             )
         if (summary.isBlank()) {
@@ -3249,28 +3292,38 @@ internal fun SpotChatApp(
                                     } else {
                                         directConversationId(plain.senderFingerprint)
                                     }
-                                appendMessage(
-                                    conversationId,
-                                    ChatBubble(
-                                        text = payload.text,
-                                        mine = false,
+                                val payloadForwardCount = payload.normalizedForwardCount()
+                                if (shouldBlockFrequentlyForwarded(conversationId, payloadForwardCount)) {
+                                    appendSystemMessage(
+                                        text = "${storedSender.deviceName} 的${forwardLabel(payloadForwardCount)}消息已被群聊设置拦截",
                                         encrypted = true,
-                                        timestamp = nowTime(),
-                                        senderName =
-                                            if (payload.kind == CHAT_PAYLOAD_KIND_GROUP) {
-                                                storedSender.deviceName
-                                            } else {
-                                                null
-                                            },
-                                        senderFingerprint = plain.senderFingerprint,
-                                        messageId = plain.messageId,
-                                        quotedMessage = payload.quote,
-                                        deliveryState = DeliveryState.Received,
-                                        forwarded = payload.forwarded,
-                                        forwardCount = payload.normalizedForwardCount()
+                                        conversationId = conversationId
                                     )
-                                )
-                                trustState = "收到加密消息"
+                                    trustState = "已拦截多次转发"
+                                } else {
+                                    appendMessage(
+                                        conversationId,
+                                        ChatBubble(
+                                            text = payload.text,
+                                            mine = false,
+                                            encrypted = true,
+                                            timestamp = nowTime(),
+                                            senderName =
+                                                if (payload.kind == CHAT_PAYLOAD_KIND_GROUP) {
+                                                    storedSender.deviceName
+                                                } else {
+                                                    null
+                                                },
+                                            senderFingerprint = plain.senderFingerprint,
+                                            messageId = plain.messageId,
+                                            quotedMessage = payload.quote,
+                                            deliveryState = DeliveryState.Received,
+                                            forwarded = payload.forwarded,
+                                            forwardCount = payloadForwardCount
+                                        )
+                                    )
+                                    trustState = "收到加密消息"
+                                }
                                 rememberPeerRoute(plain.senderFingerprint, event.peer)
                                 val replyPeer = routeForPeer(plain.senderFingerprint) ?: event.peer
                                 sendEncryptedAck(
@@ -4164,6 +4217,11 @@ internal fun SpotChatApp(
         targetConversation: ChatConversation,
         message: ChatBubble
     ) {
+        val nextForwardCount = message.nextForwardCount()
+        if (shouldBlockFrequentlyForwarded(targetConversation.id, nextForwardCount)) {
+            trustState = "目标群聊禁止多次转发"
+            return
+        }
         pendingForwardMessage = null
         activeConversationId = targetConversation.id
         appSurface = AppSurface.Chat
@@ -4171,7 +4229,7 @@ internal fun SpotChatApp(
             conversation = targetConversation,
             text = message.forwardText(),
             forwarded = true,
-            forwardCount = message.nextForwardCount()
+            forwardCount = nextForwardCount
         )
     }
 
@@ -5491,6 +5549,7 @@ internal fun SpotChatApp(
                             isBlocked = isConversationBlocked(selectedConversation),
                             isLocked = isConversationLocked(selectedConversation.id),
                             readReceiptsEnabled = areReadReceiptsEnabled(selectedConversation.id),
+                            allowsFrequentlyForwarded = allowsFrequentlyForwarded(selectedConversation.id),
                             unreadCount = unreadCounts[selectedConversation.id] ?: 0,
                             starredCount = starredMessageIds(selectedConversation.id).size,
                             retryableCount =
@@ -5566,6 +5625,9 @@ internal fun SpotChatApp(
                             },
                             onToggleReadReceipts = {
                                 toggleConversationReadReceipts(selectedConversation)
+                            },
+                            onToggleFrequentlyForwarded = {
+                                toggleFrequentlyForwardedAllowed(selectedConversation)
                             },
                             onToggleUnread = {
                                 toggleConversationUnread(selectedConversation)
@@ -5900,6 +5962,7 @@ internal fun SpotChatApp(
                                 unreadCounts = unreadCounts,
                                 pinnedConversationIds = pinnedConversationIds,
                                 isConversationMuted = ::isConversationMuted,
+                                allowsFrequentlyForwarded = ::allowsFrequentlyForwarded,
                                 onNavigateBack = dismissOverlay,
                                 onSelectConversation = { targetConversation ->
                                     forwardMessageToConversation(targetConversation, forwardMessage)
@@ -7870,6 +7933,7 @@ private fun WatchForwardMessageSurface(
     unreadCounts: Map<String, Int>,
     pinnedConversationIds: Map<String, Boolean>,
     isConversationMuted: (String) -> Boolean,
+    allowsFrequentlyForwarded: (String) -> Boolean,
     onNavigateBack: () -> Unit,
     onSelectConversation: (ChatConversation) -> Unit
 ) {
@@ -7933,8 +7997,17 @@ private fun WatchForwardMessageSurface(
                         val lastMessage =
                             conversationMessages
                                 .lastOrNull { chatMessage -> chatMessage.deliveryState != DeliveryState.System }
+                        val blockedByForwardPolicy =
+                            conversation.kind == ConversationKind.Group &&
+                                !allowsFrequentlyForwarded(conversation.id) &&
+                                message.nextForwardCount() >= FREQUENTLY_FORWARDED_THRESHOLD
                         ConversationCapsule(
-                            conversation = conversation,
+                            conversation =
+                                if (blockedByForwardPolicy) {
+                                    conversation.copy(subtitle = "禁止多次转发 · ${conversation.subtitle}")
+                                } else {
+                                    conversation
+                                },
                             lastMessage = lastMessage,
                             unreadCount = unreadCounts[conversation.id] ?: 0,
                             retryableCount = conversationMessages.count { chatMessage -> chatMessage.canRetry() },
@@ -7942,7 +8015,11 @@ private fun WatchForwardMessageSurface(
                             isMuted = isConversationMuted(conversation.id),
                             featured = conversation.id == sourceConversation.id,
                             surfaceSpec = surfaceSpec,
-                            onClick = { onSelectConversation(conversation) }
+                            onClick = {
+                                if (!blockedByForwardPolicy) {
+                                    onSelectConversation(conversation)
+                                }
+                            }
                         )
                     }
                 }
@@ -8225,6 +8302,7 @@ private fun WatchChatInfoSurface(
     isBlocked: Boolean,
     isLocked: Boolean,
     readReceiptsEnabled: Boolean,
+    allowsFrequentlyForwarded: Boolean,
     unreadCount: Int,
     starredCount: Int,
     retryableCount: Int,
@@ -8246,6 +8324,7 @@ private fun WatchChatInfoSurface(
     onToggleBlocked: () -> Unit,
     onToggleLocked: () -> Unit,
     onToggleReadReceipts: () -> Unit,
+    onToggleFrequentlyForwarded: () -> Unit,
     onToggleUnread: () -> Unit,
     onRetryFailedMessages: () -> Unit,
     onToggleDisappearingMessages: () -> Unit,
@@ -8292,7 +8371,9 @@ private fun WatchChatInfoSurface(
                 isArchived = isArchived,
                 isLocked = isLocked,
                 readReceiptsEnabled = readReceiptsEnabled,
-                disappearingMode = disappearingMode
+                disappearingMode = disappearingMode,
+                allowsFrequentlyForwarded = allowsFrequentlyForwarded,
+                isGroup = conversation.kind == ConversationKind.Group
             )
 
         WatchFrame(
@@ -8536,6 +8617,22 @@ private fun WatchChatInfoSurface(
                         )
                     }
 
+                    if (conversation.kind == ConversationKind.Group) {
+                        ChatInfoLine(
+                            icon = Icons.AutoMirrored.Filled.Chat,
+                            label = "多次转发",
+                            value =
+                                if (allowsFrequentlyForwarded) {
+                                    "允许进入群聊"
+                                } else {
+                                    "自动拦截"
+                                },
+                            accent = if (allowsFrequentlyForwarded) chatAmber else chatRose,
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
+                        )
+                    }
+
                     ChatInfoLine(
                         icon = Icons.AutoMirrored.Filled.Chat,
                         label = "类型",
@@ -8668,6 +8765,21 @@ private fun WatchChatInfoSurface(
                                 selected = !groupAbout.isNullOrBlank(),
                                 compact = compact,
                                 onClick = editGroupAbout
+                            )
+                        }
+                        if (conversation.kind == ConversationKind.Group) {
+                            MessageActionButton(
+                                icon = Icons.AutoMirrored.Filled.Chat,
+                                text =
+                                    if (allowsFrequentlyForwarded) {
+                                        "禁止多次转发"
+                                    } else {
+                                        "允许多次转发"
+                                    },
+                                selected = !allowsFrequentlyForwarded,
+                                destructive = allowsFrequentlyForwarded,
+                                compact = compact,
+                                onClick = onToggleFrequentlyForwarded
                             )
                         }
                         MessageActionButton(
@@ -12726,7 +12838,7 @@ private fun conversationPreview(
     val basePreview = lastMessage?.let { message ->
         val text = message.previewText()
         val replyPrefix = if (message.quotedMessage == null) "" else "回复 "
-        val forwardPrefix = if (message.forwarded) "转发 " else ""
+        val forwardPrefix = if (message.forwarded) "${message.forwardLabel()} " else ""
         when {
             message.mine -> "我：$forwardPrefix$replyPrefix$text"
             message.senderName != null -> "${message.senderName}：$forwardPrefix$replyPrefix$text"
@@ -12848,7 +12960,9 @@ private fun chatManagementInsights(
     isArchived: Boolean,
     isLocked: Boolean,
     readReceiptsEnabled: Boolean,
-    disappearingMode: DisappearingMessageMode
+    disappearingMode: DisappearingMessageMode,
+    allowsFrequentlyForwarded: Boolean,
+    isGroup: Boolean
 ): List<ChatManagementInsight> {
     val insights = mutableListOf<ChatManagementInsight>()
 
@@ -12877,6 +12991,15 @@ private fun chatManagementInsights(
                 label = "内容整理",
                 value = "$contentMessageCount 条 · 链接 ${contentSummary.linkCount.coerceAtMost(99)}",
                 accent = chatBlue
+            )
+    }
+    if (isGroup && !allowsFrequentlyForwarded) {
+        insights +=
+            ChatManagementInsight(
+                icon = Icons.AutoMirrored.Filled.Chat,
+                label = "转发限制",
+                value = "多次转发会被拦截",
+                accent = chatRose
             )
     }
     if (starredCount > 0) {
@@ -13503,6 +13626,7 @@ private fun chatManagementSummaryText(
     pinnedConversationIds: Map<String, Boolean>,
     archivedConversationIds: Map<String, Boolean>,
     lockedConversationIds: Map<String, Boolean>,
+    frequentlyForwardedAllowedByConversation: Map<String, Boolean>,
     starredMessageIdsByConversation: Map<String, Set<String>>,
     isConversationMuted: (String) -> Boolean,
     hasRetryableMessages: (String) -> Boolean
@@ -13516,6 +13640,11 @@ private fun chatManagementSummaryText(
         conversations.count { conversation -> isConversationMuted(conversation.id) }
     val lockedConversationCount =
         conversations.count { conversation -> lockedConversationIds[conversation.id] == true }
+    val restrictedForwardGroupCount =
+        conversations.count { conversation ->
+            conversation.kind == ConversationKind.Group &&
+                frequentlyForwardedAllowedByConversation[conversation.id] == false
+        }
     val draftConversationCount =
         conversations.count { conversation -> draftsByConversation[conversation.id] != null }
     val retryableConversationCount =
@@ -13543,6 +13672,7 @@ private fun chatManagementSummaryText(
         appendLine("已归档：$archivedConversationCount 个")
         appendLine("静音：$mutedConversationCount 个")
         appendLine("锁定：$lockedConversationCount 个")
+        appendLine("多次转发限制：$restrictedForwardGroupCount 个群聊")
         appendLine()
         val activeManagementConversations =
             conversations.filter { conversation ->
@@ -13555,6 +13685,10 @@ private fun chatManagementSummaryText(
                     archivedConversationIds[conversation.id] == true ||
                     isConversationMuted(conversation.id) ||
                     lockedConversationIds[conversation.id] == true ||
+                    (
+                        conversation.kind == ConversationKind.Group &&
+                            frequentlyForwardedAllowedByConversation[conversation.id] == false
+                    ) ||
                     starredMessageIdsByConversation[conversation.id].orEmpty().isNotEmpty()
             }
         if (activeManagementConversations.isEmpty()) {
@@ -13597,6 +13731,12 @@ private fun chatManagementSummaryText(
                         }
                         if (lockedConversationIds[conversation.id] == true) {
                             add("锁定")
+                        }
+                        if (
+                            conversation.kind == ConversationKind.Group &&
+                            frequentlyForwardedAllowedByConversation[conversation.id] == false
+                        ) {
+                            add("禁止多次转发")
                         }
                     }
                 appendLine("${index + 1}. ${conversation.title}")
@@ -13792,6 +13932,7 @@ private fun groupListSummaryText(
     archivedConversationIds: Map<String, Boolean>,
     pinnedConversationIds: Map<String, Boolean>,
     readReceiptsDisabledByConversation: Map<String, Boolean>,
+    frequentlyForwardedAllowedByConversation: Map<String, Boolean>,
     isConversationMuted: (String) -> Boolean
 ): String {
     val groupConversations =
@@ -13805,6 +13946,10 @@ private fun groupListSummaryText(
         groupConversations.count { conversation -> isConversationMuted(conversation.id) }
     val draftConversationCount =
         groupConversations.count { conversation -> draftsByConversation[conversation.id] != null }
+    val restrictedForwardGroupCount =
+        groupConversations.count { conversation ->
+            frequentlyForwardedAllowedByConversation[conversation.id] == false
+        }
     val memberCount =
         groupConversations.sumOf { conversation -> conversation.memberFingerprints.size }
     return buildString {
@@ -13814,6 +13959,7 @@ private fun groupListSummaryText(
         appendLine("未读：$unreadConversationCount 个")
         appendLine("静音：$mutedConversationCount 个")
         appendLine("草稿：$draftConversationCount 个")
+        appendLine("多次转发限制：$restrictedForwardGroupCount 个")
         appendLine()
         groupConversations.forEachIndexed { index, conversation ->
             val messages = messagesByConversation[conversation.id].orEmpty()
@@ -13839,6 +13985,9 @@ private fun groupListSummaryText(
                     }
                     if (readReceiptsDisabledByConversation[conversation.id] == true) {
                         add("回执关闭")
+                    }
+                    if (frequentlyForwardedAllowedByConversation[conversation.id] == false) {
+                        add("禁止多次转发")
                     }
                 }.ifEmpty { listOf("正常") }
             appendLine("${index + 1}. ${conversation.title}")
