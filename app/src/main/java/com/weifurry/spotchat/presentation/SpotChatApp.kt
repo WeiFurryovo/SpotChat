@@ -4281,6 +4281,18 @@ internal fun SpotChatApp(
                                 trustState = "正在重发未发送聊天"
                             }
                         },
+                        onSendVisibleDrafts = {
+                            val draftConversations =
+                                visibleConversationList.filter { conversation ->
+                                    draftsByConversation[conversation.id] != null
+                                }
+                            draftConversations.forEach { conversation ->
+                                sendDraft(conversation)
+                            }
+                            if (draftConversations.isNotEmpty()) {
+                                trustState = "已发送草稿聊天"
+                            }
+                        },
                         onOpenProfile = {
                             appSurface = AppSurface.Profile
                         },
@@ -5045,6 +5057,7 @@ private fun WatchConversationListSurface(
     onOpenArchivedChats: () -> Unit,
     onMarkVisibleRead: () -> Unit,
     onRetryVisible: () -> Unit,
+    onSendVisibleDrafts: () -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
 ) {
@@ -5304,6 +5317,20 @@ private fun WatchConversationListSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onRetryVisible
+                            )
+                        }
+                    }
+
+                    if (activeFilter == ChatListFilter.Drafts && conversations.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Keyboard,
+                                text = "发送全部草稿",
+                                selected = true,
+                                compact = compact,
+                                onClick = onSendVisibleDrafts
                             )
                         }
                     }
