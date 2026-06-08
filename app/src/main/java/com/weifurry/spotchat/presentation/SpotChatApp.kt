@@ -4463,6 +4463,18 @@ internal fun SpotChatApp(
                                     statusText = "归档聊天已读"
                                 )
                             },
+                            onUnarchiveAll = {
+                                val archivedVisibleConversations =
+                                    archivedConversationList.filter { conversation ->
+                                        archivedConversationIds[conversation.id] == true
+                                    }
+                                archivedVisibleConversations.forEach { conversation ->
+                                    toggleConversationArchived(conversation)
+                                }
+                                if (archivedVisibleConversations.isNotEmpty()) {
+                                    trustState = "已取消归档聊天"
+                                }
+                            },
                             onOpenConversation = ::openConversation
                         )
                     }
@@ -6789,6 +6801,7 @@ private fun WatchArchivedChatsSurface(
     lockedConversationIds: Map<String, Boolean>,
     onNavigateBack: () -> Unit,
     onMarkAllRead: () -> Unit,
+    onUnarchiveAll: () -> Unit,
     onOpenConversation: (ChatConversation) -> Unit
 ) {
     BoxWithConstraints(
@@ -6856,6 +6869,20 @@ private fun WatchArchivedChatsSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onMarkAllRead
+                            )
+                        }
+                    }
+
+                    if (conversations.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Archive,
+                                text = "取消全部归档",
+                                selected = true,
+                                compact = compact,
+                                onClick = onUnarchiveAll
                             )
                         }
                     }
