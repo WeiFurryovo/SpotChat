@@ -4379,6 +4379,19 @@ internal fun SpotChatApp(
                                 trustState = "已恢复静音聊天通知"
                             }
                         },
+                        onArchiveMutedVisible = {
+                            val mutedUnarchivedConversations =
+                                visibleConversationList.filter { conversation ->
+                                    isConversationMuted(conversation.id) &&
+                                        archivedConversationIds[conversation.id] != true
+                                }
+                            mutedUnarchivedConversations.forEach { conversation ->
+                                toggleConversationArchived(conversation)
+                            }
+                            if (mutedUnarchivedConversations.isNotEmpty()) {
+                                trustState = "已归档静音聊天"
+                            }
+                        },
                         onMuteVisibleGroups = {
                             val unmutedGroupConversations =
                                 visibleConversationList.filter { conversation ->
@@ -5225,6 +5238,7 @@ private fun WatchConversationListSurface(
     onUnfavoriteVisible: () -> Unit,
     onUnpinVisible: () -> Unit,
     onUnmuteVisible: () -> Unit,
+    onArchiveMutedVisible: () -> Unit,
     onMuteVisibleGroups: () -> Unit,
     onLockVisibleDirects: () -> Unit,
     onUnlockVisible: () -> Unit,
@@ -5585,6 +5599,13 @@ private fun WatchConversationListSurface(
                                 selected = true,
                                 compact = compact,
                                 onClick = onUnmuteVisible
+                            )
+                            MessageActionButton(
+                                icon = Icons.Filled.Archive,
+                                text = "归档全部静音",
+                                selected = true,
+                                compact = compact,
+                                onClick = onArchiveMutedVisible
                             )
                         }
                     }
