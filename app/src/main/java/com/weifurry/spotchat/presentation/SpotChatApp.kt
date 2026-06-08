@@ -475,6 +475,7 @@ private val defaultAvatars =
 private const val PROFILE_AVATARS_PER_ROW = 3
 private const val CUSTOM_MESSAGE_REMOTE_INPUT_KEY = "spotchat_custom_message"
 private const val SEARCH_MESSAGE_REMOTE_INPUT_KEY = "spotchat_search_message"
+private const val ALIAS_REMOTE_INPUT_KEY = "spotchat_alias"
 private const val MAX_CUSTOM_MESSAGE_CHARS = 280
 private const val MAX_SEARCH_QUERY_CHARS = 48
 private const val MAX_SEARCH_RESULTS = 12
@@ -747,7 +748,7 @@ internal fun SpotChatApp(
                         directConversationId(peer.fingerprint),
                         listOf(
                             ChatBubble(
-                                text = "与 ${peer.deviceName} 的私聊已准备好",
+                                text = "与 ${peerDisplayName(peer)} 的私聊已准备好",
                                 mine = false,
                                 encrypted = true,
                                 timestamp = nowTime(),
@@ -808,6 +809,7 @@ internal fun SpotChatApp(
     var draftSaveConversationId by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var searchTargetSurface by remember { mutableStateOf(AppSurface.MessageSearch) }
+    var pendingAliasPeerFingerprint by remember { mutableStateOf<String?>(null) }
     var chatListFilter by remember { mutableStateOf(ChatListFilter.All) }
     var voicePlaybackSpeed by remember { mutableStateOf(VoicePlaybackSpeed.Normal) }
     var isRecordingVoice by remember { mutableStateOf(false) }
@@ -1154,7 +1156,7 @@ internal fun SpotChatApp(
         return ChatConversation(
             id = directConversationId(peer.fingerprint),
             kind = ConversationKind.Direct,
-            title = peer.deviceName,
+            title = peerDisplayName(peer),
             subtitle = "${peerAbout(peer)} · ${peerReachabilityText(peer.fingerprint)}",
             peerFingerprint = peer.fingerprint,
             memberFingerprints = listOf(peer.fingerprint),
@@ -1413,7 +1415,7 @@ internal fun SpotChatApp(
             conversationMessages[conversationId] =
                 listOf(
                     ChatBubble(
-                        text = "与 ${storedPeer.deviceName} 的私聊已准备好",
+                        text = "与 ${peerDisplayName(storedPeer)} 的私聊已准备好",
                         mine = false,
                         encrypted = true,
                         timestamp = nowTime(),
@@ -1443,6 +1445,23 @@ internal fun SpotChatApp(
         trustedPeers.removeAll { existing ->
             existing.fingerprint == storedPeer.fingerprint || existing.publicKey == storedPeer.publicKey
         }
+    }
+
+    fun updateTrustedPeerAlias(
+        peer: StoredTrustedPeer,
+        alias: String
+    ) {
+        val updatedPeer = trustedPeerStore.updateAlias(peer.fingerprint, alias) ?: return
+        val peerIndex = trustedPeers.indexOfFirst { storedPeer -> storedPeer.fingerprint == peer.fingerprint }
+        if (peerIndex >= 0) {
+            trustedPeers[peerIndex] = updatedPeer
+        }
+        trustState =
+            if (updatedPeer.alias.isBlank()) {
+                "已清除联系人备注"
+            } else {
+                "已备注为 ${updatedPeer.alias}"
+            }
     }
 
     fun removeConversationRuntimeState(conversationId: String) {
@@ -1536,9 +1555,9 @@ internal fun SpotChatApp(
         pendingMessageEdit = null
         activeConversationId = NEARBY_GROUP_CONVERSATION_ID
         appSurface = AppSurface.ConversationList
-        trustState = "已移除 ${storedPeer.deviceName}"
+        trustState = "已移除 ${peerDisplayName(storedPeer)}"
         appendSystemMessage(
-            text = "已移除 ${storedPeer.deviceName} 的信任",
+            text = "已移除 ${peerDisplayName(storedPeer)} 的信任",
             encrypted = true,
             conversationId = NEARBY_GROUP_CONVERSATION_ID
         )
@@ -1611,7 +1630,7 @@ internal fun SpotChatApp(
                     ChatConversation(
                         id = directConversationId(peer.fingerprint),
                         kind = ConversationKind.Direct,
-                        title = peer.deviceName,
+                        title = peerDisplayName(peer),
                         subtitle = "${peerAbout(peer)} · ${peerReachabilityText(peer.fingerprint)}",
                         peerFingerprint = peer.fingerprint,
                         memberFingerprints = listOf(peer.fingerprint),
@@ -3830,6 +3849,28 @@ internal fun SpotChatApp(
             appSurface = searchTargetSurface
         }
 
+    val aliasInputLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            val peerFingerprint = pendingAliasPeerFingerprint
+            pendingAliasPeerFingerprint = null
+            if (result.resultCode != Activity.RESULT_OK || peerFingerprint == null) {
+                return@rememberLauncherForActivityResult
+            }
+            val alias =
+                result.data
+                    ?.let { intent -> RemoteInput.getResultsFromIntent(intent) }
+                    ?.getCharSequence(ALIAS_REMOTE_INPUT_KEY)
+                    ?.toString()
+                    ?.trim()
+                    ?.take(TrustedPeerStore.MAX_ALIAS_CHARS)
+                    .orEmpty()
+            trustedPeer(peerFingerprint)?.let { peer ->
+                updateTrustedPeerAlias(peer, alias)
+            }
+        }
+
     fun openCustomMessageInput(saveAsDraft: Boolean = false) {
         val conversation = activeConversation()
         draftSaveConversationId = if (saveAsDraft) conversation.id else null
@@ -3874,6 +3915,26 @@ internal fun SpotChatApp(
         }
 
         messageInputLauncher.launch(inputIntent)
+    }
+
+    fun openAliasInput(peer: StoredTrustedPeer) {
+        pendingAliasPeerFingerprint = peer.fingerprint
+        val remoteInputBuilder =
+            RemoteInput.Builder(ALIAS_REMOTE_INPUT_KEY)
+                .setLabel("联系人备注")
+                .setChoices(arrayOf(peer.deviceName, peer.about.ifBlank { ProfileStore.DEFAULT_ABOUT }))
+                .setAllowFreeFormInput(true)
+        WearableRemoteInputExtender(remoteInputBuilder)
+            .setEmojisAllowed(true)
+            .setInputActionType(EditorInfo.IME_ACTION_DONE)
+
+        val inputIntent = RemoteInputIntentHelper.createActionRemoteInputIntent()
+        RemoteInputIntentHelper.putTitleExtra(inputIntent, "备注 ${peer.deviceName}")
+        RemoteInputIntentHelper.putConfirmLabelExtra(inputIntent, "保存")
+        RemoteInputIntentHelper.putCancelLabelExtra(inputIntent, "取消")
+        RemoteInputIntentHelper.putRemoteInputsExtra(inputIntent, listOf(remoteInputBuilder.build()))
+
+        aliasInputLauncher.launch(inputIntent)
     }
 
     fun openMessageSearchInput() {
@@ -4253,6 +4314,14 @@ internal fun SpotChatApp(
                             onToggleFavorite = {
                                 toggleConversationFavorite(selectedConversation)
                             },
+                            onEditAlias =
+                                selectedConversation.peerFingerprint
+                                    ?.let { fingerprint -> trustedPeer(fingerprint) }
+                                    ?.let { peer ->
+                                        {
+                                            openAliasInput(peer)
+                                        }
+                                    },
                             onCycleTheme = {
                                 cycleConversationTheme(selectedConversation)
                             },
@@ -6040,6 +6109,7 @@ private fun WatchChatInfoSurface(
     onSearchMessages: () -> Unit,
     onTogglePinned: () -> Unit,
     onToggleFavorite: () -> Unit,
+    onEditAlias: (() -> Unit)?,
     onCycleTheme: () -> Unit,
     onToggleMuted: () -> Unit,
     onToggleArchived: () -> Unit,
@@ -6326,6 +6396,15 @@ private fun WatchChatInfoSurface(
                             compact = compact,
                             onClick = onToggleFavorite
                         )
+                        onEditAlias?.let { editAlias ->
+                            MessageActionButton(
+                                icon = Icons.Filled.Keyboard,
+                                text = "联系人备注",
+                                selected = conversation.peerFingerprint != null,
+                                compact = compact,
+                                onClick = editAlias
+                            )
+                        }
                         MessageActionButton(
                             icon = Icons.Filled.Palette,
                             text = "切换聊天颜色",
@@ -7349,7 +7428,7 @@ private fun GroupMemberRow(
         Spacer(modifier = Modifier.width(if (compact) 7.dp else 9.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = peer.deviceName,
+                text = peerDisplayName(peer),
                 color = MaterialTheme.colorScheme.onBackground,
                 fontSize = if (compact) 11.sp else 12.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -7724,9 +7803,9 @@ private fun WatchSecurityCheckSurface(
                         title = "安全校验",
                         subtitle =
                             if (conversation.kind == ConversationKind.Direct) {
-                                primaryPeer?.deviceName ?: conversation.title
+                                primaryPeer?.let(::peerDisplayName) ?: conversation.title
                             } else if (selectedPeer != null) {
-                                selectedPeer.deviceName
+                                peerDisplayName(selectedPeer)
                             } else {
                                 "${memberPeers.size} 位成员"
                             },
@@ -7762,7 +7841,7 @@ private fun WatchSecurityCheckSurface(
                         displayedPeers.forEach { peer ->
                             ChatInfoLine(
                                 icon = Icons.Filled.VerifiedUser,
-                                label = peer.deviceName,
+                                label = peerDisplayName(peer),
                                 value = safetyPeerSummary(peer),
                                 accent = accent,
                                 compact = compact,
@@ -8794,7 +8873,7 @@ private fun ProfileTrustedPeerRow(
         Spacer(modifier = Modifier.width(if (compact) 7.dp else 9.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = peer.deviceName,
+                text = peerDisplayName(peer),
                 color = MaterialTheme.colorScheme.onBackground,
                 fontSize = if (compact) 11.sp else 12.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -9661,6 +9740,9 @@ private fun statusColor(trustState: String): Color =
 private fun peerAbout(peer: StoredTrustedPeer): String =
     peer.about.ifBlank { ProfileStore.DEFAULT_ABOUT }
 
+private fun peerDisplayName(peer: StoredTrustedPeer): String =
+    peer.alias.ifBlank { peer.deviceName }
+
 private fun trustedPeerSubtitle(peer: StoredTrustedPeer): String {
     val trustedAt =
         if (peer.trustedAtEpochMillis <= 0L) {
@@ -9669,7 +9751,13 @@ private fun trustedPeerSubtitle(peer: StoredTrustedPeer): String {
             SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
                 .format(Date(peer.trustedAtEpochMillis))
         }
-    return "${peerAbout(peer)} · $trustedAt"
+    val deviceNameLabel =
+        if (peer.alias.isBlank()) {
+            peer.deviceName
+        } else {
+            "设备 ${peer.deviceName}"
+        }
+    return "$deviceNameLabel · ${peerAbout(peer)} · $trustedAt"
 }
 
 private fun safetyPeerSummary(peer: StoredTrustedPeer): String =

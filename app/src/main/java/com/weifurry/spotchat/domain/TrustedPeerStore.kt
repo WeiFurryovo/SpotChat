@@ -12,7 +12,8 @@ data class StoredTrustedPeer(
     val publicKey: String,
     val pairingCode: String,
     val trustedAtEpochMillis: Long,
-    val about: String = ""
+    val about: String = "",
+    val alias: String = ""
 )
 
 class TrustedPeerStore(context: Context) {
@@ -76,7 +77,29 @@ class TrustedPeerStore(context: Context) {
             .apply()
     }
 
+    fun updateAlias(
+        fingerprint: String,
+        alias: String
+    ): StoredTrustedPeer? {
+        var updatedPeer: StoredTrustedPeer? = null
+        val normalizedAlias = alias.replace("\n", " ").trim().take(MAX_ALIAS_CHARS)
+        val updatedPeers =
+            all().map { peer ->
+                if (peer.fingerprint == fingerprint) {
+                    peer.copy(alias = normalizedAlias).also { updated -> updatedPeer = updated }
+                } else {
+                    peer
+                }
+            }
+        prefs
+            .edit()
+            .putString(KEY_PEERS, json.encodeToString(updatedPeers))
+            .apply()
+        return updatedPeer
+    }
+
     companion object {
+        const val MAX_ALIAS_CHARS = 18
         private const val PREFS_NAME = "spotchat_trusted_peers"
         private const val KEY_PEERS = "peers"
     }
