@@ -224,6 +224,15 @@ private enum class ContentMessageFilter(
     Disappearing("限时")
 }
 
+private enum class GroupMemberFilter(
+    val label: String
+) {
+    All("全部"),
+    Online("在线"),
+    Recent("最近"),
+    Offline("离线")
+}
+
 private fun ChatConversation.matchesFilter(
     filter: ChatListFilter,
     unreadCounts: Map<String, Int>,
@@ -6117,6 +6126,15 @@ private fun WatchGroupMembersSurface(
             conversation.memberFingerprints.mapNotNull { fingerprint ->
                 trustedByFingerprint[fingerprint]
             }
+        val memberReachability =
+            memberPeers.associateWith { peer ->
+                peerReachability(peer.fingerprint)
+            }
+        var activeFilter by remember { mutableStateOf(GroupMemberFilter.All) }
+        val filteredMembers =
+            memberPeers.filter { peer ->
+                memberReachability[peer].orEmpty().matchesGroupMemberFilter(activeFilter)
+            }
 
         WatchFrame(
             surfaceSpec = surfaceSpec,
@@ -6151,17 +6169,34 @@ private fun WatchGroupMembersSurface(
                         onNavigateBack = onNavigateBack
                     )
 
+                    GroupMemberFilterStrip(
+                        activeFilter = activeFilter,
+                        reachabilityValues = memberReachability.values.toList(),
+                        totalCount = memberPeers.size,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec,
+                        onSelectFilter = { filter ->
+                            activeFilter = filter
+                        }
+                    )
+
                     if (memberPeers.isEmpty()) {
                         SearchEmptyState(
                             text = "还没有可信成员",
                             compact = compact,
                             surfaceSpec = surfaceSpec
                         )
+                    } else if (filteredMembers.isEmpty()) {
+                        SearchEmptyState(
+                            text = "没有${activeFilter.label}成员",
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
+                        )
                     } else {
-                        memberPeers.forEach { peer ->
+                        filteredMembers.forEach { peer ->
                             GroupMemberRow(
                                 peer = peer,
-                                reachability = peerReachability(peer.fingerprint),
+                                reachability = memberReachability[peer].orEmpty(),
                                 compact = compact,
                                 surfaceSpec = surfaceSpec,
                                 onClick = { onOpenDirectChat(peer) }
@@ -6227,6 +6262,91 @@ private fun GroupMemberRow(
                 overflow = TextOverflow.Ellipsis
             )
         }
+    }
+}
+
+@Composable
+private fun GroupMemberFilterStrip(
+    activeFilter: GroupMemberFilter,
+    reachabilityValues: List<String>,
+    totalCount: Int,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    onSelectFilter: (GroupMemberFilter) -> Unit
+) {
+    val filterScrollState = rememberScrollState()
+    val density = LocalDensity.current
+    val chipStepPx =
+        with(density) {
+            ((if (compact) 48.dp else 53.dp) * activeFilter.ordinal).roundToPx()
+        }
+
+    LaunchedEffect(activeFilter, compact) {
+        filterScrollState.animateScrollTo(chipStepPx.coerceAtMost(filterScrollState.maxValue))
+    }
+
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.84f else 0.94f)
+                .height(if (compact) 30.dp else 34.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black.copy(alpha = 0.18f))
+                .border(1.dp, chatDivider.copy(alpha = 0.52f), RoundedCornerShape(8.dp))
+                .horizontalScroll(filterScrollState)
+                .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        GroupMemberFilter.entries.forEach { filter ->
+            GroupMemberFilterSegment(
+                filter = filter,
+                count = reachabilityValues.countForFilter(filter, totalCount),
+                selected = activeFilter == filter,
+                compact = compact,
+                onClick = { onSelectFilter(filter) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun GroupMemberFilterSegment(
+    filter: GroupMemberFilter,
+    count: Int,
+    selected: Boolean,
+    compact: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val foreground = if (selected) Color(0xFF001F1B) else chatRowMuted
+    val background =
+        if (selected) {
+            chatGreen
+        } else {
+            Color.Transparent
+        }
+    val segmentWidth = if (compact) 45.dp else 50.dp
+    Box(
+        modifier =
+            modifier
+                .width(segmentWidth)
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(7.dp))
+                .background(background)
+                .clickable(onClick = onClick)
+                .padding(horizontal = if (compact) 2.dp else 4.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "${filter.label} ${count.coerceAtMost(99)}",
+            color = foreground,
+            fontSize = if (compact) 8.sp else 9.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
@@ -8303,6 +8423,25 @@ private fun peerReachabilityShortLabel(reachability: String): String =
         reachability.contains("最近发现") -> "最近"
         reachability.contains("等待") -> "离线"
         else -> reachability.take(4)
+    }
+
+private fun String.matchesGroupMemberFilter(filter: GroupMemberFilter): Boolean =
+    when (filter) {
+        GroupMemberFilter.All -> true
+        GroupMemberFilter.Online -> contains("当前可发送")
+        GroupMemberFilter.Recent -> contains("最近发现")
+        GroupMemberFilter.Offline -> contains("等待")
+    }
+
+private fun List<String>.countForFilter(
+    filter: GroupMemberFilter,
+    totalCount: Int
+): Int =
+    when (filter) {
+        GroupMemberFilter.All -> totalCount
+        GroupMemberFilter.Online -> count { reachability -> reachability.matchesGroupMemberFilter(filter) }
+        GroupMemberFilter.Recent -> count { reachability -> reachability.matchesGroupMemberFilter(filter) }
+        GroupMemberFilter.Offline -> count { reachability -> reachability.matchesGroupMemberFilter(filter) }
     }
 
 private fun disappearingActionLabel(mode: DisappearingMessageMode): String =
