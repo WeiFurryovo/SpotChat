@@ -4315,7 +4315,12 @@ internal fun SpotChatApp(
                                 retryConversationMessages(conversation)
                             }
                             if (retryableConversations.isNotEmpty()) {
-                                trustState = "正在重发未发送聊天"
+                                trustState =
+                                    if (chatListFilter == ChatListFilter.All) {
+                                        "正在重发全部未发送"
+                                    } else {
+                                        "正在重发未发送聊天"
+                                    }
                             }
                         },
                         onSendVisibleDrafts = {
@@ -5463,6 +5468,9 @@ private fun WatchConversationListSurface(
                     val canSendVisibleDrafts =
                         (activeFilter == ChatListFilter.All || activeFilter == ChatListFilter.Drafts) &&
                             conversations.any { conversation -> draftsByConversation[conversation.id] != null }
+                    val canRetryVisibleMessages =
+                        (activeFilter == ChatListFilter.All || activeFilter == ChatListFilter.Retryable) &&
+                            conversations.any { conversation -> hasRetryableMessages(conversation.id) }
 
                     if (
                         canMarkVisibleRead
@@ -5485,7 +5493,7 @@ private fun WatchConversationListSurface(
                         }
                     }
 
-                    if (activeFilter == ChatListFilter.Retryable && conversations.isNotEmpty()) {
+                    if (canRetryVisibleMessages) {
                         Column(
                             modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
                         ) {
