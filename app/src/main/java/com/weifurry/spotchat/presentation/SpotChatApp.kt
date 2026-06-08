@@ -379,6 +379,11 @@ private data class PendingOutboundVoiceMessage(
     }
 }
 
+private data class PendingDirectReply(
+    val conversationId: String,
+    val title: String
+)
+
 private fun ChatBubble.canRetry(): Boolean =
     mine &&
         messageId != null &&
@@ -714,6 +719,7 @@ internal fun SpotChatApp(
         activeConversationId = NEARBY_GROUP_CONVERSATION_ID
     }
     var pendingQuotedMessage by remember { mutableStateOf<QuotedMessage?>(null) }
+    var pendingDirectReply by remember { mutableStateOf<PendingDirectReply?>(null) }
     var transportMode by remember { mutableStateOf(TransportMode.Lan) }
     var trustState by remember { mutableStateOf("未配对") }
     var activePeer by remember { mutableStateOf<TransportPeer?>(null) }
@@ -1357,6 +1363,7 @@ internal fun SpotChatApp(
         conversationUpdateOrder[conversation.id] = conversationUpdateSequence
         selectedActionMessage = null
         pendingQuotedMessage = null
+        pendingDirectReply = null
         pendingForwardMessage = null
         trustState = "聊天已清空"
     }
@@ -1382,6 +1389,7 @@ internal fun SpotChatApp(
         disappearingModesByConversation.remove(conversation.id)
         selectedActionMessage = null
         pendingQuotedMessage = null
+        pendingDirectReply = null
         pendingForwardMessage = null
         activeConversationId = NEARBY_GROUP_CONVERSATION_ID
         appSurface = AppSurface.ConversationList
@@ -2759,6 +2767,31 @@ internal fun SpotChatApp(
         )
     }
 
+    fun prepareDirectReplyToSender(
+        sourceConversation: ChatConversation,
+        message: ChatBubble
+    ): Boolean {
+        if (sourceConversation.kind != ConversationKind.Group || message.mine) {
+            trustState = "只能私聊回复群消息"
+            return false
+        }
+        val senderFingerprint = message.senderFingerprint
+        val sender = senderFingerprint?.let(::trustedPeer)
+        if (sender == null) {
+            trustState = "发送者未信任"
+            return false
+        }
+        val directConversationId = ensureDirectConversation(sender)
+        pendingQuotedMessage = message.toQuotedMessage(sourceConversation)
+        pendingDirectReply =
+            PendingDirectReply(
+                conversationId = directConversationId,
+                title = sender.deviceName
+            )
+        appSurface = AppSurface.Chat
+        return true
+    }
+
     fun retryMessage(
         conversation: ChatConversation,
         message: ChatBubble
@@ -2991,6 +3024,10 @@ internal fun SpotChatApp(
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
             if (result.resultCode != Activity.RESULT_OK) {
+                if (pendingDirectReply != null) {
+                    pendingDirectReply = null
+                    pendingQuotedMessage = null
+                }
                 return@rememberLauncherForActivityResult
             }
 
@@ -3004,7 +3041,32 @@ internal fun SpotChatApp(
                     .orEmpty()
 
             if (message.isNotBlank()) {
-                sendQuickReply(message)
+                val directReply = pendingDirectReply
+                if (directReply == null) {
+                    sendQuickReply(message)
+                } else {
+                    val quotedMessage = pendingQuotedMessage
+                    pendingQuotedMessage = null
+                    pendingDirectReply = null
+                    val directConversation = conversationById(directReply.conversationId)
+                    if (directConversation == null) {
+                        trustState = "私聊不可用"
+                    } else {
+                        activeConversationId = directConversation.id
+                        clearConversationAlerts(directConversation.id)
+                        markConversationRead(directConversation.id)
+                        appSurface = AppSurface.Chat
+                        sendMessageToConversation(
+                            conversation = directConversation,
+                            text = message,
+                            quotedMessage = quotedMessage
+                        )
+                        trustState = "已私聊回复 ${directReply.title}"
+                    }
+                }
+            } else if (pendingDirectReply != null) {
+                pendingDirectReply = null
+                pendingQuotedMessage = null
             }
         }
 
@@ -3039,12 +3101,13 @@ internal fun SpotChatApp(
 
         val inputIntent = RemoteInputIntentHelper.createActionRemoteInputIntent()
         val quotedMessage = pendingQuotedMessage
+        val directReply = pendingDirectReply
         RemoteInputIntentHelper.putTitleExtra(
             inputIntent,
-            if (quotedMessage == null) {
-                activeConversation().title
-            } else {
-                "回复 ${quotedMessage.senderName}"
+            when {
+                directReply != null && quotedMessage != null -> "私聊回复 ${directReply.title}"
+                quotedMessage != null -> "回复 ${quotedMessage.senderName}"
+                else -> activeConversation().title
             }
         )
         RemoteInputIntentHelper.putConfirmLabelExtra(inputIntent, "发送")
@@ -3536,6 +3599,10 @@ internal fun SpotChatApp(
                                 isPinned = isMessagePinned(selectedConversation.id, actionMessage),
                                 voicePlaybackSpeed = voicePlaybackSpeed,
                                 hasQuotedMessageTarget = quotedTarget != null,
+                                canReplyPrivately =
+                                    selectedConversation.kind == ConversationKind.Group &&
+                                        !actionMessage.mine &&
+                                        actionMessage.senderFingerprint?.let(::trustedPeer) != null,
                                 receiptSummary = messageReceiptSummary(selectedConversation, actionMessage),
                                 reactionDetails = reactionDetails(actionMessage),
                                 onNavigateBack = dismissOverlay,
@@ -3590,6 +3657,11 @@ internal fun SpotChatApp(
                                     pendingQuotedMessage = actionMessage.toQuotedMessage(selectedConversation)
                                     appSurface = AppSurface.Chat
                                     openCustomMessageInput()
+                                },
+                                onReplyPrivately = {
+                                    if (prepareDirectReplyToSender(selectedConversation, actionMessage)) {
+                                        openCustomMessageInput()
+                                    }
                                 },
                                 onForwardMessage = {
                                     pendingForwardMessage = actionMessage
@@ -5343,6 +5415,7 @@ private fun WatchMessageActionsSurface(
     isPinned: Boolean,
     voicePlaybackSpeed: VoicePlaybackSpeed,
     hasQuotedMessageTarget: Boolean,
+    canReplyPrivately: Boolean,
     receiptSummary: MessageReceiptSummary?,
     reactionDetails: List<ReactionDetail>,
     onNavigateBack: () -> Unit,
@@ -5358,6 +5431,7 @@ private fun WatchMessageActionsSurface(
     onOpenCustomMessageInput: () -> Unit,
     onSendQuickReply: (String) -> Unit,
     onReplyToMessage: () -> Unit,
+    onReplyPrivately: () -> Unit,
     onForwardMessage: () -> Unit,
     onRetryMessage: () -> Unit
 ) {
@@ -5503,6 +5577,15 @@ private fun WatchMessageActionsSurface(
                             compact = compact,
                             onClick = onReplyToMessage
                         )
+                        if (canReplyPrivately) {
+                            MessageActionButton(
+                                icon = Icons.AutoMirrored.Filled.Chat,
+                                text = "私聊回复",
+                                selected = false,
+                                compact = compact,
+                                onClick = onReplyPrivately
+                            )
+                        }
                         MessageActionButton(
                             icon = Icons.AutoMirrored.Filled.Chat,
                             text = "转发消息",
