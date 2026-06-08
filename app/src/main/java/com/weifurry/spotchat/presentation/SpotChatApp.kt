@@ -330,6 +330,11 @@ private data class MessageReceiptSummary(
     val unreadNames: List<String>
 )
 
+private data class ReactionDetail(
+    val senderName: String,
+    val reactionLabel: String
+)
+
 private data class OutgoingMessageRef(
     val conversationId: String,
     val displayMessageId: String,
@@ -961,6 +966,25 @@ internal fun SpotChatApp(
                         .map(::displayName)
                 }
         )
+    }
+
+    fun reactionDetails(message: ChatBubble): List<ReactionDetail> {
+        if (message.reactions.isEmpty()) {
+            return emptyList()
+        }
+        val trustedByFingerprint = trustedPeers.associateBy { peer -> peer.fingerprint }
+        return message.reactions.map { (senderFingerprint, reactionCode) ->
+            ReactionDetail(
+                senderName =
+                    when {
+                        senderFingerprint == localFingerprint -> "我"
+                        trustedByFingerprint[senderFingerprint] != null ->
+                            trustedByFingerprint[senderFingerprint]?.deviceName ?: senderFingerprint.take(6)
+                        else -> senderFingerprint.take(6)
+                    },
+                reactionLabel = reactionLabel(reactionCode)
+            )
+        }
     }
 
     fun quotedMessageTarget(
@@ -3495,6 +3519,7 @@ internal fun SpotChatApp(
                                 voicePlaybackSpeed = voicePlaybackSpeed,
                                 hasQuotedMessageTarget = quotedTarget != null,
                                 receiptSummary = messageReceiptSummary(selectedConversation, actionMessage),
+                                reactionDetails = reactionDetails(actionMessage),
                                 onNavigateBack = dismissOverlay,
                                 onPlayVoiceMessage = {
                                     playVoiceMessage(actionMessage)
@@ -5301,6 +5326,7 @@ private fun WatchMessageActionsSurface(
     voicePlaybackSpeed: VoicePlaybackSpeed,
     hasQuotedMessageTarget: Boolean,
     receiptSummary: MessageReceiptSummary?,
+    reactionDetails: List<ReactionDetail>,
     onNavigateBack: () -> Unit,
     onPlayVoiceMessage: () -> Unit,
     onCycleVoicePlaybackSpeed: () -> Unit,
@@ -5488,6 +5514,7 @@ private fun WatchMessageActionsSurface(
                     MessageMetaStrip(
                         message = message,
                         receiptSummary = receiptSummary,
+                        reactionDetails = reactionDetails,
                         compact = compact,
                         surfaceSpec = surfaceSpec
                     )
@@ -6229,6 +6256,7 @@ private fun MessageActionButton(
 private fun MessageMetaStrip(
     message: ChatBubble,
     receiptSummary: MessageReceiptSummary?,
+    reactionDetails: List<ReactionDetail>,
     compact: Boolean,
     surfaceSpec: WatchSurfaceSpec
 ) {
@@ -6354,6 +6382,14 @@ private fun MessageMetaStrip(
                 value = reactionSummary(message),
                 compact = compact
             )
+            if (reactionDetails.isNotEmpty()) {
+                MessageMetaRow(
+                    icon = Icons.Filled.VerifiedUser,
+                    label = "回应者",
+                    value = reactionDetailsLabel(reactionDetails),
+                    compact = compact
+                )
+            }
         }
         message.quotedMessage?.let { quote ->
             MessageMetaRow(
@@ -7704,6 +7740,23 @@ private fun reactionSummary(message: ChatBubble): String =
         .entries
         .joinToString(separator = " ") { (label, count) ->
             if (count > 1) "$label x$count" else label
+        }
+
+private fun reactionDetailsLabel(details: List<ReactionDetail>): String =
+    details
+        .distinct()
+        .let { uniqueDetails ->
+            val visibleDetails =
+                uniqueDetails
+                    .take(2)
+                    .joinToString(separator = "、") { detail ->
+                        "${detail.senderName}：${detail.reactionLabel}"
+                    }
+            if (uniqueDetails.size > 2) {
+                "$visibleDetails 等 ${uniqueDetails.size} 人"
+            } else {
+                visibleDetails
+            }
         }
 
 private fun receiptProgressLabel(
