@@ -295,7 +295,8 @@ private data class ChatBubble(
     val voiceAudioBytes: ByteArray? = null,
     val createdAtEpochMillis: Long = System.currentTimeMillis(),
     val expiresAtEpochMillis: Long? = null,
-    val reactions: Map<String, String> = emptyMap()
+    val reactions: Map<String, String> = emptyMap(),
+    val forwarded: Boolean = false
 )
 
 private data class ReactionChoice(
@@ -346,7 +347,8 @@ private data class PendingOutboundMessage(
     val text: String,
     val displayMessageId: String,
     val targetFingerprints: List<String>,
-    val quotedMessage: QuotedMessage? = null
+    val quotedMessage: QuotedMessage? = null,
+    val forwarded: Boolean = false
 )
 
 private data class PendingOutboundVoiceMessage(
@@ -400,7 +402,8 @@ private data class ChatPayload(
     val text: String,
     val groupId: String? = null,
     val groupName: String? = null,
-    val quote: QuotedMessage? = null
+    val quote: QuotedMessage? = null,
+    val forwarded: Boolean = false
 )
 
 private val defaultAvatars =
@@ -1996,7 +1999,8 @@ internal fun SpotChatApp(
                                         senderFingerprint = plain.senderFingerprint,
                                         messageId = plain.messageId,
                                         quotedMessage = payload.quote,
-                                        deliveryState = DeliveryState.Received
+                                        deliveryState = DeliveryState.Received,
+                                        forwarded = payload.forwarded
                                     )
                                 )
                                 trustState = "收到加密消息"
@@ -2282,7 +2286,8 @@ internal fun SpotChatApp(
         displayMessageId: String,
         targets: List<Pair<String, TransportPeer>>,
         requeueOnFailure: Boolean,
-        quotedMessage: QuotedMessage?
+        quotedMessage: QuotedMessage?,
+        forwarded: Boolean
     ) {
         trustState = "正在加密发送"
         coroutineScope.launch {
@@ -2293,7 +2298,8 @@ internal fun SpotChatApp(
                     encodeChatPayload(
                         conversation = conversation,
                         text = text,
-                        quotedMessage = quotedMessage
+                        quotedMessage = quotedMessage,
+                        forwarded = forwarded
                     )
                 val packetResult = runCatching { engine.encryptTextForPeer(peerFingerprint, payload) }
                 if (packetResult.isFailure) {
@@ -2361,7 +2367,8 @@ internal fun SpotChatApp(
                             text = text,
                             displayMessageId = displayMessageId,
                             targetFingerprints = conversation.memberFingerprints,
-                            quotedMessage = quotedMessage
+                            quotedMessage = quotedMessage,
+                            forwarded = forwarded
                         )
                     updateMessageState(displayMessageId, DeliveryState.Waiting)
                     trustState = "等待对方上线"
@@ -2388,7 +2395,8 @@ internal fun SpotChatApp(
             displayMessageId = queuedReply.displayMessageId,
             targets = targets,
             requeueOnFailure = true,
-            quotedMessage = queuedReply.quotedMessage
+            quotedMessage = queuedReply.quotedMessage,
+            forwarded = queuedReply.forwarded
         )
     }
 
@@ -2617,7 +2625,8 @@ internal fun SpotChatApp(
         conversation: ChatConversation,
         text: String,
         requeueWhenOffline: Boolean = true,
-        quotedMessage: QuotedMessage? = null
+        quotedMessage: QuotedMessage? = null,
+        forwarded: Boolean = false
     ) {
         val cleanText = text.trim().take(MAX_CUSTOM_MESSAGE_CHARS)
         if (cleanText.isBlank()) {
@@ -2636,6 +2645,7 @@ internal fun SpotChatApp(
                     timestamp = nowTime(),
                     messageId = displayMessageId,
                     quotedMessage = quotedMessage,
+                    forwarded = forwarded,
                     deliveryState =
                         if (requeueWhenOffline && conversation.memberFingerprints.isNotEmpty()) {
                             DeliveryState.Waiting
@@ -2651,7 +2661,8 @@ internal fun SpotChatApp(
                         text = cleanText,
                         displayMessageId = displayMessageId,
                         targetFingerprints = conversation.memberFingerprints,
-                        quotedMessage = quotedMessage
+                        quotedMessage = quotedMessage,
+                        forwarded = forwarded
                     )
                 trustState = "等待网络恢复"
             }
@@ -2685,7 +2696,8 @@ internal fun SpotChatApp(
                     timestamp = nowTime(),
                     messageId = displayMessageId,
                     deliveryState = DeliveryState.Waiting,
-                    quotedMessage = quotedMessage
+                    quotedMessage = quotedMessage,
+                    forwarded = forwarded
                 )
             )
             if (requeueWhenOffline) {
@@ -2695,7 +2707,8 @@ internal fun SpotChatApp(
                         text = cleanText,
                         displayMessageId = displayMessageId,
                         targetFingerprints = conversation.memberFingerprints,
-                        quotedMessage = quotedMessage
+                        quotedMessage = quotedMessage,
+                        forwarded = forwarded
                     )
             }
             return
@@ -2710,7 +2723,8 @@ internal fun SpotChatApp(
                 timestamp = nowTime(),
                 messageId = displayMessageId,
                 deliveryState = DeliveryState.Sending,
-                quotedMessage = quotedMessage
+                quotedMessage = quotedMessage,
+                forwarded = forwarded
             )
         )
 
@@ -2720,7 +2734,8 @@ internal fun SpotChatApp(
             displayMessageId = displayMessageId,
             targets = targets,
             requeueOnFailure = requeueWhenOffline,
-            quotedMessage = quotedMessage
+            quotedMessage = quotedMessage,
+            forwarded = forwarded
         )
     }
 
@@ -2739,7 +2754,8 @@ internal fun SpotChatApp(
         appSurface = AppSurface.Chat
         sendMessageToConversation(
             conversation = targetConversation,
-            text = message.forwardText()
+            text = message.forwardText(),
+            forwarded = true
         )
     }
 
@@ -2764,7 +2780,8 @@ internal fun SpotChatApp(
                             text = message.text,
                             displayMessageId = displayMessageId,
                             targetFingerprints = conversation.memberFingerprints,
-                            quotedMessage = message.quotedMessage
+                            quotedMessage = message.quotedMessage,
+                            forwarded = message.forwarded
                         )
 
                 ChatMessageKind.Voice ->
@@ -2788,7 +2805,8 @@ internal fun SpotChatApp(
                     displayMessageId = displayMessageId,
                     targets = targets,
                     requeueOnFailure = true,
-                    quotedMessage = message.quotedMessage
+                    quotedMessage = message.quotedMessage,
+                    forwarded = message.forwarded
                 )
 
             ChatMessageKind.Voice ->
@@ -6375,6 +6393,14 @@ private fun MessageMetaStrip(
                 compact = compact
             )
         }
+        if (message.forwarded) {
+            MessageMetaRow(
+                icon = Icons.AutoMirrored.Filled.Chat,
+                label = "来源",
+                value = "已转发",
+                compact = compact
+            )
+        }
         if (message.reactions.isNotEmpty()) {
             MessageMetaRow(
                 icon = Icons.Filled.StarRate,
@@ -7403,6 +7429,16 @@ private fun MessageCapsule(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            if (message.forwarded) {
+                Text(
+                    text = "已转发",
+                    color = foreground.copy(alpha = 0.72f),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             message.quotedMessage?.let { quote ->
                 Column(
                     modifier =
@@ -7692,10 +7728,11 @@ private fun conversationPreview(
     val basePreview = lastMessage?.let { message ->
         val text = message.previewText()
         val replyPrefix = if (message.quotedMessage == null) "" else "回复 "
+        val forwardPrefix = if (message.forwarded) "转发 " else ""
         when {
-            message.mine -> "我：$replyPrefix$text"
-            message.senderName != null -> "${message.senderName}：$replyPrefix$text"
-            else -> "$replyPrefix$text"
+            message.mine -> "我：$forwardPrefix$replyPrefix$text"
+            message.senderName != null -> "${message.senderName}：$forwardPrefix$replyPrefix$text"
+            else -> "$forwardPrefix$replyPrefix$text"
         }
     } ?: conversation.subtitle
     return if (retryableCount > 0) {
@@ -7822,19 +7859,12 @@ private fun ChatBubble.copyText(): String =
         ChatMessageKind.Voice -> "语音消息 · ${formatDuration(voiceDurationMs ?: 0L)}"
     }.trim()
 
-private fun ChatBubble.forwardText(): String {
-    val baseText =
-        if (kind == ChatMessageKind.Voice) {
-            "语音消息 · ${formatDuration(voiceDurationMs ?: 0L)}"
-        } else {
-            text
-        }
-    val quotePrefix =
-        quotedMessage?.let { quote ->
-            "引用 ${quote.senderName}：${quote.text}\n"
-        }.orEmpty()
-    return "转发：$quotePrefix$baseText"
-}
+private fun ChatBubble.forwardText(): String =
+    if (kind == ChatMessageKind.Voice) {
+        "语音消息 · ${formatDuration(voiceDurationMs ?: 0L)}"
+    } else {
+        text
+    }
 
 private fun ChatBubble.searchText(): String =
     buildList {
@@ -7843,6 +7873,9 @@ private fun ChatBubble.searchText(): String =
         quotedMessage?.let { quote ->
             add(quote.senderName)
             add(quote.text)
+        }
+        if (forwarded) {
+            add("转发 已转发")
         }
         add(deliveryState.label)
         add(if (encrypted) "加密" else "明文")
@@ -7879,7 +7912,8 @@ private fun DeliveryState.isReceiptState(): Boolean =
 private fun encodeChatPayload(
     conversation: ChatConversation,
     text: String,
-    quotedMessage: QuotedMessage?
+    quotedMessage: QuotedMessage?,
+    forwarded: Boolean
 ): String =
     chatPayloadJson.encodeToString(
         ChatPayload(
@@ -7902,7 +7936,8 @@ private fun encodeChatPayload(
                 } else {
                     null
                 },
-            quote = quotedMessage
+            quote = quotedMessage,
+            forwarded = forwarded
         )
     )
 
