@@ -336,6 +336,14 @@ private data class ReactionDetail(
     val reactionLabel: String
 )
 
+private data class ConversationContentSummary(
+    val voiceCount: Int,
+    val forwardedCount: Int,
+    val quotedCount: Int,
+    val reactedCount: Int,
+    val disappearingCount: Int
+)
+
 private data class OutgoingMessageRef(
     val conversationId: String,
     val displayMessageId: String,
@@ -5108,8 +5116,9 @@ private fun WatchChatInfoSurface(
                     memberPeers
                         .take(3)
                         .joinToString(separator = "、") { peer -> peer.deviceName }
-            }
+        }
         val messageCount = messages.count { message -> message.deliveryState != DeliveryState.System }
+        val contentSummary = conversationContentSummary(messages)
 
         WatchFrame(
             surfaceSpec = surfaceSpec,
@@ -5249,6 +5258,31 @@ private fun WatchChatInfoSurface(
                         )
                     }
 
+                    Row(
+                        modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f),
+                        horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        InfoMetricPill(
+                            label = "语音",
+                            value = contentSummary.voiceCount.coerceAtMost(99).toString(),
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                        InfoMetricPill(
+                            label = "转发",
+                            value = contentSummary.forwardedCount.coerceAtMost(99).toString(),
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                        InfoMetricPill(
+                            label = "回应",
+                            value = contentSummary.reactedCount.coerceAtMost(99).toString(),
+                            compact = compact,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
                     ChatInfoLine(
                         icon =
                             if (conversation.kind == ConversationKind.Group) {
@@ -5264,6 +5298,15 @@ private fun WatchChatInfoSurface(
                             },
                         value = memberSummary,
                         accent = accent,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec
+                    )
+
+                    ChatInfoLine(
+                        icon = Icons.AutoMirrored.Filled.Chat,
+                        label = "内容概览",
+                        value = contentSummary.summaryLabel(),
+                        accent = chatAmber,
                         compact = compact,
                         surfaceSpec = surfaceSpec
                     )
@@ -7849,6 +7892,29 @@ private fun disappearingActionLabel(mode: DisappearingMessageMode): String =
     } else {
         "限时改为${mode.next().label}"
     }
+
+private fun conversationContentSummary(messages: List<ChatBubble>): ConversationContentSummary {
+    val userMessages = messages.filter { message -> message.deliveryState != DeliveryState.System }
+    return ConversationContentSummary(
+        voiceCount = userMessages.count { message -> message.kind == ChatMessageKind.Voice },
+        forwardedCount = userMessages.count { message -> message.forwarded },
+        quotedCount = userMessages.count { message -> message.quotedMessage != null },
+        reactedCount = userMessages.count { message -> message.reactions.isNotEmpty() },
+        disappearingCount = userMessages.count { message -> message.expiresAtEpochMillis != null }
+    )
+}
+
+private fun ConversationContentSummary.summaryLabel(): String {
+    val parts =
+        listOf(
+            "语音 $voiceCount",
+            "转发 $forwardedCount",
+            "引用 $quotedCount",
+            "回应 $reactedCount",
+            "限时 $disappearingCount"
+        )
+    return parts.joinToString(separator = " · ")
+}
 
 private fun reactionLabel(reactionCode: String): String =
     reactionChoices.firstOrNull { reaction -> reaction.code == reactionCode }?.label ?: reactionCode
