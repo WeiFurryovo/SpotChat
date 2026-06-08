@@ -3554,6 +3554,10 @@ internal fun SpotChatApp(
         val conversationId =
             intent.getStringExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID) ?: return
         val conversation = conversationById(conversationId) ?: return
+        if (intent.action == SpotChatNotificationIntents.ACTION_MUTE_8H) {
+            setConversationMute(conversation, MutePreset.EightHours)
+            return
+        }
         clearConversationAlerts(conversation.id)
         if (intent.action == SpotChatNotificationIntents.ACTION_MARK_READ) {
             markConversationRead(conversation.id)

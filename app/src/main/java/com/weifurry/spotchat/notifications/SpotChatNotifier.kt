@@ -48,6 +48,8 @@ class SpotChatNotifier(context: Context) {
             baseIntent(SpotChatNotificationIntents.ACTION_REPLY, conversationId)
         val markReadIntent =
             baseIntent(SpotChatNotificationIntents.ACTION_MARK_READ, conversationId)
+        val muteIntent =
+            baseIntent(SpotChatNotificationIntents.ACTION_MUTE_8H, conversationId)
 
         val openPendingIntent =
             PendingIntent.getActivity(
@@ -68,6 +70,13 @@ class SpotChatNotifier(context: Context) {
                 appContext,
                 notificationId + MARK_READ_REQUEST_CODE_OFFSET,
                 markReadIntent,
+                pendingIntentFlags(mutable = false)
+            )
+        val mutePendingIntent =
+            PendingIntent.getActivity(
+                appContext,
+                notificationId + MUTE_REQUEST_CODE_OFFSET,
+                muteIntent,
                 pendingIntentFlags(mutable = false)
             )
         val remoteInput =
@@ -92,6 +101,13 @@ class SpotChatNotifier(context: Context) {
                 markReadPendingIntent
             )
                 .build()
+        val muteAction =
+            Notification.Action.Builder(
+                Icon.createWithResource(appContext, R.drawable.ic_spotchat),
+                "静音8小时",
+                mutePendingIntent
+            )
+                .build()
 
         val notificationText = messageText.take(MAX_NOTIFICATION_MESSAGE_CHARS)
 
@@ -107,6 +123,7 @@ class SpotChatNotifier(context: Context) {
                 .setNumber(unreadCount)
                 .addAction(replyAction)
                 .addAction(markReadAction)
+                .addAction(muteAction)
                 .build()
 
         notificationManager.notify(notificationId, notification)
@@ -198,6 +215,7 @@ class SpotChatNotifier(context: Context) {
         private const val NOTIFICATION_ID_MASK = 0x000F_FFFF
         private const val REPLY_REQUEST_CODE_OFFSET = 10_000
         private const val MARK_READ_REQUEST_CODE_OFFSET = 20_000
+        private const val MUTE_REQUEST_CODE_OFFSET = 30_000
         private const val MAX_NOTIFICATION_MESSAGE_CHARS = 160
     }
 }
