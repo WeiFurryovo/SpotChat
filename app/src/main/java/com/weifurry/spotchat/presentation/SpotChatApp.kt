@@ -3725,6 +3725,29 @@ internal fun SpotChatApp(
         trustState = "正在重发 ${retryableMessages.size} 条消息"
     }
 
+    fun clearRetryableMessages(conversation: ChatConversation): Int {
+        val messages = messagesForConversation(conversation.id)
+        val retryableMessages = messages.filter { message -> message.canRetry() }
+        if (retryableMessages.isEmpty()) {
+            return 0
+        }
+        val retryableIds = retryableMessages.map { message -> message.stableStarId() }.toSet()
+        conversationMessages[conversation.id] =
+            messages.filterNot { message -> message.stableStarId() in retryableIds }
+        retryableMessages.forEach { message ->
+            removeMessageCaches(conversation.id, message)
+        }
+        selectedActionMessage =
+            selectedActionMessage?.takeUnless { message -> message.stableStarId() in retryableIds }
+        pendingForwardMessage =
+            pendingForwardMessage?.takeUnless { message -> message.stableStarId() in retryableIds }
+        pendingMessageEdit =
+            pendingMessageEdit?.takeUnless { edit ->
+                retryableMessages.any { message -> message.messageId == edit.messageId }
+            }
+        return retryableMessages.size
+    }
+
     fun toggleVoiceRecording() {
         if (
             context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
@@ -4334,6 +4357,15 @@ internal fun SpotChatApp(
                                     } else {
                                         "正在重发未发送聊天"
                                     }
+                            }
+                        },
+                        onClearRetryableVisible = {
+                            val clearedMessageCount =
+                                visibleConversationList.sumOf { conversation ->
+                                    clearRetryableMessages(conversation)
+                                }
+                            if (clearedMessageCount > 0) {
+                                trustState = "已清除 $clearedMessageCount 条未发送"
                             }
                         },
                         onSendVisibleDrafts = {
@@ -5311,6 +5343,7 @@ private fun WatchConversationListSurface(
     onMarkVisibleRead: () -> Unit,
     onFavoriteMentionedVisible: () -> Unit,
     onRetryVisible: () -> Unit,
+    onClearRetryableVisible: () -> Unit,
     onSendVisibleDrafts: () -> Unit,
     onClearVisibleDrafts: () -> Unit,
     onCopyVisibleStarredSummary: () -> Unit,
@@ -5618,6 +5651,16 @@ private fun WatchConversationListSurface(
                                 compact = compact,
                                 onClick = onRetryVisible
                             )
+                            if (activeFilter == ChatListFilter.Retryable) {
+                                MessageActionButton(
+                                    icon = Icons.Filled.Delete,
+                                    text = "清除未发送",
+                                    selected = true,
+                                    destructive = true,
+                                    compact = compact,
+                                    onClick = onClearRetryableVisible
+                                )
+                            }
                         }
                     }
 
