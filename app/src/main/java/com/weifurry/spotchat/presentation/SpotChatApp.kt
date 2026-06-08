@@ -1544,6 +1544,18 @@ internal fun SpotChatApp(
         }
     }
 
+    fun markArchivedChatsRead(conversations: List<ChatConversation>) {
+        val unreadArchivedConversations =
+            conversations.filter { conversation -> (unreadCounts[conversation.id] ?: 0) > 0 }
+        unreadArchivedConversations.forEach { conversation ->
+            clearConversationAlerts(conversation.id)
+            markConversationRead(conversation.id)
+        }
+        if (unreadArchivedConversations.isNotEmpty()) {
+            trustState = "归档聊天已读"
+        }
+    }
+
     fun toggleDisappearingMessages(conversation: ChatConversation) {
         val nextMode =
             (disappearingModesByConversation[conversation.id] ?: DisappearingMessageMode.Off).next()
@@ -3087,6 +3099,9 @@ internal fun SpotChatApp(
                             pinnedConversationIds = pinnedConversationIds,
                             isConversationMuted = ::isConversationMuted,
                             onNavigateBack = dismissOverlay,
+                            onMarkAllRead = {
+                                markArchivedChatsRead(archivedConversationList)
+                            },
                             onOpenConversation = ::openConversation
                         )
                     }
@@ -4527,6 +4542,7 @@ private fun WatchArchivedChatsSurface(
     pinnedConversationIds: Map<String, Boolean>,
     isConversationMuted: (String) -> Boolean,
     onNavigateBack: () -> Unit,
+    onMarkAllRead: () -> Unit,
     onOpenConversation: (ChatConversation) -> Unit
 ) {
     BoxWithConstraints(
@@ -4583,6 +4599,20 @@ private fun WatchArchivedChatsSurface(
                         surfaceSpec = surfaceSpec,
                         onNavigateBack = onNavigateBack
                     )
+
+                    if (archivedUnreadCount > 0) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(if (surfaceSpec.isRound) 0.82f else 0.94f)
+                        ) {
+                            MessageActionButton(
+                                icon = Icons.Filled.DoneAll,
+                                text = "全部标为已读",
+                                selected = true,
+                                compact = compact,
+                                onClick = onMarkAllRead
+                            )
+                        }
+                    }
 
                     if (conversations.isEmpty()) {
                         SearchEmptyState(
