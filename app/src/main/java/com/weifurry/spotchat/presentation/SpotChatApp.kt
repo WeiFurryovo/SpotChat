@@ -584,6 +584,7 @@ private const val MAX_GLOBAL_SEARCH_RESULTS = 20
 private const val MAX_STARRED_RESULTS = 24
 private const val MAX_TRANSCRIPT_MESSAGES = 80
 private const val MAX_CONTENT_SUMMARY_MESSAGES = 40
+private const val MAX_NOTIFICATION_CONFIRMATION_PREVIEW_CHARS = 24
 private const val MAX_QUOTED_MESSAGE_CHARS = 72
 private const val DISAPPEARING_SWEEP_INTERVAL_MS = 15_000L
 private const val MUTE_SWEEP_INTERVAL_MS = 60_000L
@@ -3466,6 +3467,12 @@ internal fun SpotChatApp(
             ?.ifBlank { "暂无消息预览" }
             ?: "暂无消息预览"
 
+    fun notificationReplyPreview(replyText: String): String =
+        replyText
+            .trim()
+            .replace('\n', ' ')
+            .take(MAX_NOTIFICATION_CONFIRMATION_PREVIEW_CHARS)
+
     fun openConversationFromWearEntry(
         conversation: ChatConversation,
         source: String,
@@ -5014,16 +5021,28 @@ internal fun SpotChatApp(
                 )
         if (intent.action == SpotChatNotificationIntents.ACTION_MUTE_8H) {
             setConversationMute(conversation, MutePreset.EightHours)
+            showActionConfirmation(
+                title = "已静音 ${conversation.title}",
+                detail = "8 小时内不再提醒"
+            )
             return
         }
         clearConversationAlerts(conversation.id)
         if (intent.action == SpotChatNotificationIntents.ACTION_NOTIFICATION_DISMISSED) {
             trustState = "已清除 ${conversation.title} 的通知"
+            showActionConfirmation(
+                title = "已清除通知",
+                detail = conversation.title
+            )
             return
         }
         if (intent.action == SpotChatNotificationIntents.ACTION_MARK_READ) {
             markConversationRead(conversation.id)
             trustState = "已标为已读"
+            showActionConfirmation(
+                title = "已标为已读",
+                detail = conversation.title
+            )
             return
         }
         val notificationAction =
@@ -5048,6 +5067,10 @@ internal fun SpotChatApp(
             if (replyText.isNotBlank()) {
                 sendMessageToConversation(conversation, replyText)
                 trustState = "已快捷回复 ${conversation.title}"
+                showActionConfirmation(
+                    title = "已快捷回复",
+                    detail = "${conversation.title} · ${notificationReplyPreview(replyText)}"
+                )
             }
             return
         }
@@ -5065,6 +5088,11 @@ internal fun SpotChatApp(
                 .orEmpty()
         if (replyText.isNotBlank()) {
             sendMessageToConversation(conversation, replyText)
+            trustState = "已回复 ${conversation.title}"
+            showActionConfirmation(
+                title = "已发送回复",
+                detail = "${conversation.title} · ${notificationReplyPreview(replyText)}"
+            )
         }
     }
 
@@ -5162,6 +5190,10 @@ internal fun SpotChatApp(
         clearConversationAlerts(conversation.id)
         sendMessageToConversation(conversation, replyText)
         trustState = "已快捷回复 ${conversation.title}"
+        showActionConfirmation(
+            title = "已快捷回复",
+            detail = "${conversation.title} · ${notificationReplyPreview(replyText)}"
+        )
     }
 
     LaunchedEffect(notificationIntent, trustedPeers.size) {
