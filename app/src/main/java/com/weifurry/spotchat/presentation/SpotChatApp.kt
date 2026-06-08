@@ -817,6 +817,7 @@ internal fun SpotChatApp(
     val blockedPeerFingerprints = remember { mutableStateMapOf<String, Boolean>() }
     val readReceiptsDisabledByConversation = remember { mutableStateMapOf<String, Boolean>() }
     val frequentlyForwardedAllowedByConversation = remember { mutableStateMapOf<String, Boolean>() }
+    val announcementOnlyByConversation = remember { mutableStateMapOf<String, Boolean>() }
     val starredMessageIdsByConversation = remember { mutableStateMapOf<String, Set<String>>() }
     val pinnedMessageIdsByConversation = remember { mutableStateMapOf<String, String>() }
     val disappearingModesByConversation = remember { mutableStateMapOf<String, DisappearingMessageMode>() }
@@ -1195,19 +1196,33 @@ internal fun SpotChatApp(
             "禁止多次转发"
         }
 
+    fun isAnnouncementOnly(conversationId: String): Boolean =
+        announcementOnlyByConversation[conversationId] == true
+
+    fun groupPostingPolicyLabel(conversationId: String): String =
+        if (isAnnouncementOnly(conversationId)) {
+            "公告模式"
+        } else {
+            "成员可发言"
+        }
+
+    fun canSendToConversation(conversation: ChatConversation): Boolean =
+        conversation.id != NEARBY_GROUP_CONVERSATION_ID || !isAnnouncementOnly(conversation.id)
+
     fun conversationById(conversationId: String): ChatConversation? {
         if (conversationId == NEARBY_GROUP_CONVERSATION_ID) {
             val memberFingerprints = trustedPeers.map { peer -> peer.fingerprint }
             val policyLabel = frequentlyForwardedPolicyLabel(NEARBY_GROUP_CONVERSATION_ID)
+            val postingPolicyLabel = groupPostingPolicyLabel(NEARBY_GROUP_CONVERSATION_ID)
             return ChatConversation(
                 id = NEARBY_GROUP_CONVERSATION_ID,
                 kind = ConversationKind.Group,
                 title = NEARBY_GROUP_TITLE,
                 subtitle =
                     if (trustedPeers.isEmpty()) {
-                        "$nearbyGroupAbout · 等待成员 · $policyLabel"
+                        "$nearbyGroupAbout · 等待成员 · $postingPolicyLabel · $policyLabel"
                     } else {
-                        "$nearbyGroupAbout · ${trustedPeers.size} 位成员 · ${groupReachabilityText(memberFingerprints)} · $policyLabel"
+                        "$nearbyGroupAbout · ${trustedPeers.size} 位成员 · ${groupReachabilityText(memberFingerprints)} · $postingPolicyLabel · $policyLabel"
                     },
                 memberFingerprints = memberFingerprints,
                 themeColor = conversationThemeColors[NEARBY_GROUP_CONVERSATION_ID]
@@ -1375,6 +1390,44 @@ internal fun SpotChatApp(
                 return
             }
         }
+    }
+
+    fun clearPendingOutboundForConversation(
+        conversationId: String,
+        markFailed: Boolean = false
+    ): Int {
+        val pendingTextMessageIds =
+            pendingOutboundMessages
+                .filterValues { message -> message.conversationId == conversationId }
+                .keys
+                .toList()
+        val pendingVoiceMessageIds =
+            pendingOutboundVoiceMessages
+                .filterValues { message -> message.conversationId == conversationId }
+                .keys
+                .toList()
+        val pendingMessageIds = (pendingTextMessageIds + pendingVoiceMessageIds).distinct()
+        if (markFailed) {
+            pendingMessageIds.forEach { messageId ->
+                updateMessageState(messageId, DeliveryState.Failed)
+            }
+        }
+        pendingTextMessageIds.forEach { messageId -> pendingOutboundMessages.remove(messageId) }
+        pendingVoiceMessageIds.forEach { messageId -> pendingOutboundVoiceMessages.remove(messageId) }
+        if (pendingMessageIds.isNotEmpty()) {
+            outgoingMessages
+                .filterValues { message -> message.displayMessageId in pendingMessageIds }
+                .keys
+                .toList()
+                .forEach { packetMessageId -> outgoingMessages.remove(packetMessageId) }
+            pendingMessageIds.forEach { messageId ->
+                deliveredCounts.remove(messageId)
+                deliveredReceiptsByMessage.remove(messageId)
+                readCounts.remove(messageId)
+                readReceiptsByMessage.remove(messageId)
+            }
+        }
+        return pendingMessageIds.size
     }
 
     fun notifyIncomingMessage(
@@ -1598,6 +1651,34 @@ internal fun SpotChatApp(
                     "群聊已允许多次转发消息"
                 } else {
                     "群聊已禁止多次转发消息"
+                },
+            encrypted = true,
+            conversationId = conversation.id
+        )
+    }
+
+    fun toggleAnnouncementOnly(conversation: ChatConversation) {
+        if (conversation.id != NEARBY_GROUP_CONVERSATION_ID) {
+            trustState = "仅群聊支持公告模式"
+            return
+        }
+        val announcementOnly = !isAnnouncementOnly(conversation.id)
+        announcementOnlyByConversation[conversation.id] = announcementOnly
+        trustState = groupPostingPolicyLabel(conversation.id)
+        if (announcementOnly) {
+            draftsByConversation.remove(conversation.id)
+            clearPendingOutboundForConversation(conversation.id, markFailed = true)
+            if (isRecordingVoice && activeConversationId == conversation.id) {
+                voiceRecorder.cancel()
+                isRecordingVoice = false
+            }
+        }
+        appendSystemMessage(
+            text =
+                if (announcementOnly) {
+                    "群聊已开启公告模式，本机不会发送普通消息"
+                } else {
+                    "群聊已关闭公告模式，成员可继续发言"
                 },
             encrypted = true,
             conversationId = conversation.id
@@ -2734,6 +2815,7 @@ internal fun SpotChatApp(
                 archivedConversationIds = archivedConversationIds,
                 lockedConversationIds = lockedConversationIds,
                 frequentlyForwardedAllowedByConversation = frequentlyForwardedAllowedByConversation,
+                announcementOnlyByConversation = announcementOnlyByConversation,
                 starredMessageIdsByConversation = starredMessageIdsByConversation,
                 isConversationMuted = ::isConversationMuted,
                 hasRetryableMessages = ::hasRetryableMessages
@@ -2847,6 +2929,7 @@ internal fun SpotChatApp(
                 pinnedConversationIds = pinnedConversationIds,
                 readReceiptsDisabledByConversation = readReceiptsDisabledByConversation,
                 frequentlyForwardedAllowedByConversation = frequentlyForwardedAllowedByConversation,
+                announcementOnlyByConversation = announcementOnlyByConversation,
                 isConversationMuted = ::isConversationMuted
             )
         if (summary.isBlank()) {
@@ -3635,6 +3718,12 @@ internal fun SpotChatApp(
         forwarded: Boolean,
         forwardCount: Int
     ) {
+        if (!canSendToConversation(conversation)) {
+            pendingOutboundMessages.remove(displayMessageId)
+            updateMessageState(displayMessageId, DeliveryState.Failed)
+            trustState = "公告模式下不能发送消息"
+            return
+        }
         trustState = "正在加密发送"
         coroutineScope.launch {
             var sentCount = 0
@@ -3830,6 +3919,12 @@ internal fun SpotChatApp(
         targets: List<Pair<String, TransportPeer>>,
         requeueOnFailure: Boolean
     ) {
+        if (!canSendToConversation(conversation)) {
+            pendingOutboundVoiceMessages.remove(displayMessageId)
+            updateMessageState(displayMessageId, DeliveryState.Failed)
+            trustState = "公告模式下不能发送语音"
+            return
+        }
         trustState = "正在加密发送语音"
         coroutineScope.launch {
             var sentCount = 0
@@ -3944,6 +4039,11 @@ internal fun SpotChatApp(
         conversation: ChatConversation,
         recordedVoice: RecordedVoiceMessage
     ) {
+        if (!canSendToConversation(conversation)) {
+            trustState = "公告模式下不能发送语音"
+            recordedVoice.file.delete()
+            return
+        }
         if (isConversationBlocked(conversation)) {
             trustState = "已阻止此联系人"
             recordedVoice.file.delete()
@@ -4039,6 +4139,11 @@ internal fun SpotChatApp(
         }
 
         draftsByConversation.remove(conversation.id)
+
+        if (!canSendToConversation(conversation)) {
+            trustState = "公告模式下不能发送消息"
+            return
+        }
 
         if (isConversationBlocked(conversation)) {
             trustState = "已阻止此联系人"
@@ -4192,6 +4297,11 @@ internal fun SpotChatApp(
             trustState = "草稿已清除"
             return
         }
+        if (!canSendToConversation(conversation)) {
+            draftsByConversation.remove(conversation.id)
+            trustState = "公告模式下不保存草稿"
+            return
+        }
         draftsByConversation[conversation.id] = ConversationDraft(draftText)
         conversationUpdateSequence += 1
         conversationUpdateOrder[conversation.id] = conversationUpdateSequence
@@ -4200,6 +4310,10 @@ internal fun SpotChatApp(
 
     fun sendDraft(conversation: ChatConversation) {
         val draft = draftsByConversation[conversation.id] ?: return
+        if (!canSendToConversation(conversation)) {
+            trustState = "公告模式下不能发送草稿"
+            return
+        }
         draftsByConversation.remove(conversation.id)
         activeConversationId = conversation.id
         sendMessageToConversation(conversation, draft.text)
@@ -4277,6 +4391,11 @@ internal fun SpotChatApp(
                 }
         if (currentMessage == null) {
             trustState = "消息不可编辑"
+            return
+        }
+        if (!canSendToConversation(conversation)) {
+            updateMessageState(edit.messageId, DeliveryState.Failed)
+            trustState = "公告模式下不能编辑重发"
             return
         }
         val oldStableId = currentMessage.stableStarId()
@@ -4360,6 +4479,10 @@ internal fun SpotChatApp(
             trustState = "只能编辑未发送文字"
             return false
         }
+        if (!canSendToConversation(conversation)) {
+            trustState = "公告模式下不能编辑重发"
+            return false
+        }
         pendingMessageEdit =
             PendingMessageEdit(
                 conversationId = conversation.id,
@@ -4373,6 +4496,13 @@ internal fun SpotChatApp(
         message: ChatBubble
     ) {
         val displayMessageId = message.messageId ?: return
+        if (!canSendToConversation(conversation)) {
+            pendingOutboundMessages.remove(displayMessageId)
+            pendingOutboundVoiceMessages.remove(displayMessageId)
+            updateMessageState(displayMessageId, DeliveryState.Failed)
+            trustState = "公告模式下不能重发"
+            return
+        }
         if (isConversationBlocked(conversation)) {
             updateMessageState(displayMessageId, DeliveryState.Failed)
             trustState = "已阻止此联系人"
@@ -4445,6 +4575,11 @@ internal fun SpotChatApp(
     }
 
     fun retryConversationMessages(conversation: ChatConversation) {
+        if (!canSendToConversation(conversation)) {
+            clearPendingOutboundForConversation(conversation.id, markFailed = true)
+            trustState = "公告模式下不能重发"
+            return
+        }
         val retryableMessages = messagesForConversation(conversation.id).filter { message -> message.canRetry() }
         if (retryableMessages.isEmpty()) {
             trustState = "没有可重发消息"
@@ -4480,6 +4615,31 @@ internal fun SpotChatApp(
     }
 
     fun toggleVoiceRecording() {
+        val conversation = activeConversation()
+        if (isRecordingVoice) {
+            runCatching {
+                voiceRecorder.stop()
+            }.onSuccess { recordedVoice ->
+                isRecordingVoice = false
+                if (recordedVoice == null) {
+                    trustState = "语音太短"
+                } else if (!canSendToConversation(conversation)) {
+                    recordedVoice.file.delete()
+                    trustState = "公告模式下已取消录音"
+                } else {
+                    sendVoiceToConversation(conversation, recordedVoice)
+                }
+            }.onFailure { error ->
+                isRecordingVoice = false
+                voiceRecorder.cancel()
+                trustState = error.readableMessage("无法完成录音")
+            }
+            return
+        }
+        if (!canSendToConversation(conversation)) {
+            trustState = "公告模式下不能录语音"
+            return
+        }
         if (
             context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
@@ -4499,21 +4659,6 @@ internal fun SpotChatApp(
                 trustState = error.readableMessage("无法开始录音")
             }
             return
-        }
-
-        runCatching {
-            voiceRecorder.stop()
-        }.onSuccess { recordedVoice ->
-            isRecordingVoice = false
-            if (recordedVoice == null) {
-                trustState = "语音太短"
-            } else {
-                sendVoiceToConversation(activeConversation(), recordedVoice)
-            }
-        }.onFailure { error ->
-            isRecordingVoice = false
-            voiceRecorder.cancel()
-            trustState = error.readableMessage("无法完成录音")
         }
     }
 
@@ -4795,6 +4940,14 @@ internal fun SpotChatApp(
 
     fun openCustomMessageInput(saveAsDraft: Boolean = false) {
         val conversation = activeConversation()
+        if (!saveAsDraft && pendingMessageEdit == null && pendingDirectReply == null && !canSendToConversation(conversation)) {
+            trustState = "公告模式下不能输入消息"
+            return
+        }
+        if (saveAsDraft && !canSendToConversation(conversation)) {
+            trustState = "公告模式下不保存草稿"
+            return
+        }
         draftSaveConversationId = if (saveAsDraft) conversation.id else null
         val remoteInputBuilder =
             RemoteInput.Builder(CUSTOM_MESSAGE_REMOTE_INPUT_KEY)
@@ -5485,6 +5638,7 @@ internal fun SpotChatApp(
                             starredMessageIds = starredMessageIds(selectedConversation.id),
                             draft = draftsByConversation[selectedConversation.id],
                             isBlocked = isConversationBlocked(selectedConversation),
+                            isAnnouncementOnly = isAnnouncementOnly(selectedConversation.id),
                             onSelectMode = ::selectMode,
                             onConfirmPairing = ::confirmPairing,
                             onRejectPairing = ::rejectPairing,
@@ -5550,6 +5704,7 @@ internal fun SpotChatApp(
                             isLocked = isConversationLocked(selectedConversation.id),
                             readReceiptsEnabled = areReadReceiptsEnabled(selectedConversation.id),
                             allowsFrequentlyForwarded = allowsFrequentlyForwarded(selectedConversation.id),
+                            isAnnouncementOnly = isAnnouncementOnly(selectedConversation.id),
                             unreadCount = unreadCounts[selectedConversation.id] ?: 0,
                             starredCount = starredMessageIds(selectedConversation.id).size,
                             retryableCount =
@@ -5628,6 +5783,9 @@ internal fun SpotChatApp(
                             },
                             onToggleFrequentlyForwarded = {
                                 toggleFrequentlyForwardedAllowed(selectedConversation)
+                            },
+                            onToggleAnnouncementOnly = {
+                                toggleAnnouncementOnly(selectedConversation)
                             },
                             onToggleUnread = {
                                 toggleConversationUnread(selectedConversation)
@@ -8303,6 +8461,7 @@ private fun WatchChatInfoSurface(
     isLocked: Boolean,
     readReceiptsEnabled: Boolean,
     allowsFrequentlyForwarded: Boolean,
+    isAnnouncementOnly: Boolean,
     unreadCount: Int,
     starredCount: Int,
     retryableCount: Int,
@@ -8325,6 +8484,7 @@ private fun WatchChatInfoSurface(
     onToggleLocked: () -> Unit,
     onToggleReadReceipts: () -> Unit,
     onToggleFrequentlyForwarded: () -> Unit,
+    onToggleAnnouncementOnly: () -> Unit,
     onToggleUnread: () -> Unit,
     onRetryFailedMessages: () -> Unit,
     onToggleDisappearingMessages: () -> Unit,
@@ -8373,6 +8533,7 @@ private fun WatchChatInfoSurface(
                 readReceiptsEnabled = readReceiptsEnabled,
                 disappearingMode = disappearingMode,
                 allowsFrequentlyForwarded = allowsFrequentlyForwarded,
+                isAnnouncementOnly = isAnnouncementOnly,
                 isGroup = conversation.kind == ConversationKind.Group
             )
 
@@ -8619,6 +8780,22 @@ private fun WatchChatInfoSurface(
 
                     if (conversation.kind == ConversationKind.Group) {
                         ChatInfoLine(
+                            icon = Icons.Filled.Group,
+                            label = "发言权限",
+                            value =
+                                if (isAnnouncementOnly) {
+                                    "公告模式"
+                                } else {
+                                    "成员可发言"
+                                },
+                            accent = if (isAnnouncementOnly) chatAmber else chatGreen,
+                            compact = compact,
+                            surfaceSpec = surfaceSpec
+                        )
+                    }
+
+                    if (conversation.kind == ConversationKind.Group) {
+                        ChatInfoLine(
                             icon = Icons.AutoMirrored.Filled.Chat,
                             label = "多次转发",
                             value =
@@ -8768,6 +8945,18 @@ private fun WatchChatInfoSurface(
                             )
                         }
                         if (conversation.kind == ConversationKind.Group) {
+                            MessageActionButton(
+                                icon = Icons.Filled.Group,
+                                text =
+                                    if (isAnnouncementOnly) {
+                                        "关闭公告模式"
+                                    } else {
+                                        "开启公告模式"
+                                    },
+                                selected = isAnnouncementOnly,
+                                compact = compact,
+                                onClick = onToggleAnnouncementOnly
+                            )
                             MessageActionButton(
                                 icon = Icons.AutoMirrored.Filled.Chat,
                                 text =
@@ -12108,6 +12297,7 @@ private fun WatchChatSurface(
     starredMessageIds: Set<String>,
     draft: ConversationDraft?,
     isBlocked: Boolean,
+    isAnnouncementOnly: Boolean,
     onSelectMode: (TransportMode) -> Unit,
     onConfirmPairing: () -> Unit,
     onRejectPairing: () -> Unit,
@@ -12211,6 +12401,11 @@ private fun WatchChatSurface(
 
                     if (isBlocked) {
                         BlockedReplyNotice(
+                            surfaceSpec = surfaceSpec,
+                            height = quickReplyHeight
+                        )
+                    } else if (isAnnouncementOnly) {
+                        AnnouncementOnlyNotice(
                             surfaceSpec = surfaceSpec,
                             height = quickReplyHeight
                         )
@@ -12675,6 +12870,43 @@ private fun BlockedReplyNotice(
 }
 
 @Composable
+private fun AnnouncementOnlyNotice(
+    surfaceSpec: WatchSurfaceSpec,
+    height: Dp
+) {
+    Row(
+        modifier =
+            Modifier
+                .padding(bottom = surfaceSpec.chatBottomPadding)
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.86f else 0.94f)
+                .height(height + 4.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(chatAmber.copy(alpha = 0.18f))
+                .border(1.dp, chatAmber.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                .padding(horizontal = 9.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Group,
+            contentDescription = "公告模式",
+            tint = chatAmber,
+            modifier = Modifier.size(if (surfaceSpec.compact) 13.dp else 15.dp)
+        )
+        Spacer(modifier = Modifier.width(7.dp))
+        Text(
+            text = "公告模式",
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = if (surfaceSpec.compact) 11.sp else 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
 private fun QuickReplyChip(
     text: String,
     height: Dp,
@@ -12962,6 +13194,7 @@ private fun chatManagementInsights(
     readReceiptsEnabled: Boolean,
     disappearingMode: DisappearingMessageMode,
     allowsFrequentlyForwarded: Boolean,
+    isAnnouncementOnly: Boolean,
     isGroup: Boolean
 ): List<ChatManagementInsight> {
     val insights = mutableListOf<ChatManagementInsight>()
@@ -13000,6 +13233,15 @@ private fun chatManagementInsights(
                 label = "转发限制",
                 value = "多次转发会被拦截",
                 accent = chatRose
+            )
+    }
+    if (isGroup && isAnnouncementOnly) {
+        insights +=
+            ChatManagementInsight(
+                icon = Icons.Filled.Group,
+                label = "发言权限",
+                value = "公告模式",
+                accent = chatAmber
             )
     }
     if (starredCount > 0) {
@@ -13627,6 +13869,7 @@ private fun chatManagementSummaryText(
     archivedConversationIds: Map<String, Boolean>,
     lockedConversationIds: Map<String, Boolean>,
     frequentlyForwardedAllowedByConversation: Map<String, Boolean>,
+    announcementOnlyByConversation: Map<String, Boolean>,
     starredMessageIdsByConversation: Map<String, Set<String>>,
     isConversationMuted: (String) -> Boolean,
     hasRetryableMessages: (String) -> Boolean
@@ -13644,6 +13887,11 @@ private fun chatManagementSummaryText(
         conversations.count { conversation ->
             conversation.kind == ConversationKind.Group &&
                 frequentlyForwardedAllowedByConversation[conversation.id] == false
+        }
+    val announcementOnlyGroupCount =
+        conversations.count { conversation ->
+            conversation.kind == ConversationKind.Group &&
+                announcementOnlyByConversation[conversation.id] == true
         }
     val draftConversationCount =
         conversations.count { conversation -> draftsByConversation[conversation.id] != null }
@@ -13672,6 +13920,7 @@ private fun chatManagementSummaryText(
         appendLine("已归档：$archivedConversationCount 个")
         appendLine("静音：$mutedConversationCount 个")
         appendLine("锁定：$lockedConversationCount 个")
+        appendLine("公告模式：$announcementOnlyGroupCount 个群聊")
         appendLine("多次转发限制：$restrictedForwardGroupCount 个群聊")
         appendLine()
         val activeManagementConversations =
@@ -13685,6 +13934,10 @@ private fun chatManagementSummaryText(
                     archivedConversationIds[conversation.id] == true ||
                     isConversationMuted(conversation.id) ||
                     lockedConversationIds[conversation.id] == true ||
+                    (
+                        conversation.kind == ConversationKind.Group &&
+                            announcementOnlyByConversation[conversation.id] == true
+                    ) ||
                     (
                         conversation.kind == ConversationKind.Group &&
                             frequentlyForwardedAllowedByConversation[conversation.id] == false
@@ -13731,6 +13984,12 @@ private fun chatManagementSummaryText(
                         }
                         if (lockedConversationIds[conversation.id] == true) {
                             add("锁定")
+                        }
+                        if (
+                            conversation.kind == ConversationKind.Group &&
+                            announcementOnlyByConversation[conversation.id] == true
+                        ) {
+                            add("公告模式")
                         }
                         if (
                             conversation.kind == ConversationKind.Group &&
@@ -13933,6 +14192,7 @@ private fun groupListSummaryText(
     pinnedConversationIds: Map<String, Boolean>,
     readReceiptsDisabledByConversation: Map<String, Boolean>,
     frequentlyForwardedAllowedByConversation: Map<String, Boolean>,
+    announcementOnlyByConversation: Map<String, Boolean>,
     isConversationMuted: (String) -> Boolean
 ): String {
     val groupConversations =
@@ -13950,6 +14210,10 @@ private fun groupListSummaryText(
         groupConversations.count { conversation ->
             frequentlyForwardedAllowedByConversation[conversation.id] == false
         }
+    val announcementOnlyGroupCount =
+        groupConversations.count { conversation ->
+            announcementOnlyByConversation[conversation.id] == true
+        }
     val memberCount =
         groupConversations.sumOf { conversation -> conversation.memberFingerprints.size }
     return buildString {
@@ -13959,6 +14223,7 @@ private fun groupListSummaryText(
         appendLine("未读：$unreadConversationCount 个")
         appendLine("静音：$mutedConversationCount 个")
         appendLine("草稿：$draftConversationCount 个")
+        appendLine("公告模式：$announcementOnlyGroupCount 个")
         appendLine("多次转发限制：$restrictedForwardGroupCount 个")
         appendLine()
         groupConversations.forEachIndexed { index, conversation ->
@@ -13985,6 +14250,9 @@ private fun groupListSummaryText(
                     }
                     if (readReceiptsDisabledByConversation[conversation.id] == true) {
                         add("回执关闭")
+                    }
+                    if (announcementOnlyByConversation[conversation.id] == true) {
+                        add("公告模式")
                     }
                     if (frequentlyForwardedAllowedByConversation[conversation.id] == false) {
                         add("禁止多次转发")
