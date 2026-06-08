@@ -4784,6 +4784,20 @@ internal fun SpotChatApp(
         }
         openConversation(conversation)
 
+        if (intent.action == SpotChatNotificationIntents.ACTION_QUICK_REPLY) {
+            val replyText =
+                intent
+                    .getStringExtra(SpotChatNotificationIntents.EXTRA_QUICK_REPLY_TEXT)
+                    ?.trim()
+                    ?.take(MAX_CUSTOM_MESSAGE_CHARS)
+                    .orEmpty()
+            if (replyText.isNotBlank()) {
+                sendMessageToConversation(conversation, replyText)
+                trustState = "已快捷回复 ${conversation.title}"
+            }
+            return
+        }
+
         if (intent.action != SpotChatNotificationIntents.ACTION_REPLY) {
             return
         }

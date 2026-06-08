@@ -50,6 +50,17 @@ class SpotChatNotifier(context: Context) {
             baseIntent(SpotChatNotificationIntents.ACTION_MARK_READ, conversationId)
         val muteIntent =
             baseIntent(SpotChatNotificationIntents.ACTION_MUTE_8H, conversationId)
+        val quickReplyActions =
+            SpotChatNotificationIntents.quickReplies
+                .take(MAX_INLINE_QUICK_REPLY_ACTIONS)
+                .mapIndexed { index, reply ->
+                    quickReplyAction(
+                        conversationId = conversationId,
+                        notificationId = notificationId,
+                        index = index,
+                        reply = reply
+                    )
+                }
 
         val openPendingIntent =
             PendingIntent.getActivity(
@@ -93,6 +104,7 @@ class SpotChatNotifier(context: Context) {
             )
                 .addRemoteInput(remoteInput)
                 .setAllowGeneratedReplies(true)
+                .setSemanticAction(Notification.Action.SEMANTIC_ACTION_REPLY)
                 .build()
         val markReadAction =
             Notification.Action.Builder(
@@ -100,6 +112,7 @@ class SpotChatNotifier(context: Context) {
                 "标为已读",
                 markReadPendingIntent
             )
+                .setSemanticAction(Notification.Action.SEMANTIC_ACTION_MARK_AS_READ)
                 .build()
         val muteAction =
             Notification.Action.Builder(
@@ -107,6 +120,7 @@ class SpotChatNotifier(context: Context) {
                 "静音8小时",
                 mutePendingIntent
             )
+                .setSemanticAction(Notification.Action.SEMANTIC_ACTION_MUTE)
                 .build()
 
         val notificationText = messageText.take(MAX_NOTIFICATION_MESSAGE_CHARS)
@@ -122,8 +136,11 @@ class SpotChatNotifier(context: Context) {
                 .setCategory(Notification.CATEGORY_MESSAGE)
                 .setNumber(unreadCount)
                 .addAction(replyAction)
-                .addAction(markReadAction)
-                .addAction(muteAction)
+                .apply {
+                    quickReplyActions.forEach(::addAction)
+                    addAction(markReadAction)
+                    addAction(muteAction)
+                }
                 .build()
 
         notificationManager.notify(notificationId, notification)
@@ -192,6 +209,33 @@ class SpotChatNotifier(context: Context) {
             .putExtra(SpotChatNotificationIntents.EXTRA_INTENT_TOKEN, tokenStore.token())
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
 
+    private fun quickReplyAction(
+        conversationId: String,
+        notificationId: Int,
+        index: Int,
+        reply: CharSequence
+    ): Notification.Action {
+        val quickReplyText = reply.toString()
+        val quickReplyIntent =
+            baseIntent(SpotChatNotificationIntents.ACTION_QUICK_REPLY, conversationId)
+                .putExtra(SpotChatNotificationIntents.EXTRA_QUICK_REPLY_TEXT, quickReplyText)
+                .putExtra(SpotChatNotificationIntents.EXTRA_QUICK_REPLY_INDEX, index)
+        val quickReplyPendingIntent =
+            PendingIntent.getActivity(
+                appContext,
+                notificationId + QUICK_REPLY_REQUEST_CODE_OFFSET + index,
+                quickReplyIntent,
+                pendingIntentFlags(mutable = false)
+            )
+        return Notification.Action.Builder(
+            Icon.createWithResource(appContext, R.drawable.ic_spotchat),
+            quickReplyText,
+            quickReplyPendingIntent
+        )
+            .setSemanticAction(Notification.Action.SEMANTIC_ACTION_REPLY)
+            .build()
+    }
+
     private fun pendingIntentFlags(mutable: Boolean): Int {
         val mutabilityFlag =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -216,6 +260,8 @@ class SpotChatNotifier(context: Context) {
         private const val REPLY_REQUEST_CODE_OFFSET = 10_000
         private const val MARK_READ_REQUEST_CODE_OFFSET = 20_000
         private const val MUTE_REQUEST_CODE_OFFSET = 30_000
+        private const val QUICK_REPLY_REQUEST_CODE_OFFSET = 40_000
+        private const val MAX_INLINE_QUICK_REPLY_ACTIONS = 2
         private const val MAX_NOTIFICATION_MESSAGE_CHARS = 160
     }
 }
