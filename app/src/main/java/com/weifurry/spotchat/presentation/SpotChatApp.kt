@@ -1165,6 +1165,9 @@ internal fun SpotChatApp(
     ): Boolean =
         muteState(conversationId, nowEpochMillis) != null
 
+    fun shouldNotifyConversation(conversationId: String): Boolean =
+        !isConversationMuted(conversationId) && archivedConversationIds[conversationId] != true
+
     fun muteStatusLabel(conversationId: String): String {
         val mute = muteState(conversationId) ?: return "开启"
         val untilEpochMillis = mute.untilEpochMillis ?: return "始终"
@@ -1307,7 +1310,7 @@ internal fun SpotChatApp(
             (appSurface != AppSurface.Chat || activeConversationId != conversationId)
         ) {
             unreadCounts[conversationId] = (unreadCounts[conversationId] ?: 0) + 1
-            if (!isConversationMuted(conversationId)) {
+            if (shouldNotifyConversation(conversationId)) {
                 notifyIncomingMessage(conversationId, timedMessage)
             }
         }
@@ -5685,11 +5688,11 @@ private fun WatchArchivedChatsSurface(
                         title = "已归档聊天",
                         subtitle =
                             if (conversations.isEmpty()) {
-                                "没有隐藏的聊天"
+                                "新消息静默收纳"
                             } else if (archivedUnreadCount > 0) {
-                                "${conversations.size} 个聊天 · $archivedUnreadCount 个未读"
+                                "${conversations.size} 个聊天 · $archivedUnreadCount 个未读 · 静默收纳"
                             } else {
-                                "${conversations.size} 个聊天"
+                                "${conversations.size} 个聊天 · 静默收纳"
                             },
                         surfaceSpec = surfaceSpec,
                         onNavigateBack = onNavigateBack
@@ -5970,7 +5973,7 @@ private fun WatchChatInfoSurface(
                         )
                         InfoMetricPill(
                             label = "通知",
-                            value = muteStatus,
+                            value = if (isArchived) "归档" else muteStatus,
                             compact = compact,
                             modifier = Modifier.weight(1f)
                         )
