@@ -95,6 +95,10 @@ class SpotChatWearStateStore(context: Context) {
             return
         }
         prefs.edit().putString(KEY_SNAPSHOT, encodedSnapshot).apply()
+        requestSurfaceUpdates()
+    }
+
+    fun requestSurfaceUpdates() {
         requestTileUpdates()
         requestUnreadComplicationUpdate()
     }
