@@ -18,18 +18,10 @@ android {
         versionName = "0.1.0"
     }
 
-    signingConfigs {
-        create("spotchatDebug") {
-            storeFile = rootProject.file("app/signing/spotchat-debug.keystore")
-            storePassword = "spotchat"
-            keyAlias = "spotchat-debug"
-            keyPassword = "spotchat"
-        }
-    }
-
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("spotchatDebug")
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
         }
 
         release {

@@ -7,6 +7,15 @@
         <exclude
             domain="sharedpref"
             path="spotchat_trusted_peers.xml" />
+        <exclude
+            domain="database"
+            path="spotchat_replay.db" />
+        <exclude
+            domain="database"
+            path="spotchat_replay.db-wal" />
+        <exclude
+            domain="database"
+            path="spotchat_replay.db-shm" />
     </cloud-backup>
     <device-transfer>
         <exclude
@@ -15,5 +24,14 @@
         <exclude
             domain="sharedpref"
             path="spotchat_trusted_peers.xml" />
+        <exclude
+            domain="database"
+            path="spotchat_replay.db" />
+        <exclude
+            domain="database"
+            path="spotchat_replay.db-wal" />
+        <exclude
+            domain="database"
+            path="spotchat_replay.db-shm" />
     </device-transfer>
 </data-extraction-rules>

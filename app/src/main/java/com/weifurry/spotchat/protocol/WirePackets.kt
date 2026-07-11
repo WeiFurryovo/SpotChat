@@ -5,6 +5,8 @@ import kotlinx.serialization.Serializable
 @Serializable
 enum class PacketKind {
     HELLO,
+    SESSION_CHALLENGE,
+    ENCRYPTED_SESSION_CONFIRM,
     ENCRYPTED_MESSAGE,
     ENCRYPTED_VOICE_MESSAGE,
     ENCRYPTED_REACTION,
@@ -18,6 +20,24 @@ data class PeerHello(
     val publicKey: String,
     val about: String = "",
     val transports: List<String> = emptyList()
+)
+
+@Serializable
+data class SessionChallenge(
+    val challengeId: String,
+    val challengerHello: PeerHello,
+    val responderHello: PeerHello,
+    val responderFingerprint: String,
+    val createdAtEpochMillis: Long
+)
+
+@Serializable
+data class SessionConfirmationPayload(
+    val challengeId: String,
+    val challengeBinding: String,
+    val challengerFingerprint: String,
+    val responderFingerprint: String,
+    val confirmedAtEpochMillis: Long
 )
 
 @Serializable
@@ -43,10 +63,19 @@ data class DeliveryAck(
 )
 
 @Serializable
+data class TextMessagePayload(
+    val logicalMessageId: String,
+    val text: String
+)
+
+@Serializable
 data class VoiceMessagePayload(
+    val logicalMessageId: String,
     val codec: String,
     val durationMs: Long,
-    val audioBase64: String
+    val audioBase64: String,
+    val groupId: String? = null,
+    val groupName: String? = null
 )
 
 @Serializable
@@ -57,12 +86,17 @@ data class ReactionPayload(
 
 @Serializable
 data class WirePacket(
-    val version: Int = 1,
+    val version: Int = CURRENT_VERSION,
     val kind: PacketKind,
     val hello: PeerHello? = null,
+    val sessionChallenge: SessionChallenge? = null,
     val encryptedMessage: EncryptedChatMessage? = null,
     val ack: DeliveryAck? = null
-)
+) {
+    companion object {
+        const val CURRENT_VERSION = 2
+    }
+}
 
 @Serializable
 data class RelayEnvelope(
@@ -127,5 +161,7 @@ fun PacketKind.isRelayableEncryptedKind(): Boolean =
         PacketKind.ENCRYPTED_REACTION,
         PacketKind.ENCRYPTED_ACK -> true
         PacketKind.HELLO,
+        PacketKind.SESSION_CHALLENGE,
+        PacketKind.ENCRYPTED_SESSION_CONFIRM,
         PacketKind.ACK -> false
     }
