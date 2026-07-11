@@ -50,23 +50,25 @@ jobs:
       - name: Build release APK
         run: ./gradlew :app:assembleRelease --stacktrace
 
-      - name: Prepare fixed-signed APK artifact
+      - name: Prepare ephemeral test-only debug APK artifact
         run: |
           mkdir -p artifacts
-          APK_NAME="SpotChat-debug-fixed-${GITHUB_SHA::7}.apk"
+          APK_NAME="SpotChat-test-only-debug-${GITHUB_SHA::7}.apk"
           cp app/build/outputs/apk/debug/app-debug.apk "artifacts/${APK_NAME}"
           {
-            echo "### SpotChat APK"
+            echo "### SpotChat test-only debug APK"
             echo
             echo "- File: \`${APK_NAME}\`"
-            echo "- Signing: fixed repository debug key \`app/signing/spotchat-debug.keystore\`"
-            echo "- Install type: debug APK, can upgrade over future Action builds with the same package name."
+            echo "- Package: \`com.weifurry.spotchat.debug\` (separate from release)"
+            echo "- Signing: ephemeral debug key generated on this GitHub-hosted runner"
+            echo "- Upgrade warning: a later workflow APK will normally have a different signature and cannot predictably upgrade this build. Uninstall the previous debug build first if installation fails."
+            echo "- Release warning: this artifact is for testing only and must not be distributed as a production release."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload fixed-signed debug APK
+      - name: Upload ephemeral test-only debug APK
         uses: actions/upload-artifact@v6
         with:
-          name: SpotChat-debug-fixed-signed-apk
+          name: SpotChat-test-only-ephemeral-debug-apk
           path: artifacts/*.apk
           if-no-files-found: error
           retention-days: 30

@@ -40,14 +40,19 @@ class TrustedPeerStore(context: Context) {
         all().firstOrNull { peer -> peer.fingerprint == fingerprint }
 
     fun trust(peer: TrustedPeer): StoredTrustedPeer {
+        val existingPeer =
+            all().firstOrNull { existing ->
+                existing.fingerprint == peer.fingerprint || existing.publicKey == peer.publicKey
+            }
         val storedPeer =
             StoredTrustedPeer(
                 deviceName = peer.deviceName,
                 fingerprint = peer.fingerprint,
                 publicKey = peer.publicKey,
                 pairingCode = peer.pairingCode,
-                trustedAtEpochMillis = System.currentTimeMillis(),
-                about = peer.about
+                trustedAtEpochMillis = existingPeer?.trustedAtEpochMillis ?: System.currentTimeMillis(),
+                about = peer.about,
+                alias = existingPeer?.alias.orEmpty()
             )
         val updatedPeers =
             all()

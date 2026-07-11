@@ -11,4 +11,3 @@ captures/
 *.jks
 *.keystore
 *.p12
-!app/signing/spotchat-debug.keystore

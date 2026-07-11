@@ -8,18 +8,27 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.Base64
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class LanChatTransport(
     private val deviceName: String,
@@ -33,36 +42,66 @@ class LanChatTransport(
             ?.getSystemService(WifiManager::class.java)
     private val mutableEvents = MutableSharedFlow<TransportEvent>(extraBufferCapacity = 64)
     private val instanceId = UUID.randomUUID().toString()
+    private val lifecycleMutex = Mutex()
+    private val incomingConnectionPermits = Semaphore(MAX_INCOMING_CONNECTIONS)
+    private val acceptedSockets = ConcurrentHashMap.newKeySet<Socket>()
     private var supervisor: Job? = null
     private var serverSocket: ServerSocket? = null
     private var discoverySocket: DatagramSocket? = null
     private var multicastLock: WifiManager.MulticastLock? = null
 
+    init {
+        require(servicePort in VALID_PORT_RANGE) {
+            "Service port must be in $VALID_PORT_RANGE"
+        }
+        require(discoveryPort in VALID_PORT_RANGE) {
+            "Discovery port must be in $VALID_PORT_RANGE"
+        }
+    }
+
     override val events: Flow<TransportEvent> = mutableEvents
 
     override suspend fun start() {
-        if (supervisor?.isActive == true) {
-            return
-        }
-        val job = SupervisorJob()
-        supervisor = job
-        val scope = CoroutineScope(job + Dispatchers.IO)
-        try {
-            startServer(scope)
-            startDiscovery(scope)
-            mutableEvents.emit(TransportEvent.StateChanged("局域网发现已启动"))
-        } catch (error: Throwable) {
-            job.cancel()
-            closeSockets()
-            supervisor = null
-            throw error
+        lifecycleMutex.withLock {
+            if (supervisor?.isActive == true) {
+                return@withLock
+            }
+            val job = SupervisorJob()
+            supervisor = job
+            val scope = CoroutineScope(job + Dispatchers.IO)
+            try {
+                startServer(scope)
+                startDiscovery(scope)
+                mutableEvents.emit(TransportEvent.StateChanged("局域网发现已启动"))
+            } catch (error: Throwable) {
+                job.cancel()
+                supervisor = null
+                closeSockets()
+                withContext(NonCancellable) {
+                    withTimeoutOrNull(STOP_JOIN_TIMEOUT_MS) { job.join() }
+                }
+                throw error
+            }
         }
     }
 
     override suspend fun stop() {
-        supervisor?.cancel()
-        supervisor = null
-        closeSockets()
+        withContext(NonCancellable) {
+            lifecycleMutex.withLock {
+                val job = supervisor
+                supervisor = null
+                job?.cancel()
+                closeSockets()
+                if (job != null && withTimeoutOrNull(STOP_JOIN_TIMEOUT_MS) { job.join() } == null) {
+                    mutableEvents.tryEmit(
+                        TransportEvent.Failure(
+                            "局域网后台任务未及时停止",
+                            SocketTimeoutException("LAN transport stop timed out")
+                        )
+                    )
+                }
+            }
+        }
         mutableEvents.emit(TransportEvent.StateChanged("局域网传输已停止"))
     }
 
@@ -71,21 +110,46 @@ class LanChatTransport(
         frame: ByteArray
     ) {
         val port = peer.port ?: servicePort
+        require(port in VALID_PORT_RANGE) {
+            "Peer port must be in $VALID_PORT_RANGE"
+        }
         withContext(Dispatchers.IO) {
             Socket().use { socket ->
                 socket.connect(InetSocketAddress(peer.address, port), CONNECT_TIMEOUT_MS)
-                FrameIo.writeFrame(socket.getOutputStream(), frame)
+                runWithSocketTimeout(socket, WRITE_TIMEOUT_MS, "LAN frame write") {
+                    FrameIo.writeFrame(socket.getOutputStream(), frame)
+                }
             }
         }
     }
 
     private fun startServer(scope: CoroutineScope) {
-        serverSocket = ServerSocket(servicePort)
+        val listeningSocket = ServerSocket(servicePort)
+        serverSocket = listeningSocket
         scope.launch {
             while (isActive) {
                 try {
-                    val socket = serverSocket?.accept() ?: break
-                    launch { handleIncomingSocket(socket) }
+                    val socket = listeningSocket.accept()
+                    if (!incomingConnectionPermits.tryAcquire()) {
+                        socket.closeQuietly()
+                        continue
+                    }
+                    try {
+                        socket.soTimeout = READ_TIMEOUT_MS
+                        acceptedSockets += socket
+                        scope
+                            .launch { handleIncomingSocket(socket) }
+                            .invokeOnCompletion {
+                                acceptedSockets.remove(socket)
+                                socket.closeQuietly()
+                                incomingConnectionPermits.release()
+                            }
+                    } catch (error: Throwable) {
+                        acceptedSockets.remove(socket)
+                        socket.closeQuietly()
+                        incomingConnectionPermits.release()
+                        throw error
+                    }
                 } catch (error: Throwable) {
                     if (isActive) {
                         mutableEvents.emit(
@@ -100,14 +164,15 @@ class LanChatTransport(
 
     private fun startDiscovery(scope: CoroutineScope) {
         acquireMulticastLock()
-        discoverySocket =
+        val socket =
             DatagramSocket(null).apply {
                 reuseAddress = true
                 broadcast = true
                 bind(InetSocketAddress(discoveryPort))
             }
-        scope.launch { receiveDiscoveryPackets() }
-        scope.launch { broadcastPresence() }
+        discoverySocket = socket
+        scope.launch { receiveDiscoveryPackets(socket) }
+        scope.launch { broadcastPresence(socket) }
     }
 
     private suspend fun handleIncomingSocket(socket: Socket) {
@@ -121,13 +186,20 @@ class LanChatTransport(
                         port = servicePort,
                         kind = TransportKind.LAN
                     )
-                while (supervisor?.isActive == true) {
-                    val frame = FrameIo.readFrame(socket.getInputStream()) ?: break
+                while (currentCoroutineContext().isActive) {
+                    val frame =
+                        runWithSocketTimeout(
+                            socket,
+                            READ_TIMEOUT_MS.toLong(),
+                            "LAN frame read"
+                        ) {
+                            FrameIo.readFrame(socket.getInputStream())
+                        } ?: break
                     mutableEvents.emit(TransportEvent.FrameReceived(peer, frame))
                 }
             }
         } catch (error: Throwable) {
-            if (supervisor?.isActive == true) {
+            if (currentCoroutineContext().isActive) {
                 mutableEvents.emit(
                     TransportEvent.Failure("局域网帧接收失败", error)
                 )
@@ -135,10 +207,9 @@ class LanChatTransport(
         }
     }
 
-    private suspend fun receiveDiscoveryPackets() {
+    private suspend fun receiveDiscoveryPackets(socket: DatagramSocket) {
         val buffer = ByteArray(1024)
-        val socket = discoverySocket ?: return
-        while (supervisor?.isActive == true) {
+        while (currentCoroutineContext().isActive) {
             try {
                 val packet = DatagramPacket(buffer, buffer.size)
                 socket.receive(packet)
@@ -146,26 +217,26 @@ class LanChatTransport(
                     mutableEvents.emit(TransportEvent.PeerFound(peer))
                 }
             } catch (error: Throwable) {
-                if (supervisor?.isActive == true) {
+                if (currentCoroutineContext().isActive) {
                     mutableEvents.emit(
                         TransportEvent.Failure("局域网发现失败", error)
                     )
+                    delay(ERROR_RETRY_DELAY_MS)
                 }
             }
         }
     }
 
-    private suspend fun broadcastPresence() {
-        val socket = discoverySocket ?: return
+    private suspend fun broadcastPresence(socket: DatagramSocket) {
         val address = InetAddress.getByName("255.255.255.255")
-        while (supervisor?.isActive == true) {
+        while (currentCoroutineContext().isActive) {
             try {
                 val payload = beaconPayload().toByteArray(Charsets.UTF_8)
                 val packet =
                     DatagramPacket(payload, payload.size, address, discoveryPort)
                 socket.send(packet)
             } catch (error: Throwable) {
-                if (supervisor?.isActive == true) {
+                if (currentCoroutineContext().isActive) {
                     mutableEvents.emit(
                         TransportEvent.Failure("局域网广播失败", error)
                     )
@@ -185,7 +256,11 @@ class LanChatTransport(
             runCatching {
                 String(Base64.getUrlDecoder().decode(parts[2]), Charsets.UTF_8)
             }.getOrDefault("SpotChat")
-        val port = parts[3].toIntOrNull() ?: return null
+        val port =
+            parts[3]
+                .toIntOrNull()
+                ?.takeIf { it in VALID_PORT_RANGE }
+                ?: return null
         val address = packet.address.hostAddress ?: return null
         return TransportPeer(
             id = "lan:${parts[1]}",
@@ -231,9 +306,37 @@ class LanChatTransport(
         multicastLock = null
     }
 
+    private suspend fun <T> runWithSocketTimeout(
+        socket: Socket,
+        timeoutMillis: Long,
+        operationName: String,
+        block: () -> T
+    ): T {
+        val operationJob = SupervisorJob()
+        val operation = CoroutineScope(operationJob + Dispatchers.IO).async { block() }
+        try {
+            val completed =
+                withTimeoutOrNull(timeoutMillis) {
+                    CompletedSocketOperation(operation.await())
+                }
+            if (completed == null) {
+                socket.closeQuietly()
+                throw SocketTimeoutException("$operationName timed out")
+            }
+            return completed.value
+        } finally {
+            if (!operation.isCompleted) {
+                socket.closeQuietly()
+            }
+            operation.cancel()
+            operationJob.cancel()
+        }
+    }
+
     private fun closeSockets() {
         serverSocket.closeQuietly()
         discoverySocket.closeQuietly()
+        acceptedSockets.forEach { it.closeQuietly() }
         releaseMulticastLock()
         serverSocket = null
         discoverySocket = null
@@ -247,13 +350,27 @@ class LanChatTransport(
         runCatching { this?.close() }
     }
 
+    private fun Socket?.closeQuietly() {
+        runCatching { this?.close() }
+    }
+
+    private data class CompletedSocketOperation<T>(
+        val value: T
+    )
+
     companion object {
         const val DEFAULT_SERVICE_PORT = 38441
         const val DEFAULT_DISCOVERY_PORT = 38442
         private const val BEACON_PREFIX = "SPOTCHAT_V1"
         private const val BEACON_PARTS = 4
         private const val CONNECT_TIMEOUT_MS = 2_500
+        private const val READ_TIMEOUT_MS = 15_000
+        private const val WRITE_TIMEOUT_MS = 10_000L
+        private const val STOP_JOIN_TIMEOUT_MS = 3_000L
+        private const val ERROR_RETRY_DELAY_MS = 500L
+        private const val MAX_INCOMING_CONNECTIONS = 8
         private const val DISCOVERY_INTERVAL_MS = 3_000L
         private const val MULTICAST_LOCK_TAG = "SpotChatLanDiscovery"
+        private val VALID_PORT_RANGE = 1..65_535
     }
 }
