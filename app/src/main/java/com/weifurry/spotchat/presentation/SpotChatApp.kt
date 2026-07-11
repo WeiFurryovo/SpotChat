@@ -215,7 +215,7 @@ private enum class AppSurface {
     Profile
 }
 
-private data class ConversationDraft(
+internal data class ConversationDraft(
     val text: String,
     val updatedAtEpochMillis: Long = System.currentTimeMillis()
 )
@@ -251,28 +251,9 @@ private data class WatchActionConfirmation(
     val detail: String
 )
 
-private enum class ConversationKind(
+internal enum class ConversationKind(
     val label: String
 ) {
-    Direct("私聊"),
-    Group("群聊")
-}
-
-private enum class ChatListFilter(
-    val label: String
-) {
-    All("全部"),
-    Favorites("收藏"),
-    Unread("未读"),
-    Pinned("置顶"),
-    Starred("星标"),
-    Drafts("草稿"),
-    Mentions("提及"),
-    Retryable("未发送"),
-    Locked("锁定"),
-    Muted("静音"),
-    Disappearing("限时"),
-    ReadReceiptsOff("回执"),
     Direct("私聊"),
     Group("群聊")
 }
@@ -297,38 +278,6 @@ private enum class GroupMemberFilter(
     Recent("最近"),
     Offline("离线")
 }
-
-private fun ChatConversation.matchesFilter(
-    filter: ChatListFilter,
-    unreadCounts: Map<String, Int>,
-    mentionCounts: Map<String, Int>,
-    favoriteConversationIds: Map<String, Boolean>,
-    pinnedConversationIds: Map<String, Boolean>,
-    starredMessageIdsByConversation: Map<String, Set<String>>,
-    draftsByConversation: Map<String, ConversationDraft>,
-    lockedConversationIds: Map<String, Boolean>,
-    disappearingModesByConversation: Map<String, DisappearingMessageMode>,
-    readReceiptsDisabledByConversation: Map<String, Boolean>,
-    isConversationMuted: (String) -> Boolean,
-    hasRetryableMessages: (String) -> Boolean
-): Boolean =
-    when (filter) {
-        ChatListFilter.All -> true
-        ChatListFilter.Favorites -> favoriteConversationIds[id] == true
-        ChatListFilter.Unread -> (unreadCounts[id] ?: 0) > 0
-        ChatListFilter.Pinned -> pinnedConversationIds[id] == true
-        ChatListFilter.Starred -> starredMessageIdsByConversation[id].orEmpty().isNotEmpty()
-        ChatListFilter.Drafts -> draftsByConversation[id] != null
-        ChatListFilter.Mentions -> (mentionCounts[id] ?: 0) > 0
-        ChatListFilter.Retryable -> hasRetryableMessages(id)
-        ChatListFilter.Locked -> lockedConversationIds[id] == true
-        ChatListFilter.Muted -> isConversationMuted(id)
-        ChatListFilter.Disappearing ->
-            (disappearingModesByConversation[id] ?: DisappearingMessageMode.Off) != DisappearingMessageMode.Off
-        ChatListFilter.ReadReceiptsOff -> readReceiptsDisabledByConversation[id] == true
-        ChatListFilter.Direct -> kind == ConversationKind.Direct
-        ChatListFilter.Group -> kind == ConversationKind.Group
-    }
 
 private enum class MutePreset(
     val label: String,
@@ -364,7 +313,7 @@ private enum class VoicePlaybackSpeed(
         entries[(ordinal + 1) % entries.size]
 }
 
-private enum class DisappearingMessageMode(
+internal enum class DisappearingMessageMode(
     val label: String,
     val durationMs: Long?,
     val profileKey: String
@@ -414,7 +363,7 @@ private data class ReactionChoice(
 private fun ChatBubble.stableStarId(): String =
     messageId ?: "${timestamp}:${senderName.orEmpty()}:$mine:${kind.name}:${previewText()}"
 
-private data class ChatConversation(
+internal data class ChatConversation(
     val id: String,
     val kind: ConversationKind,
     val title: String,
@@ -5532,23 +5481,31 @@ internal fun SpotChatApp(
                     currentConversations.filterNot { conversation ->
                         archivedConversationIds[conversation.id] == true
                     }
+                val chatListFilterContext =
+                    ChatListFilterContext(
+                        unreadCounts = unreadCounts,
+                        mentionCounts = mentionCounts,
+                        favoriteConversationIds = favoriteConversationIds,
+                        pinnedConversationIds = pinnedConversationIds,
+                        starredMessageIdsByConversation = starredMessageIdsByConversation,
+                        draftsByConversation = draftsByConversation,
+                        lockedConversationIds = lockedConversationIds,
+                        disappearingModesByConversation = disappearingModesByConversation,
+                        readReceiptsDisabledByConversation = readReceiptsDisabledByConversation,
+                        isConversationMuted = ::isConversationMuted,
+                        hasRetryableMessages = ::hasRetryableMessages
+                    )
                 val visibleConversationList =
-                    visibleConversationListBase.filter { conversation ->
-                        conversation.matchesFilter(
-                            filter = chatListFilter,
-                            unreadCounts = unreadCounts,
-                            mentionCounts = mentionCounts,
-                            favoriteConversationIds = favoriteConversationIds,
-                            pinnedConversationIds = pinnedConversationIds,
-                            starredMessageIdsByConversation = starredMessageIdsByConversation,
-                            draftsByConversation = draftsByConversation,
-                            lockedConversationIds = lockedConversationIds,
-                            disappearingModesByConversation = disappearingModesByConversation,
-                            readReceiptsDisabledByConversation = readReceiptsDisabledByConversation,
-                            isConversationMuted = ::isConversationMuted,
-                            hasRetryableMessages = ::hasRetryableMessages
-                        )
-                    }
+                    filterConversations(
+                        conversations = visibleConversationListBase,
+                        filter = chatListFilter,
+                        context = chatListFilterContext
+                    )
+                val chatListFilterCounts =
+                    countConversationsByFilter(
+                        conversations = visibleConversationListBase,
+                        context = chatListFilterContext
+                    )
                 val archivedConversationList =
                     currentConversations.filter { conversation ->
                         archivedConversationIds[conversation.id] == true
@@ -5564,7 +5521,9 @@ internal fun SpotChatApp(
                     WatchConversationListSurface(
                         isRoundScreen = isRoundScreen,
                         profile = profile,
-                        conversations = visibleConversationListBase,
+                        conversations = visibleConversationList,
+                        activeFilter = chatListFilter,
+                        filterCounts = chatListFilterCounts,
                         mentionCounts = mentionCounts,
                         archivedCount = archivedConversationList.size,
                         archivedUnreadCount = archivedUnreadCount,
@@ -5599,6 +5558,9 @@ internal fun SpotChatApp(
                         onToggleConversationArchived = ::toggleConversationArchived,
                         onOpenArchivedChats = {
                             appSurface = AppSurface.ArchivedChats
+                        },
+                        onSelectFilter = { selectedFilter ->
+                            chatListFilter = selectedFilter
                         },
                         onOpenProfile = {
                             appSurface = AppSurface.Profile
@@ -6507,6 +6469,8 @@ private fun WatchConversationListSurface(
     isRoundScreen: Boolean,
     profile: ProfileSettings,
     conversations: List<ChatConversation>,
+    activeFilter: ChatListFilter,
+    filterCounts: Map<ChatListFilter, Int>,
     mentionCounts: Map<String, Int>,
     archivedCount: Int,
     archivedUnreadCount: Int,
@@ -6530,6 +6494,7 @@ private fun WatchConversationListSurface(
     onToggleConversationMuted: (ChatConversation) -> Unit,
     onToggleConversationArchived: (ChatConversation) -> Unit,
     onOpenArchivedChats: () -> Unit,
+    onSelectFilter: (ChatListFilter) -> Unit,
     onOpenProfile: () -> Unit,
     profileNavigationEnabled: Boolean = true
 ) {
@@ -6626,8 +6591,17 @@ private fun WatchConversationListSurface(
                         )
                     }
 
+                    ChatListFilterStrip(
+                        activeFilter = activeFilter,
+                        filterCounts = filterCounts,
+                        compact = compact,
+                        surfaceSpec = surfaceSpec,
+                        onSelectFilter = onSelectFilter
+                    )
+
                     if (conversations.isEmpty()) {
                         EmptyFilterCapsule(
+                            activeFilter = activeFilter,
                             compact = compact,
                             surfaceSpec = surfaceSpec
                         )
@@ -7065,7 +7039,77 @@ private fun ActionPill(
 }
 
 @Composable
+private fun ChatListFilterStrip(
+    activeFilter: ChatListFilter,
+    filterCounts: Map<ChatListFilter, Int>,
+    compact: Boolean,
+    surfaceSpec: WatchSurfaceSpec,
+    onSelectFilter: (ChatListFilter) -> Unit
+) {
+    val filters =
+        remember(activeFilter, filterCounts) {
+            visibleChatListFilters(
+                activeFilter = activeFilter,
+                filterCounts = filterCounts
+            )
+        }
+    val filterScrollState = rememberScrollState()
+    val activeIndex = filters.indexOf(activeFilter).coerceAtLeast(0)
+    val density = LocalDensity.current
+    val chipStepPx =
+        with(density) {
+            ((if (compact) 61.dp else 68.dp) * activeIndex).roundToPx()
+        }
+
+    LaunchedEffect(activeFilter, filters, compact) {
+        filterScrollState.animateScrollTo(chipStepPx.coerceAtMost(filterScrollState.maxValue))
+    }
+
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth(if (surfaceSpec.isRound) 0.84f else 0.94f)
+                .height(if (compact) 30.dp else 34.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black.copy(alpha = 0.18f))
+                .border(1.dp, chatDivider.copy(alpha = 0.52f), RoundedCornerShape(8.dp))
+                .horizontalScroll(filterScrollState)
+                .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        filters.forEach { filter ->
+            val selected = filter == activeFilter
+            val count = filterCounts.getOrDefault(filter, 0)
+            val countLabel = if (count > 99) "99+" else count.toString()
+            Box(
+                modifier =
+                    Modifier
+                        .width(if (compact) 58.dp else 65.dp)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(7.dp))
+                        .background(if (selected) chatGreen else Color.Transparent)
+                        .clickable { onSelectFilter(filter) }
+                        .padding(horizontal = if (compact) 2.dp else 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "${filter.label} $countLabel",
+                    color = if (selected) Color(0xFF001F1B) else chatRowMuted,
+                    fontSize = if (compact) 8.sp else 9.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun EmptyFilterCapsule(
+    activeFilter: ChatListFilter,
     compact: Boolean,
     surfaceSpec: WatchSurfaceSpec
 ) {
@@ -7080,7 +7124,12 @@ private fun EmptyFilterCapsule(
         contentAlignment = Alignment.Center
     ) {
         Text(
-            text = "还没有聊天",
+            text =
+                if (activeFilter == ChatListFilter.All) {
+                    "还没有聊天"
+                } else {
+                    "没有符合“${activeFilter.label}”的聊天"
+                },
             color = chatRowMuted,
             fontSize = if (compact) 10.sp else 11.sp,
             fontWeight = FontWeight.SemiBold,
