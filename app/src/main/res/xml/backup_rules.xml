@@ -1,17 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
+    <!--
+        The encrypted chat snapshot lives under
+        Context.noBackupFilesDir/spotchat-chat-state/spotchat_state.bin.
+        noBackupFilesDir is excluded by Android itself and has no valid backup-rule domain.
+    -->
     <exclude
         domain="sharedpref"
         path="spotchat_identity.xml" />
     <exclude
         domain="sharedpref"
+        path="spotchat_identity.xml.bak" />
+    <exclude
+        domain="sharedpref"
         path="spotchat_trusted_peers.xml" />
+    <exclude
+        domain="sharedpref"
+        path="spotchat_trusted_peers.xml.bak" />
     <exclude
         domain="sharedpref"
         path="spotchat_wear_state.xml" />
     <exclude
+        domain="sharedpref"
+        path="spotchat_wear_state.xml.bak" />
+    <exclude
         domain="database"
         path="spotchat_replay.db" />
+    <exclude
+        domain="database"
+        path="spotchat_replay.db-journal" />
     <exclude
         domain="database"
         path="spotchat_replay.db-wal" />

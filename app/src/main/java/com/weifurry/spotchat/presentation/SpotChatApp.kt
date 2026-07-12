@@ -122,6 +122,18 @@ import androidx.wear.input.WearableRemoteInputExtender
 import com.weifurry.spotchat.R
 import com.weifurry.spotchat.crypto.IdentityStore
 import com.weifurry.spotchat.crypto.SpotChatCrypto
+import com.weifurry.spotchat.domain.AuthenticatedPayloadDecodingException
+import com.weifurry.spotchat.domain.ChatStateLoadResult
+import com.weifurry.spotchat.domain.EncryptedChatStateStore
+import com.weifurry.spotchat.domain.PersistedChatMessage
+import com.weifurry.spotchat.domain.PersistedChatMessageKind
+import com.weifurry.spotchat.domain.PersistedChatState
+import com.weifurry.spotchat.domain.PersistedConversationDraft
+import com.weifurry.spotchat.domain.PersistedDeliveryState
+import com.weifurry.spotchat.domain.PersistedOutgoingEnvelope
+import com.weifurry.spotchat.domain.PersistedQuotedMessage
+import com.weifurry.spotchat.domain.PersistedTextOutboxMessage
+import com.weifurry.spotchat.domain.PersistedVoiceOutboxMessage
 import com.weifurry.spotchat.domain.DuplicateMessageException
 import com.weifurry.spotchat.domain.ProfileSettings
 import com.weifurry.spotchat.domain.ProfileStore
@@ -136,6 +148,7 @@ import com.weifurry.spotchat.notifications.SpotChatNotifier
 import com.weifurry.spotchat.presentation.theme.SpotChatTheme
 import com.weifurry.spotchat.protocol.ChatCodec
 import com.weifurry.spotchat.protocol.DeliveryReceiptStatus
+import com.weifurry.spotchat.protocol.EncryptedChatMessage
 import com.weifurry.spotchat.protocol.PacketKind
 import com.weifurry.spotchat.protocol.PeerHello
 import com.weifurry.spotchat.protocol.SessionChallenge
@@ -159,16 +172,22 @@ import com.weifurry.spotchat.wear.WearChatSnapshot
 import com.weifurry.spotchat.wear.WearConversationSummary
 import java.io.File
 import java.text.SimpleDateFormat
+import java.util.Base64
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.roundToInt
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -501,6 +520,62 @@ private data class ChatPayload(
     val forwardCount: Int = 0
 )
 
+private fun invalidAuthenticatedPayload(
+    encryptedMessage: EncryptedChatMessage,
+    reason: String
+): Nothing =
+    throw AuthenticatedPayloadDecodingException(
+        messageId = encryptedMessage.messageId,
+        senderFingerprint = encryptedMessage.senderFingerprint,
+        cause = IllegalArgumentException(reason)
+    )
+
+private fun ChatPayload.validateAuthenticatedIncoming(
+    encryptedMessage: EncryptedChatMessage
+) {
+    if (text.isBlank() || text.length > MAX_CUSTOM_MESSAGE_CHARS) {
+        invalidAuthenticatedPayload(encryptedMessage, "Invalid chat message text")
+    }
+    when (kind) {
+        CHAT_PAYLOAD_KIND_DIRECT -> {
+            if (groupId != null || groupName != null) {
+                invalidAuthenticatedPayload(encryptedMessage, "Invalid direct-message group metadata")
+            }
+        }
+
+        CHAT_PAYLOAD_KIND_GROUP -> {
+            if (
+                groupId != NEARBY_GROUP_CONVERSATION_ID ||
+                groupName?.let { name ->
+                    name.isBlank() || name.length > MAX_INCOMING_GROUP_NAME_CHARS
+                } == true
+            ) {
+                invalidAuthenticatedPayload(encryptedMessage, "Invalid group-message metadata")
+            }
+        }
+
+        else -> invalidAuthenticatedPayload(encryptedMessage, "Unsupported chat message kind")
+    }
+    quote?.let { quoted ->
+        if (
+            quoted.messageId.isBlank() ||
+            quoted.messageId.length > MAX_INCOMING_MESSAGE_ID_CHARS ||
+            quoted.senderName.isBlank() ||
+            quoted.senderName.length > MAX_INCOMING_SENDER_NAME_CHARS ||
+            quoted.text.length > MAX_QUOTED_MESSAGE_CHARS
+        ) {
+            invalidAuthenticatedPayload(encryptedMessage, "Invalid quoted message")
+        }
+    }
+    if (
+        forwardCount !in 0..MAX_INCOMING_FORWARD_COUNT ||
+        (forwarded && forwardCount == 0) ||
+        (!forwarded && forwardCount != 0)
+    ) {
+        invalidAuthenticatedPayload(encryptedMessage, "Invalid forwarded-message metadata")
+    }
+}
+
 private val defaultAvatars =
     listOf(
         DefaultAvatar("initial", Color(0xFF6CE5D4), Color(0xFF003733)),
@@ -522,6 +597,10 @@ private const val MAX_SEARCH_RESULTS = 12
 private const val MAX_STARRED_RESULTS = 24
 private const val MAX_NOTIFICATION_CONFIRMATION_PREVIEW_CHARS = 24
 private const val MAX_QUOTED_MESSAGE_CHARS = 72
+private const val MAX_INCOMING_MESSAGE_ID_CHARS = 128
+private const val MAX_INCOMING_SENDER_NAME_CHARS = 96
+private const val MAX_INCOMING_GROUP_NAME_CHARS = 64
+private const val MAX_INCOMING_FORWARD_COUNT = 1_000
 private const val DISAPPEARING_SWEEP_INTERVAL_MS = 15_000L
 private const val MUTE_SWEEP_INTERVAL_MS = 60_000L
 private const val ACTION_CONFIRMATION_VISIBLE_MS = 1_600L
@@ -542,7 +621,6 @@ private const val HELLO_ROUTE_COOLDOWN_MS = 10_000L
 private const val HELLO_RATE_WINDOW_MS = 10_000L
 private const val MAX_HELLO_SENDS_PER_WINDOW = 4
 private const val MAX_HELLO_ROUTES = 64
-private const val MAX_OUTGOING_ENVELOPES = 10_000
 private const val OUTGOING_ENVELOPE_TTL_MS = 8L * 24L * 60L * 60L * 1000L
 private val customMessageQuickChoices = arrayOf("收到", "马上到", "稍后联系")
 private val reactionChoices =
@@ -707,6 +785,423 @@ private data class WatchSurfaceSpec(
         }
 }
 
+
+private data class RestoredChatPresentationState(
+    val messagesByConversation: Map<String, List<ChatBubble>>,
+    val draftsByConversation: Map<String, ConversationDraft>,
+    val pendingTextOutbox: Map<String, PendingOutboundMessage>,
+    val pendingVoiceOutbox: Map<String, PendingOutboundVoiceMessage>,
+    val outgoingMessages: Map<String, OutgoingMessageRef>,
+    val expectedRecipientsByMessage: Map<String, Set<String>>,
+    val deliveredRecipientsByMessage: Map<String, Set<String>>,
+    val readRecipientsByMessage: Map<String, Set<String>>,
+    val sentReadReceipts: Set<String>,
+    val conversationUpdateOrder: Map<String, Long>
+)
+
+private data class DurableChatMutationSnapshot(
+    val messagesByConversation: Map<String, List<ChatBubble>>,
+    val draftsByConversation: Map<String, ConversationDraft>,
+    val pendingTextOutbox: Map<String, PendingOutboundMessage>,
+    val pendingVoiceOutbox: Map<String, PendingOutboundVoiceMessage>,
+    val outgoingMessages: Map<String, OutgoingMessageRef>,
+    val expectedRecipientsByMessage: Map<String, Set<String>>,
+    val deliveredRecipientsByMessage: Map<String, Set<String>>,
+    val readRecipientsByMessage: Map<String, Set<String>>,
+    val deliveredCounts: Map<String, Int>,
+    val readCounts: Map<String, Int>,
+    val conversationUpdateOrder: Map<String, Long>,
+    val conversationUpdateSequence: Long
+)
+
+private fun QuotedMessage.toPersisted(): PersistedQuotedMessage =
+    PersistedQuotedMessage(
+        messageId = messageId,
+        senderName = senderName,
+        text = text
+    )
+
+private fun PersistedQuotedMessage.toPresentation(): QuotedMessage =
+    QuotedMessage(
+        messageId = messageId,
+        senderName = senderName,
+        text = text
+    )
+
+private fun ChatBubble.toPersisted(): PersistedChatMessage? {
+    if (deliveryState == DeliveryState.System) {
+        return null
+    }
+    return PersistedChatMessage(
+        text = text,
+        mine = mine,
+        encrypted = encrypted,
+        timestamp = timestamp,
+        senderName = senderName,
+        senderFingerprint = senderFingerprint,
+        messageId = messageId,
+        receiptMessageId = receiptMessageId,
+        deliveryState = PersistedDeliveryState.valueOf(deliveryState.name),
+        kind = PersistedChatMessageKind.valueOf(kind.name),
+        quotedMessage = quotedMessage?.toPersisted(),
+        voiceDurationMs = voiceDurationMs,
+        voiceAudioBase64 = voiceAudioBytes?.let { bytes -> Base64.getEncoder().encodeToString(bytes) },
+        createdAtEpochMillis = createdAtEpochMillis,
+        expiresAtEpochMillis = expiresAtEpochMillis,
+        reactions = reactions,
+        forwarded = forwarded,
+        forwardCount = forwardCount
+    )
+}
+
+private fun PersistedChatMessage.toPresentation(nowEpochMillis: Long): ChatBubble? {
+    if (
+        deliveryState == PersistedDeliveryState.System ||
+        expiresAtEpochMillis?.let { expiresAt -> expiresAt <= nowEpochMillis } == true
+    ) {
+        return null
+    }
+    val decodedVoice =
+        voiceAudioBase64?.let { encoded ->
+            runCatching { Base64.getDecoder().decode(encoded) }.getOrNull()
+        }
+    if (
+        kind == PersistedChatMessageKind.Voice &&
+        (voiceDurationMs == null || decodedVoice == null)
+    ) {
+        return null
+    }
+    return ChatBubble(
+        text = text,
+        mine = mine,
+        encrypted = encrypted,
+        timestamp = timestamp,
+        senderName = senderName,
+        senderFingerprint = senderFingerprint,
+        messageId = messageId,
+        receiptMessageId = receiptMessageId,
+        deliveryState = DeliveryState.valueOf(deliveryState.name),
+        kind = ChatMessageKind.valueOf(kind.name),
+        quotedMessage = quotedMessage?.toPresentation(),
+        voiceDurationMs = voiceDurationMs,
+        voiceAudioBytes = decodedVoice,
+        createdAtEpochMillis = createdAtEpochMillis,
+        expiresAtEpochMillis = expiresAtEpochMillis,
+        reactions = reactions,
+        forwarded = forwarded,
+        forwardCount = forwardCount
+    )
+}
+
+private fun buildPersistedChatState(
+    ownerFingerprint: String,
+    conversationMessages: Map<String, List<ChatBubble>>,
+    draftsByConversation: Map<String, ConversationDraft>,
+    pendingOutboundMessages: Map<String, PendingOutboundMessage>,
+    pendingOutboundVoiceMessages: Map<String, PendingOutboundVoiceMessage>,
+    outgoingMessages: Map<String, OutgoingMessageRef>,
+    expectedRecipientsByMessage: Map<String, Set<String>>,
+    deliveredReceiptsByMessage: Map<String, Set<String>>,
+    readReceiptsByMessage: Map<String, Set<String>>,
+    sentReadReceipts: Set<String>,
+    conversationUpdateOrder: Map<String, Long>,
+    nowEpochMillis: Long = System.currentTimeMillis()
+): PersistedChatState {
+    val createdAtByMessageId =
+        conversationMessages.values
+            .asSequence()
+            .flatten()
+            .mapNotNull { message -> message.messageId?.let { id -> id to message.createdAtEpochMillis } }
+            .toMap()
+    val expiresAtByMessageId =
+        conversationMessages.values
+            .asSequence()
+            .flatten()
+            .mapNotNull { message ->
+                message.messageId?.let { id ->
+                    message.expiresAtEpochMillis?.let { expiresAt -> id to expiresAt }
+                }
+            }
+            .toMap()
+    return PersistedChatState(
+        ownerFingerprint = ownerFingerprint,
+        savedAtEpochMillis = nowEpochMillis,
+        messagesByConversation =
+            conversationMessages
+                .mapValues { (_, messages) -> messages.mapNotNull(ChatBubble::toPersisted) }
+                .filterValues(List<PersistedChatMessage>::isNotEmpty),
+        draftsByConversation =
+            draftsByConversation.mapValues { (_, draft) ->
+                PersistedConversationDraft(
+                    text = draft.text,
+                    updatedAtEpochMillis = draft.updatedAtEpochMillis
+                )
+            },
+        pendingTextOutbox =
+            pendingOutboundMessages.values.map { pending ->
+                PersistedTextOutboxMessage(
+                    conversationId = pending.conversationId,
+                    text = pending.text,
+                    displayMessageId = pending.displayMessageId,
+                    remainingTargetFingerprints = pending.remainingTargetFingerprints,
+                    quotedMessage = pending.quotedMessage?.toPersisted(),
+                    forwarded = pending.forwarded,
+                    forwardCount = pending.forwardCount,
+                    createdAtEpochMillis = createdAtByMessageId[pending.displayMessageId] ?: nowEpochMillis,
+                    expiresAtEpochMillis = expiresAtByMessageId[pending.displayMessageId]
+                )
+            },
+        pendingVoiceOutbox =
+            pendingOutboundVoiceMessages.values.map { pending ->
+                PersistedVoiceOutboxMessage(
+                    conversationId = pending.conversationId,
+                    displayMessageId = pending.displayMessageId,
+                    remainingTargetFingerprints = pending.remainingTargetFingerprints,
+                    durationMs = pending.durationMs,
+                    audioBase64 = Base64.getEncoder().encodeToString(pending.audioBytes),
+                    createdAtEpochMillis = createdAtByMessageId[pending.displayMessageId] ?: nowEpochMillis,
+                    expiresAtEpochMillis = expiresAtByMessageId[pending.displayMessageId]
+                )
+            },
+        outgoingEnvelopes =
+            outgoingMessages.mapValues { (_, outgoing) ->
+                PersistedOutgoingEnvelope(
+                    conversationId = outgoing.conversationId,
+                    displayMessageId = outgoing.displayMessageId,
+                    recipientFingerprint = outgoing.recipientFingerprint,
+                    expectedRecipients = outgoing.expectedRecipients,
+                    createdAtEpochMillis = outgoing.createdAtEpochMillis
+                )
+            },
+        expectedRecipientsByMessage = expectedRecipientsByMessage,
+        deliveredRecipientsByMessage = deliveredReceiptsByMessage,
+        readRecipientsByMessage = readReceiptsByMessage,
+        sentReadReceipts = sentReadReceipts,
+        conversationUpdateOrder = conversationUpdateOrder
+    )
+}
+
+private fun restorePersistedChatState(
+    state: PersistedChatState,
+    validConversationIds: Set<String>,
+    trustedFingerprints: Set<String>,
+    localFingerprint: String,
+    nowEpochMillis: Long = System.currentTimeMillis()
+): RestoredChatPresentationState {
+    val validParticipantFingerprints = trustedFingerprints + localFingerprint
+    val messages =
+        state.messagesByConversation
+            .filterKeys { conversationId -> conversationId in validConversationIds }
+            .mapValues { (_, storedMessages) ->
+                storedMessages.mapNotNull { stored ->
+                    stored.toPresentation(nowEpochMillis)?.takeIf { message ->
+                        message.senderFingerprint == null ||
+                            message.senderFingerprint in validParticipantFingerprints
+                    }?.let { message ->
+                        message.copy(
+                            reactions =
+                                message.reactions.filterKeys { fingerprint ->
+                                    fingerprint in validParticipantFingerprints
+                                }
+                        )
+                    }
+                }
+            }
+            .mapValues { (_, restoredMessages) -> restoredMessages.toMutableList() }
+            .toMutableMap()
+
+    val pendingText =
+        state.pendingTextOutbox.mapNotNull { stored ->
+            if (
+                stored.conversationId !in validConversationIds ||
+                stored.expiresAtEpochMillis?.let { expiresAt -> expiresAt <= nowEpochMillis } == true
+            ) {
+                return@mapNotNull null
+            }
+            val recipients = stored.remainingTargetFingerprints.filter { it in trustedFingerprints }.distinct()
+            if (recipients.isEmpty()) {
+                return@mapNotNull null
+            }
+            stored.displayMessageId to
+                PendingOutboundMessage(
+                    conversationId = stored.conversationId,
+                    text = stored.text,
+                    displayMessageId = stored.displayMessageId,
+                    remainingTargetFingerprints = recipients,
+                    quotedMessage = stored.quotedMessage?.toPresentation(),
+                    forwarded = stored.forwarded,
+                    forwardCount = stored.forwardCount
+                )
+        }.toMap()
+
+    val pendingVoice =
+        state.pendingVoiceOutbox.mapNotNull { stored ->
+            if (
+                stored.conversationId !in validConversationIds ||
+                stored.expiresAtEpochMillis?.let { expiresAt -> expiresAt <= nowEpochMillis } == true
+            ) {
+                return@mapNotNull null
+            }
+            val recipients = stored.remainingTargetFingerprints.filter { it in trustedFingerprints }.distinct()
+            val audioBytes = runCatching { Base64.getDecoder().decode(stored.audioBase64) }.getOrNull()
+            if (recipients.isEmpty() || audioBytes == null) {
+                return@mapNotNull null
+            }
+            stored.displayMessageId to
+                PendingOutboundVoiceMessage(
+                    conversationId = stored.conversationId,
+                    displayMessageId = stored.displayMessageId,
+                    remainingTargetFingerprints = recipients,
+                    durationMs = stored.durationMs,
+                    audioBytes = audioBytes
+                )
+        }.toMap()
+
+    state.pendingTextOutbox.forEach { stored ->
+        val pending = pendingText[stored.displayMessageId] ?: return@forEach
+        val conversationMessages = messages.getOrPut(pending.conversationId) { mutableListOf() }
+        if (conversationMessages.none { message -> message.messageId == pending.displayMessageId }) {
+            conversationMessages +=
+                ChatBubble(
+                    text = pending.text,
+                    mine = true,
+                    encrypted = true,
+                    timestamp = formatClockTime(stored.createdAtEpochMillis),
+                    messageId = pending.displayMessageId,
+                    deliveryState = DeliveryState.Waiting,
+                    quotedMessage = pending.quotedMessage,
+                    createdAtEpochMillis = stored.createdAtEpochMillis,
+                    expiresAtEpochMillis = stored.expiresAtEpochMillis,
+                    forwarded = pending.forwarded,
+                    forwardCount = pending.forwardCount
+                )
+        }
+    }
+    state.pendingVoiceOutbox.forEach { stored ->
+        val pending = pendingVoice[stored.displayMessageId] ?: return@forEach
+        val conversationMessages = messages.getOrPut(pending.conversationId) { mutableListOf() }
+        if (conversationMessages.none { message -> message.messageId == pending.displayMessageId }) {
+            conversationMessages +=
+                ChatBubble(
+                    text = "语音消息 · ${formatDuration(pending.durationMs)}",
+                    mine = true,
+                    encrypted = true,
+                    timestamp = formatClockTime(stored.createdAtEpochMillis),
+                    messageId = pending.displayMessageId,
+                    deliveryState = DeliveryState.Waiting,
+                    kind = ChatMessageKind.Voice,
+                    voiceDurationMs = pending.durationMs,
+                    voiceAudioBytes = pending.audioBytes,
+                    createdAtEpochMillis = stored.createdAtEpochMillis,
+                    expiresAtEpochMillis = stored.expiresAtEpochMillis
+                )
+        }
+    }
+
+    val outgoing =
+        state.outgoingEnvelopes.mapNotNull { (envelopeId, stored) ->
+            if (
+                stored.conversationId !in validConversationIds ||
+                stored.recipientFingerprint !in trustedFingerprints
+            ) {
+                return@mapNotNull null
+            }
+            val expected = stored.expectedRecipients.intersect(trustedFingerprints)
+                .ifEmpty { setOf(stored.recipientFingerprint) }
+            envelopeId to
+                OutgoingMessageRef(
+                    conversationId = stored.conversationId,
+                    displayMessageId = stored.displayMessageId,
+                    recipientFingerprint = stored.recipientFingerprint,
+                    expectedRecipients = expected,
+                    createdAtEpochMillis = stored.createdAtEpochMillis
+                )
+        }.toMap()
+    val pendingMessageIds = pendingText.keys + pendingVoice.keys
+    val outgoingDisplayMessageIds = outgoing.values.mapTo(mutableSetOf()) { it.displayMessageId }
+    val normalizedMessages =
+        messages.mapValues { (_, conversationMessages) ->
+            conversationMessages.map { message ->
+                val messageId = message.messageId
+                if (!message.mine || messageId == null) {
+                    message
+                } else {
+                    val normalizedState =
+                        when {
+                            messageId in pendingMessageIds &&
+                                message.deliveryState != DeliveryState.Delivered &&
+                                message.deliveryState != DeliveryState.Read -> DeliveryState.Waiting
+                            message.deliveryState == DeliveryState.Sending &&
+                                messageId in outgoingDisplayMessageIds -> DeliveryState.Sent
+                            message.deliveryState == DeliveryState.Sending -> DeliveryState.Failed
+                            message.deliveryState == DeliveryState.Waiting &&
+                                messageId !in pendingMessageIds -> DeliveryState.Failed
+                            else -> message.deliveryState
+                        }
+                    message.copy(deliveryState = normalizedState)
+                }
+            }
+        }
+
+    val expectedRecipients =
+        state.expectedRecipientsByMessage
+            .mapValues { (_, recipients) -> recipients.intersect(trustedFingerprints) }
+            .filterValues(Set<String>::isNotEmpty)
+            .toMutableMap()
+    pendingText.forEach { (messageId, pending) ->
+        expectedRecipients[messageId] =
+            expectedRecipients[messageId].orEmpty() + pending.remainingTargetFingerprints
+    }
+    pendingVoice.forEach { (messageId, pending) ->
+        expectedRecipients[messageId] =
+            expectedRecipients[messageId].orEmpty() + pending.remainingTargetFingerprints
+    }
+    outgoing.values.forEach { envelope ->
+        expectedRecipients[envelope.displayMessageId] =
+            expectedRecipients[envelope.displayMessageId].orEmpty() + envelope.expectedRecipients
+    }
+    val deliveredRecipients =
+        state.deliveredRecipientsByMessage
+            .mapValues { (messageId, recipients) ->
+                recipients.intersect(expectedRecipients[messageId].orEmpty())
+            }
+            .filterValues(Set<String>::isNotEmpty)
+    val readRecipients =
+        state.readRecipientsByMessage
+            .mapValues { (messageId, recipients) ->
+                recipients.intersect(expectedRecipients[messageId].orEmpty())
+            }
+            .filterValues(Set<String>::isNotEmpty)
+    val receiptPrefixes = trustedFingerprints.map { fingerprint -> "$fingerprint:" }
+
+    return RestoredChatPresentationState(
+        messagesByConversation = normalizedMessages,
+        draftsByConversation =
+            state.draftsByConversation
+                .filterKeys { conversationId -> conversationId in validConversationIds }
+                .mapValues { (_, draft) ->
+                    ConversationDraft(
+                        text = draft.text,
+                        updatedAtEpochMillis = draft.updatedAtEpochMillis
+                    )
+                },
+        pendingTextOutbox = pendingText,
+        pendingVoiceOutbox = pendingVoice,
+        outgoingMessages = outgoing,
+        expectedRecipientsByMessage = expectedRecipients,
+        deliveredRecipientsByMessage = deliveredRecipients,
+        readRecipientsByMessage = readRecipients,
+        sentReadReceipts =
+            state.sentReadReceipts.filterTo(mutableSetOf()) { receiptKey ->
+                receiptPrefixes.any(receiptKey::startsWith)
+            },
+        conversationUpdateOrder =
+            state.conversationUpdateOrder.filterKeys { conversationId ->
+                conversationId in validConversationIds
+            }
+    )
+}
+
 @Composable
 internal fun SpotChatApp(
     notificationIntent: Intent? = null,
@@ -733,6 +1228,10 @@ internal fun SpotChatApp(
     val localFingerprint =
         remember(identity) {
             SpotChatCrypto.fingerprint(identity.public)
+        }
+    val chatStateStore =
+        remember(context, localFingerprint) {
+            EncryptedChatStateStore.create(context, localFingerprint)
         }
     val replayProtection =
         remember(context, localFingerprint) {
@@ -779,6 +1278,8 @@ internal fun SpotChatApp(
             SpotChatWearStateStore(context)
         }
     val coroutineScope = rememberCoroutineScope()
+    val chatStateDisposalScope =
+        remember(chatStateStore) { CoroutineScope(SupervisorJob() + Dispatchers.IO) }
     val trustedPeers =
         remember {
             mutableStateListOf<StoredTrustedPeer>().apply {
@@ -845,12 +1346,21 @@ internal fun SpotChatApp(
     val readCounts = remember { mutableStateMapOf<String, Int>() }
     val readReceiptsByMessage = remember { mutableStateMapOf<String, Set<String>>() }
     val expectedRecipientsByMessage = remember { mutableStateMapOf<String, Set<String>>() }
-    val sentReadReceipts = remember { mutableSetOf<String>() }
+    val sentReadReceipts = remember { mutableStateListOf<String>() }
+    val inFlightReadReceipts = remember { mutableSetOf<String>() }
     val pendingOutboundMessages = remember { mutableStateMapOf<String, PendingOutboundMessage>() }
     val pendingOutboundVoiceMessages = remember { mutableStateMapOf<String, PendingOutboundVoiceMessage>() }
     val inFlightOutboundMessages = remember { mutableStateMapOf<String, Boolean>() }
     val inFlightOutboundVoiceMessages = remember { mutableStateMapOf<String, Boolean>() }
     val conversationUpdateOrder = remember { mutableStateMapOf<String, Long>() }
+    var chatStateLoadComplete by remember(chatStateStore) { mutableStateOf(false) }
+    var chatStateWritable by remember(chatStateStore) { mutableStateOf(false) }
+    val chatStateSnapshotSequence = remember(chatStateStore) { AtomicLong(0L) }
+    val chatStateLastWrittenSequence = remember(chatStateStore) { AtomicLong(0L) }
+    val chatStateLastWrittenSnapshot =
+        remember(chatStateStore) { AtomicReference<PersistedChatState?>(null) }
+    val chatStateWriteLock = remember(chatStateStore) { Any() }
+    val chatStateOperational = chatStateLoadComplete && chatStateWritable
 
     fun isConversationLocked(conversationId: String): Boolean =
         lockedConversationIds[conversationId] == true
@@ -909,6 +1419,240 @@ internal fun SpotChatApp(
     val handshakeAttemptsByRoute = remember { mutableMapOf<String, MutableList<Long>>() }
     val knownPeersByFingerprint = remember { mutableStateMapOf<String, TransportPeer>() }
     val peerLastSeenAt = remember { mutableStateMapOf<String, Long>() }
+
+    fun currentPersistedChatState(): PersistedChatState =
+        buildPersistedChatState(
+            ownerFingerprint = localFingerprint,
+            conversationMessages = conversationMessages.toMap(),
+            draftsByConversation = draftsByConversation.toMap(),
+            pendingOutboundMessages = pendingOutboundMessages.toMap(),
+            pendingOutboundVoiceMessages = pendingOutboundVoiceMessages.toMap(),
+            outgoingMessages = outgoingMessages.toMap(),
+            expectedRecipientsByMessage = expectedRecipientsByMessage.toMap(),
+            deliveredReceiptsByMessage = deliveredReceiptsByMessage.toMap(),
+            readReceiptsByMessage = readReceiptsByMessage.toMap(),
+            sentReadReceipts = sentReadReceipts.toSet(),
+            conversationUpdateOrder = conversationUpdateOrder.toMap()
+        )
+
+    fun captureDurableChatMutation(): DurableChatMutationSnapshot =
+        DurableChatMutationSnapshot(
+            messagesByConversation =
+                conversationMessages.mapValues { (_, messages) -> messages.toList() },
+            draftsByConversation = draftsByConversation.toMap(),
+            pendingTextOutbox = pendingOutboundMessages.toMap(),
+            pendingVoiceOutbox = pendingOutboundVoiceMessages.toMap(),
+            outgoingMessages = outgoingMessages.toMap(),
+            expectedRecipientsByMessage = expectedRecipientsByMessage.toMap(),
+            deliveredRecipientsByMessage = deliveredReceiptsByMessage.toMap(),
+            readRecipientsByMessage = readReceiptsByMessage.toMap(),
+            deliveredCounts = deliveredCounts.toMap(),
+            readCounts = readCounts.toMap(),
+            conversationUpdateOrder = conversationUpdateOrder.toMap(),
+            conversationUpdateSequence = conversationUpdateSequence
+        )
+
+    fun <K, V> rollbackMapChanges(
+        target: MutableMap<K, V>,
+        before: Map<K, V>,
+        applied: Map<K, V>
+    ) {
+        (before.keys + applied.keys).forEach { key ->
+            val beforeContains = before.containsKey(key)
+            val appliedContains = applied.containsKey(key)
+            if (beforeContains == appliedContains && before[key] == applied[key]) {
+                return@forEach
+            }
+            val currentContains = target.containsKey(key)
+            if (currentContains != appliedContains || currentContains && target[key] != applied[key]) {
+                return@forEach
+            }
+            if (beforeContains) {
+                @Suppress("UNCHECKED_CAST")
+                target[key] = before[key] as V
+            } else {
+                target.remove(key)
+            }
+        }
+    }
+
+    fun rollbackDurableChatMutation(
+        before: DurableChatMutationSnapshot,
+        applied: DurableChatMutationSnapshot
+    ) {
+        rollbackMapChanges(conversationMessages, before.messagesByConversation, applied.messagesByConversation)
+        rollbackMapChanges(draftsByConversation, before.draftsByConversation, applied.draftsByConversation)
+        rollbackMapChanges(pendingOutboundMessages, before.pendingTextOutbox, applied.pendingTextOutbox)
+        rollbackMapChanges(
+            pendingOutboundVoiceMessages,
+            before.pendingVoiceOutbox,
+            applied.pendingVoiceOutbox
+        )
+        rollbackMapChanges(outgoingMessages, before.outgoingMessages, applied.outgoingMessages)
+        rollbackMapChanges(
+            expectedRecipientsByMessage,
+            before.expectedRecipientsByMessage,
+            applied.expectedRecipientsByMessage
+        )
+        rollbackMapChanges(
+            deliveredReceiptsByMessage,
+            before.deliveredRecipientsByMessage,
+            applied.deliveredRecipientsByMessage
+        )
+        rollbackMapChanges(
+            readReceiptsByMessage,
+            before.readRecipientsByMessage,
+            applied.readRecipientsByMessage
+        )
+        rollbackMapChanges(deliveredCounts, before.deliveredCounts, applied.deliveredCounts)
+        rollbackMapChanges(readCounts, before.readCounts, applied.readCounts)
+        rollbackMapChanges(
+            conversationUpdateOrder,
+            before.conversationUpdateOrder,
+            applied.conversationUpdateOrder
+        )
+        if (conversationUpdateSequence == applied.conversationUpdateSequence) {
+            conversationUpdateSequence = before.conversationUpdateSequence
+        }
+        outboundQueueWakeRevision += 1L
+    }
+
+    suspend fun persistChatStateNow(
+        requiredState: ((PersistedChatState) -> Boolean)? = null
+    ): Boolean {
+        if (!chatStateLoadComplete || !chatStateWritable) {
+            return false
+        }
+        val snapshotSequence = chatStateSnapshotSequence.incrementAndGet()
+        val state = currentPersistedChatState()
+        return try {
+            withContext(Dispatchers.IO + NonCancellable) {
+                synchronized(chatStateWriteLock) {
+                    val persistedState =
+                        if (snapshotSequence > chatStateLastWrittenSequence.get()) {
+                            chatStateStore.save(state).also { savedState ->
+                                chatStateLastWrittenSnapshot.set(savedState)
+                                chatStateLastWrittenSequence.set(snapshotSequence)
+                            }
+                        } else {
+                            chatStateLastWrittenSnapshot.get()
+                        }
+                    requiredState?.invoke(persistedState ?: return@synchronized false) ?: true
+                }
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            chatStateWritable = false
+            trustState = error.readableMessage("本地聊天状态保存失败，已暂停收发")
+            false
+        }
+    }
+
+    fun persistDurableUserMutation(
+        before: DurableChatMutationSnapshot,
+        applied: DurableChatMutationSnapshot,
+        requiredState: (PersistedChatState) -> Boolean,
+        successState: String,
+        failureState: String,
+        onSuccess: () -> Unit = {},
+        onRollback: () -> Unit = {}
+    ) {
+        trustState = "正在安全保存更改"
+        coroutineScope.launch {
+            if (persistChatStateNow(requiredState)) {
+                onSuccess()
+                trustState = successState
+            } else {
+                val storageFailureState = trustState
+                rollbackDurableChatMutation(before, applied)
+                onRollback()
+                val repaired = chatStateWritable && persistChatStateNow()
+                trustState =
+                    if (repaired || storageFailureState == "正在安全保存更改") {
+                        failureState
+                    } else {
+                        "$failureState；$storageFailureState"
+                    }
+            }
+        }
+    }
+
+    fun persistChatStateSoon() {
+        if (!chatStateLoadComplete || !chatStateWritable) {
+            return
+        }
+        coroutineScope.launch {
+            persistChatStateNow()
+        }
+    }
+
+    fun persistOutboundRemoval(
+        conversationId: String? = null,
+        displayMessageIds: Set<String> = emptySet(),
+        recipientFingerprint: String? = null
+    ) {
+        if (conversationId == null && displayMessageIds.isEmpty() && recipientFingerprint == null) {
+            return
+        }
+        coroutineScope.launch {
+            persistChatStateNow { state ->
+                state.pendingTextOutbox.none { queued ->
+                    queued.conversationId == conversationId ||
+                        queued.displayMessageId in displayMessageIds ||
+                        recipientFingerprint in queued.remainingTargetFingerprints
+                } &&
+                    state.pendingVoiceOutbox.none { queued ->
+                        queued.conversationId == conversationId ||
+                            queued.displayMessageId in displayMessageIds ||
+                            recipientFingerprint in queued.remainingTargetFingerprints
+                    } &&
+                    state.outgoingEnvelopes.values.none { outgoing ->
+                        outgoing.displayMessageId in displayMessageIds ||
+                            outgoing.recipientFingerprint == recipientFingerprint ||
+                            recipientFingerprint in outgoing.expectedRecipients
+                    } &&
+                    state.expectedRecipientsByMessage.none { (messageId, recipients) ->
+                        messageId in displayMessageIds || recipientFingerprint in recipients
+                    }
+            }
+        }
+    }
+
+    fun persistRemovedMessages(
+        conversationId: String,
+        removedMessages: List<ChatBubble>
+    ) {
+        if (removedMessages.isEmpty()) {
+            return
+        }
+        val removedMessageIds = removedMessages.mapNotNull(ChatBubble::messageId).toSet()
+        val removedFallbackKeys =
+            removedMessages
+                .filter { message -> message.messageId == null }
+                .map { message ->
+                    Triple(message.createdAtEpochMillis, message.text, message.mine)
+                }
+                .toSet()
+        coroutineScope.launch {
+            persistChatStateNow { state ->
+                state.messagesByConversation[conversationId].orEmpty().none { persisted ->
+                    persisted.messageId in removedMessageIds ||
+                        Triple(persisted.createdAtEpochMillis, persisted.text, persisted.mine) in
+                        removedFallbackKeys
+                } &&
+                    state.pendingTextOutbox.none { queued ->
+                        queued.displayMessageId in removedMessageIds
+                    } &&
+                    state.pendingVoiceOutbox.none { queued ->
+                        queued.displayMessageId in removedMessageIds
+                    } &&
+                    state.outgoingEnvelopes.values.none { outgoing ->
+                        outgoing.displayMessageId in removedMessageIds
+                    }
+            }
+        }
+    }
 
     fun clearVoiceRecordingState() {
         isRecordingVoice = false
@@ -1374,26 +2118,125 @@ internal fun SpotChatApp(
             text.contains("＠所有人")
     }
 
+    fun pendingOutboxConversationIds(): Set<String> =
+        buildSet {
+            pendingOutboundMessages.values.mapTo(this) { pending -> pending.conversationId }
+            pendingOutboundVoiceMessages.values.mapTo(this) { pending -> pending.conversationId }
+        }
+
+    fun pendingVoiceByteCounts(): Map<String, Int> =
+        pendingOutboundVoiceMessages.mapValues { (_, pending) -> pending.audioBytes.size }
+
+    fun pruneExpiredOutgoingEnvelopes() {
+        val expiresBefore = System.currentTimeMillis() - OUTGOING_ENVELOPE_TTL_MS
+        outgoingMessages
+            .filterValues { outgoing -> outgoing.createdAtEpochMillis <= expiresBefore }
+            .keys
+            .toList()
+            .forEach(outgoingMessages::remove)
+    }
+
+    fun activeReceiptTrackedMessageIds(): Set<String> {
+        pruneExpiredOutgoingEnvelopes()
+        return buildSet {
+            addAll(pendingOutboundMessages.keys)
+            addAll(pendingOutboundVoiceMessages.keys)
+            outgoingMessages.values.mapTo(this) { outgoing -> outgoing.displayMessageId }
+        }
+    }
+
+    fun outboxCapacityMessage(issue: OutboxCapacityIssue): String =
+        when (issue) {
+            OutboxCapacityIssue.MessageCount -> "待发送消息已达到本地保存上限"
+            OutboxCapacityIssue.RecipientCount -> "收件人数量超过本地保存上限"
+            OutboxCapacityIssue.VoiceSize -> "语音大小超过本地保存上限"
+            OutboxCapacityIssue.VoiceBudget -> "待发送语音已占满本地保存空间"
+            OutboxCapacityIssue.CriticalConversationCount -> "待发送聊天数量已达到本地保存上限"
+            OutboxCapacityIssue.EnvelopeCount -> "正在等待回执的消息过多，请稍后重试"
+            OutboxCapacityIssue.ReceiptTrackingCount -> "等待回执的消息已达到本地保存上限"
+        }
+
+    fun validateTextSendCapacity(
+        displayMessageId: String,
+        recipientCount: Int,
+        conversationId: String,
+        persistOutbox: Boolean
+    ): OutboxCapacityIssue? =
+        when {
+            recipientCount > EncryptedChatStateStore.MAX_RECIPIENTS ->
+                OutboxCapacityIssue.RecipientCount
+            recipientCount == 0 -> null
+            else ->
+                validateReceiptTrackingCapacity(
+                    currentTrackedMessageIds = activeReceiptTrackedMessageIds(),
+                    messageId = displayMessageId
+                ) ?: if (!persistOutbox) {
+                    null
+                } else {
+                    validateTextOutboxCapacity(
+                        currentMessageIds = pendingOutboundMessages.keys,
+                        messageId = displayMessageId,
+                        recipientCount = recipientCount,
+                        currentPendingConversationIds = pendingOutboxConversationIds(),
+                        conversationId = conversationId
+                    )
+                }
+        }
+
+    fun validateVoiceSendCapacity(
+        displayMessageId: String,
+        audioByteCount: Int,
+        recipientCount: Int,
+        conversationId: String,
+        persistOutbox: Boolean
+    ): OutboxCapacityIssue? =
+        when {
+            recipientCount > EncryptedChatStateStore.MAX_RECIPIENTS ->
+                OutboxCapacityIssue.RecipientCount
+            audioByteCount !in 1..EncryptedChatStateStore.MAX_SINGLE_VOICE_BYTES ->
+                OutboxCapacityIssue.VoiceSize
+            recipientCount == 0 -> null
+            else ->
+                validateReceiptTrackingCapacity(
+                    currentTrackedMessageIds = activeReceiptTrackedMessageIds(),
+                    messageId = displayMessageId
+                ) ?: if (!persistOutbox) {
+                    null
+                } else {
+                    validateVoiceOutboxCapacity(
+                        currentAudioBytesByMessage = pendingVoiceByteCounts(),
+                        messageId = displayMessageId,
+                        audioByteCount = audioByteCount,
+                        recipientCount = recipientCount,
+                        currentPendingConversationIds = pendingOutboxConversationIds(),
+                        conversationId = conversationId
+                    )
+                }
+        }
+
     fun DeliveryState.canMoveTo(next: DeliveryState): Boolean =
         deliveryStateRank(next) >= deliveryStateRank(this)
 
     fun rememberOutgoingEnvelope(
         envelopeMessageId: String,
         outgoingMessage: OutgoingMessageRef
-    ) {
-        val expiresBefore = System.currentTimeMillis() - OUTGOING_ENVELOPE_TTL_MS
-        outgoingMessages
-            .filterValues { message -> message.createdAtEpochMillis <= expiresBefore }
-            .keys
-            .toList()
-            .forEach(outgoingMessages::remove)
-        if (outgoingMessages.size >= MAX_OUTGOING_ENVELOPES) {
-            outgoingMessages.entries
-                .minByOrNull { (_, message) -> message.createdAtEpochMillis }
-                ?.key
-                ?.let(outgoingMessages::remove)
+    ): Boolean {
+        pruneExpiredOutgoingEnvelopes()
+        val capacityIssue =
+            validateReceiptTrackingCapacity(
+                currentTrackedMessageIds = activeReceiptTrackedMessageIds(),
+                messageId = outgoingMessage.displayMessageId
+            ) ?: validateOutgoingEnvelopeCapacity(
+                currentEnvelopeIds = outgoingMessages.keys,
+                envelopeId = envelopeMessageId,
+                recipientCount = outgoingMessage.expectedRecipients.size
+            )
+        if (capacityIssue != null) {
+            trustState = outboxCapacityMessage(capacityIssue)
+            return false
         }
         outgoingMessages[envelopeMessageId] = outgoingMessage
+        return true
     }
 
     fun updateMessageState(
@@ -1463,7 +2306,10 @@ internal fun SpotChatApp(
         }
     }
 
-    fun removeRecipientFromOutboundTracking(fingerprint: String) {
+    fun removeRecipientFromOutboundTracking(
+        fingerprint: String,
+        persistRemoval: Boolean = true
+    ) {
         recipientSetRevision += 1L
         expectedRecipientsByMessage
             .filterValues { recipients -> fingerprint in recipients }
@@ -1533,11 +2379,15 @@ internal fun SpotChatApp(
                         updateMessageState(displayMessageId, DeliveryState.Sent)
                 }
             }
+        if (persistRemoval) {
+            persistOutboundRemoval(recipientFingerprint = fingerprint)
+        }
     }
 
     fun clearPendingOutboundForConversation(
         conversationId: String,
-        markFailed: Boolean = false
+        markFailed: Boolean = false,
+        persistRemoval: Boolean = true
     ): Int {
         val pendingTextMessageIds =
             pendingOutboundMessages
@@ -1571,6 +2421,12 @@ internal fun SpotChatApp(
                 expectedRecipientsByMessage.remove(messageId)
             }
         }
+        if (persistRemoval) {
+            persistOutboundRemoval(
+                conversationId = conversationId,
+                displayMessageIds = pendingMessageIds.toSet()
+            )
+        }
         return pendingMessageIds.size
     }
 
@@ -1603,9 +2459,30 @@ internal fun SpotChatApp(
         )
     }
 
-    fun appendMessage(
+    fun recordIncomingAttention(
         conversationId: String,
         message: ChatBubble
+    ) {
+        if (
+            message.mine ||
+            message.deliveryState == DeliveryState.System ||
+            (appSurface == AppSurface.Chat && activeConversationId == conversationId)
+        ) {
+            return
+        }
+        unreadCounts[conversationId] = (unreadCounts[conversationId] ?: 0) + 1
+        if (messageMentionsMe(message)) {
+            mentionCounts[conversationId] = (mentionCounts[conversationId] ?: 0) + 1
+        }
+        if (shouldNotifyConversation(conversationId)) {
+            notifyIncomingMessage(conversationId, message)
+        }
+    }
+
+    fun appendMessage(
+        conversationId: String,
+        message: ChatBubble,
+        recordAttention: Boolean = true
     ) {
         val disappearingMode = disappearingModesByConversation[conversationId] ?: DisappearingMessageMode.Off
         val timedMessage =
@@ -1622,18 +2499,8 @@ internal fun SpotChatApp(
         conversationMessages[conversationId] = messagesForConversation(conversationId) + timedMessage
         conversationUpdateSequence += 1
         conversationUpdateOrder[conversationId] = conversationUpdateSequence
-        if (
-            !timedMessage.mine &&
-            timedMessage.deliveryState != DeliveryState.System &&
-            (appSurface != AppSurface.Chat || activeConversationId != conversationId)
-        ) {
-            unreadCounts[conversationId] = (unreadCounts[conversationId] ?: 0) + 1
-            if (messageMentionsMe(timedMessage)) {
-                mentionCounts[conversationId] = (mentionCounts[conversationId] ?: 0) + 1
-            }
-            if (shouldNotifyConversation(conversationId)) {
-                notifyIncomingMessage(conversationId, timedMessage)
-            }
+        if (recordAttention) {
+            recordIncomingAttention(conversationId, timedMessage)
         }
     }
 
@@ -1673,6 +2540,113 @@ internal fun SpotChatApp(
                 deliveryState = DeliveryState.System
             )
         )
+    }
+
+    LaunchedEffect(chatStateStore, localFingerprint) {
+        chatStateLoadComplete = false
+        chatStateWritable = false
+        val loadResult =
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    chatStateStore.load()
+                }
+            }.getOrElse { error ->
+                ChatStateLoadResult.Unreadable(error)
+            }
+        when (loadResult) {
+            ChatStateLoadResult.Missing -> {
+                chatStateLastWrittenSnapshot.set(null)
+                chatStateWritable = true
+                trustState = "本地聊天状态已就绪"
+            }
+
+            is ChatStateLoadResult.Loaded -> {
+                chatStateLastWrittenSnapshot.set(loadResult.state)
+                val trustedFingerprints = trustedPeers.mapTo(mutableSetOf()) { peer -> peer.fingerprint }
+                val validConversationIds =
+                    trustedFingerprints
+                        .mapTo(mutableSetOf(NEARBY_GROUP_CONVERSATION_ID)) { fingerprint ->
+                            directConversationId(fingerprint)
+                        }
+                val restored =
+                    restorePersistedChatState(
+                        state = loadResult.state,
+                        validConversationIds = validConversationIds,
+                        trustedFingerprints = trustedFingerprints,
+                        localFingerprint = localFingerprint
+                    )
+                val systemMessages =
+                    conversationMessages.mapValues { (_, messages) ->
+                        messages.filter { message -> message.deliveryState == DeliveryState.System }
+                    }
+                conversationMessages.keys.toList().forEach { conversationId ->
+                    conversationMessages[conversationId] = systemMessages[conversationId].orEmpty()
+                }
+                restored.messagesByConversation.forEach { (conversationId, messages) ->
+                    conversationMessages[conversationId] =
+                        systemMessages[conversationId].orEmpty() + messages.sortedBy(ChatBubble::createdAtEpochMillis)
+                }
+                draftsByConversation.clear()
+                draftsByConversation.putAll(restored.draftsByConversation)
+                pendingOutboundMessages.clear()
+                pendingOutboundMessages.putAll(restored.pendingTextOutbox)
+                pendingOutboundVoiceMessages.clear()
+                pendingOutboundVoiceMessages.putAll(restored.pendingVoiceOutbox)
+                outgoingMessages.clear()
+                outgoingMessages.putAll(restored.outgoingMessages)
+                expectedRecipientsByMessage.clear()
+                expectedRecipientsByMessage.putAll(restored.expectedRecipientsByMessage)
+                deliveredReceiptsByMessage.clear()
+                deliveredReceiptsByMessage.putAll(restored.deliveredRecipientsByMessage)
+                deliveredCounts.clear()
+                restored.deliveredRecipientsByMessage.forEach { (messageId, recipients) ->
+                    deliveredCounts[messageId] = recipients.size
+                }
+                readReceiptsByMessage.clear()
+                readReceiptsByMessage.putAll(restored.readRecipientsByMessage)
+                readCounts.clear()
+                restored.readRecipientsByMessage.forEach { (messageId, recipients) ->
+                    readCounts[messageId] = recipients.size
+                }
+                sentReadReceipts.clear()
+                sentReadReceipts.addAll(restored.sentReadReceipts)
+                conversationUpdateOrder.clear()
+                conversationUpdateOrder.putAll(restored.conversationUpdateOrder)
+                conversationUpdateSequence = restored.conversationUpdateOrder.values.maxOrNull() ?: 0L
+                outboundQueueWakeRevision += 1L
+                chatStateWritable = true
+                trustState = "已恢复本地聊天状态"
+            }
+
+            is ChatStateLoadResult.Unreadable -> {
+                chatStateLastWrittenSnapshot.set(null)
+                trustState = loadResult.cause.readableMessage("本地聊天状态无法验证，已暂停收发")
+                appendSystemMessage(
+                    text = "本地聊天状态无法验证。为避免覆盖或发送不完整数据，SpotChat 已暂停消息收发。",
+                    encrypted = true,
+                    conversationId = NEARBY_GROUP_CONVERSATION_ID
+                )
+            }
+        }
+        chatStateLoadComplete = true
+    }
+
+    LaunchedEffect(
+        chatStateOperational,
+        conversationMessages.toMap(),
+        draftsByConversation.toMap(),
+        pendingOutboundMessages.toMap(),
+        pendingOutboundVoiceMessages.toMap(),
+        outgoingMessages.toMap(),
+        expectedRecipientsByMessage.toMap(),
+        deliveredReceiptsByMessage.toMap(),
+        readReceiptsByMessage.toMap(),
+        sentReadReceipts.toList(),
+        conversationUpdateOrder.toMap()
+    ) {
+        if (chatStateOperational) {
+            persistChatStateNow()
+        }
     }
 
     fun ensureDirectConversation(storedPeer: StoredTrustedPeer): String {
@@ -1822,25 +2796,77 @@ internal fun SpotChatApp(
             return
         }
         val announcementOnly = !isAnnouncementOnly(conversation.id)
-        announcementOnlyByConversation[conversation.id] = announcementOnly
-        trustState = groupPostingPolicyLabel(conversation.id)
-        if (announcementOnly) {
-            draftsByConversation.remove(conversation.id)
-            clearPendingOutboundForConversation(conversation.id, markFailed = true)
-            if (isRecordingVoice && activeConversationId == conversation.id) {
-                voiceRecorder.cancel()
-                clearVoiceRecordingState()
-            }
+        if (!announcementOnly) {
+            announcementOnlyByConversation[conversation.id] = false
+            trustState = groupPostingPolicyLabel(conversation.id)
+            appendSystemMessage(
+                text = "群聊已关闭公告模式，成员可继续发言",
+                encrypted = true,
+                conversationId = conversation.id
+            )
+            return
         }
+
+        val beforeMutation = captureDurableChatMutation()
+        val previousAnnouncementPresent = announcementOnlyByConversation.containsKey(conversation.id)
+        val previousAnnouncementOnly = announcementOnlyByConversation[conversation.id]
+        val removedPendingMessageIds =
+            buildSet {
+                pendingOutboundMessages.values
+                    .filter { queued -> queued.conversationId == conversation.id }
+                    .mapTo(this) { queued -> queued.displayMessageId }
+                pendingOutboundVoiceMessages.values
+                    .filter { queued -> queued.conversationId == conversation.id }
+                    .mapTo(this) { queued -> queued.displayMessageId }
+            }
+        announcementOnlyByConversation[conversation.id] = true
+        draftsByConversation.remove(conversation.id)
+        clearPendingOutboundForConversation(
+            conversationId = conversation.id,
+            markFailed = true,
+            persistRemoval = false
+        )
         appendSystemMessage(
-            text =
-                if (announcementOnly) {
-                    "群聊已开启公告模式，本机不会发送普通消息"
-                } else {
-                    "群聊已关闭公告模式，成员可继续发言"
-                },
+            text = "群聊已开启公告模式，本机不会发送普通消息",
             encrypted = true,
             conversationId = conversation.id
+        )
+        val appliedMutation = captureDurableChatMutation()
+        persistDurableUserMutation(
+            before = beforeMutation,
+            applied = appliedMutation,
+            requiredState = { state ->
+                conversation.id !in state.draftsByConversation &&
+                    state.pendingTextOutbox.none { queued -> queued.conversationId == conversation.id } &&
+                    state.pendingVoiceOutbox.none { queued -> queued.conversationId == conversation.id } &&
+                    state.outgoingEnvelopes.values.none { outgoing ->
+                        outgoing.displayMessageId in removedPendingMessageIds
+                    } &&
+                    state.expectedRecipientsByMessage.keys.none { messageId ->
+                        messageId in removedPendingMessageIds
+                    }
+            },
+            successState = groupPostingPolicyLabel(conversation.id),
+            failureState = "公告模式未能安全开启，已恢复待发送消息",
+            onSuccess = {
+                if (
+                    isAnnouncementOnly(conversation.id) &&
+                    isRecordingVoice &&
+                    recordingConversationId == conversation.id
+                ) {
+                    runCatching(voiceRecorder::cancel)
+                    clearVoiceRecordingState()
+                }
+            },
+            onRollback = {
+                if (announcementOnlyByConversation[conversation.id] == true) {
+                    if (previousAnnouncementPresent) {
+                        announcementOnlyByConversation[conversation.id] = previousAnnouncementOnly ?: false
+                    } else {
+                        announcementOnlyByConversation.remove(conversation.id)
+                    }
+                }
+            }
         )
     }
 
@@ -1883,6 +2909,14 @@ internal fun SpotChatApp(
     }
 
     fun clearConversation(conversation: ChatConversation) {
+        val beforeMutation = captureDurableChatMutation()
+        val removedMessages = messagesForConversation(conversation.id)
+        val removedMessageIds = removedMessages.mapNotNull(ChatBubble::messageId).toSet()
+        val removedFallbackKeys =
+            removedMessages
+                .filter { message -> message.messageId == null }
+                .map { message -> Triple(message.createdAtEpochMillis, message.text, message.mine) }
+                .toSet()
         removeConversationRuntimeState(conversation.id)
         conversationMessages[conversation.id] =
             listOf(
@@ -1902,12 +2936,44 @@ internal fun SpotChatApp(
         pendingDirectReply = null
         pendingForwardMessage = null
         pendingMessageEdit = null
-        trustState = "聊天已清空"
+        val appliedMutation = captureDurableChatMutation()
+        persistDurableUserMutation(
+            before = beforeMutation,
+            applied = appliedMutation,
+            requiredState = { state ->
+                state.messagesByConversation[conversation.id].orEmpty().none { persisted ->
+                    persisted.messageId in removedMessageIds ||
+                        Triple(persisted.createdAtEpochMillis, persisted.text, persisted.mine) in
+                        removedFallbackKeys
+                } &&
+                    state.pendingTextOutbox.none { queued -> queued.conversationId == conversation.id } &&
+                    state.pendingVoiceOutbox.none { queued -> queued.conversationId == conversation.id } &&
+                    state.outgoingEnvelopes.values.none { outgoing ->
+                        outgoing.conversationId == conversation.id ||
+                            outgoing.displayMessageId in removedMessageIds
+                    }
+            },
+            successState = "聊天已清空",
+            failureState = "聊天未能安全清空，已恢复"
+        )
     }
 
     fun forgetConversationPeer(conversation: ChatConversation) {
         val peerFingerprint = conversation.peerFingerprint ?: return
         val storedPeer = trustedPeer(peerFingerprint) ?: return
+        val removedMessages = messagesForConversation(conversation.id)
+        val removedOutboundIds =
+            buildSet {
+                pendingOutboundMessages.values
+                    .filter { pending -> pending.conversationId == conversation.id }
+                    .mapTo(this) { pending -> pending.displayMessageId }
+                pendingOutboundVoiceMessages.values
+                    .filter { pending -> pending.conversationId == conversation.id }
+                    .mapTo(this) { pending -> pending.displayMessageId }
+                outgoingMessages.values
+                    .filter { outgoing -> outgoing.conversationId == conversation.id }
+                    .mapTo(this) { outgoing -> outgoing.displayMessageId }
+            }
         trustedPeerStore.forget(storedPeer.fingerprint, storedPeer.publicKey)
         removeRecipientFromOutboundTracking(storedPeer.fingerprint)
         removeTrustedPeer(storedPeer)
@@ -1943,6 +3009,8 @@ internal fun SpotChatApp(
             encrypted = true,
             conversationId = NEARBY_GROUP_CONVERSATION_ID
         )
+        persistRemovedMessages(conversation.id, removedMessages)
+        persistOutboundRemoval(displayMessageIds = removedOutboundIds)
     }
 
     fun rememberPeerRoute(
@@ -2093,7 +3161,7 @@ internal fun SpotChatApp(
         messageId: String,
         status: DeliveryReceiptStatus = DeliveryReceiptStatus.Delivered,
         failureState: String
-    ) {
+    ): Boolean =
         runCatching {
             sendPacket(
                 transport = transport,
@@ -2105,10 +3173,13 @@ internal fun SpotChatApp(
                         status = status
                     )
             )
-        }.onFailure {
-            trustState = failureState
-        }
-    }
+        }.fold(
+            onSuccess = { true },
+            onFailure = {
+                trustState = failureState
+                false
+            }
+        )
 
     fun sendReadReceipt(
         conversationId: String,
@@ -2116,24 +3187,37 @@ internal fun SpotChatApp(
         messageId: String,
         peer: TransportPeer? = routeForPeer(senderFingerprint)
     ) {
+        if (!chatStateOperational) {
+            return
+        }
         if (!areReadReceiptsEnabled(conversationId)) {
             trustState = "已读回执已关闭"
             return
         }
         val replyPeer = peer ?: return
         val receiptKey = "$senderFingerprint:$messageId"
-        if (!sentReadReceipts.add(receiptKey)) {
+        if (receiptKey in sentReadReceipts || !inFlightReadReceipts.add(receiptKey)) {
             return
         }
         coroutineScope.launch {
-            sendEncryptedAck(
-                transport = currentTransport(),
-                peer = replyPeer,
-                senderFingerprint = senderFingerprint,
-                messageId = messageId,
-                status = DeliveryReceiptStatus.Read,
-                failureState = "已读回执发送失败"
-            )
+            try {
+                val sent =
+                    sendEncryptedAck(
+                        transport = currentTransport(),
+                        peer = replyPeer,
+                        senderFingerprint = senderFingerprint,
+                        messageId = messageId,
+                        status = DeliveryReceiptStatus.Read,
+                        failureState = "已读回执发送失败"
+                    )
+                if (!sent) {
+                    return@launch
+                }
+                sentReadReceipts.add(receiptKey)
+                persistChatStateNow()
+            } finally {
+                inFlightReadReceipts.remove(receiptKey)
+            }
         }
     }
 
@@ -2270,50 +3354,84 @@ internal fun SpotChatApp(
         if (isBlocked) {
             blockedPeerFingerprints.remove(peerFingerprint)
             trustState = "已解除阻止 $peerName"
-        } else {
-            blockedPeerFingerprints[peerFingerprint] = true
-            removeRecipientFromOutboundTracking(peerFingerprint)
-            pendingOutboundMessages
-                .filterValues { message -> peerFingerprint in message.remainingTargetFingerprints }
-                .toMap()
-                .forEach { (messageId, message) ->
-                    val remainingTargets = message.remainingTargetFingerprints - peerFingerprint
-                    if (remainingTargets.isEmpty()) {
-                        pendingOutboundMessages.remove(messageId)
-                    } else {
-                        pendingOutboundMessages[messageId] =
-                            message.copy(remainingTargetFingerprints = remainingTargets)
-                    }
-                }
-            pendingOutboundVoiceMessages
-                .filterValues { message -> peerFingerprint in message.remainingTargetFingerprints }
-                .toMap()
-                .forEach { (messageId, message) ->
-                    val remainingTargets = message.remainingTargetFingerprints - peerFingerprint
-                    if (remainingTargets.isEmpty()) {
-                        pendingOutboundVoiceMessages.remove(messageId)
-                    } else {
-                        pendingOutboundVoiceMessages[messageId] =
-                            message.copy(remainingTargetFingerprints = remainingTargets)
-                    }
-                }
-            pendingOutboundMessages
-                .filterValues { message -> message.conversationId == conversation.id }
-                .keys
-                .toList()
-                .forEach { messageId -> pendingOutboundMessages.remove(messageId) }
-            pendingOutboundVoiceMessages
-                .filterValues { message -> message.conversationId == conversation.id }
-                .keys
-                .toList()
-                .forEach { messageId -> pendingOutboundVoiceMessages.remove(messageId) }
-            notifier.clearConversation(conversation.id)
-            trustState = "已阻止 $peerName"
+            appendSystemMessage(
+                text = "已解除阻止 $peerName",
+                encrypted = true,
+                conversationId = conversation.id
+            )
+            return
         }
+
+        val beforeMutation = captureDurableChatMutation()
+        val previousBlockedPresent = blockedPeerFingerprints.containsKey(peerFingerprint)
+        val previousBlocked = blockedPeerFingerprints[peerFingerprint]
+        blockedPeerFingerprints[peerFingerprint] = true
+        removeRecipientFromOutboundTracking(
+            fingerprint = peerFingerprint,
+            persistRemoval = false
+        )
+        pendingOutboundMessages
+            .filterValues { message -> message.conversationId == conversation.id }
+            .keys
+            .toList()
+            .forEach { messageId -> pendingOutboundMessages.remove(messageId) }
+        pendingOutboundVoiceMessages
+            .filterValues { message -> message.conversationId == conversation.id }
+            .keys
+            .toList()
+            .forEach { messageId -> pendingOutboundVoiceMessages.remove(messageId) }
+        outgoingMessages
+            .filterValues { outgoing ->
+                outgoing.conversationId == conversation.id ||
+                    outgoing.recipientFingerprint == peerFingerprint ||
+                    peerFingerprint in outgoing.expectedRecipients
+            }
+            .keys
+            .toList()
+            .forEach { packetMessageId -> outgoingMessages.remove(packetMessageId) }
         appendSystemMessage(
-            text = if (isBlocked) "已解除阻止 $peerName" else "已阻止 $peerName 的消息",
+            text = "已阻止 $peerName 的消息",
             encrypted = true,
             conversationId = conversation.id
+        )
+        val appliedMutation = captureDurableChatMutation()
+        persistDurableUserMutation(
+            before = beforeMutation,
+            applied = appliedMutation,
+            requiredState = { state ->
+                state.pendingTextOutbox.none { queued ->
+                    queued.conversationId == conversation.id ||
+                        peerFingerprint in queued.remainingTargetFingerprints
+                } &&
+                    state.pendingVoiceOutbox.none { queued ->
+                        queued.conversationId == conversation.id ||
+                            peerFingerprint in queued.remainingTargetFingerprints
+                    } &&
+                    state.outgoingEnvelopes.values.none { outgoing ->
+                        outgoing.conversationId == conversation.id ||
+                            outgoing.recipientFingerprint == peerFingerprint ||
+                            peerFingerprint in outgoing.expectedRecipients
+                    } &&
+                    state.expectedRecipientsByMessage.values.none { recipients ->
+                        peerFingerprint in recipients
+                    }
+            },
+            successState = "已阻止 $peerName",
+            failureState = "未能安全阻止 $peerName，待发送消息已恢复",
+            onSuccess = {
+                if (isPeerBlocked(peerFingerprint)) {
+                    notifier.clearConversation(conversation.id)
+                }
+            },
+            onRollback = {
+                if (blockedPeerFingerprints[peerFingerprint] == true) {
+                    if (previousBlockedPresent) {
+                        blockedPeerFingerprints[peerFingerprint] = previousBlocked ?: false
+                    } else {
+                        blockedPeerFingerprints.remove(peerFingerprint)
+                    }
+                }
+            }
         )
     }
 
@@ -2671,12 +3789,14 @@ internal fun SpotChatApp(
                 keptMessages.any { message -> message.messageId == edit.messageId }
             }
         trustState = "已保留星标消息"
+        persistRemovedMessages(conversation.id, removedMessages)
     }
 
     fun deleteMessageForMe(
         conversation: ChatConversation,
         message: ChatBubble
     ) {
+        val beforeMutation = captureDurableChatMutation()
         val starId = message.stableStarId()
         conversationMessages[conversation.id] =
             messagesForConversation(conversation.id)
@@ -2694,7 +3814,33 @@ internal fun SpotChatApp(
                 edit.messageId == message.messageId
             }
         appSurface = AppSurface.Chat
-        trustState = "已删除本机消息"
+        val appliedMutation = captureDurableChatMutation()
+        persistDurableUserMutation(
+            before = beforeMutation,
+            applied = appliedMutation,
+            requiredState = { state ->
+                state.messagesByConversation[conversation.id].orEmpty().none { persisted ->
+                    if (message.messageId != null) {
+                        persisted.messageId == message.messageId
+                    } else {
+                        persisted.createdAtEpochMillis == message.createdAtEpochMillis &&
+                            persisted.text == message.text &&
+                            persisted.mine == message.mine
+                    }
+                } &&
+                    state.pendingTextOutbox.none { queued ->
+                        queued.displayMessageId == message.messageId
+                    } &&
+                    state.pendingVoiceOutbox.none { queued ->
+                        queued.displayMessageId == message.messageId
+                    } &&
+                    state.outgoingEnvelopes.values.none { outgoing ->
+                        outgoing.displayMessageId == message.messageId
+                    }
+            },
+            successState = "已删除本机消息",
+            failureState = "消息未能安全删除，已恢复"
+        )
     }
 
     fun sweepExpiredMessages(nowEpochMillis: Long = System.currentTimeMillis()) {
@@ -2721,6 +3867,7 @@ internal fun SpotChatApp(
                 appSurface = AppSurface.Chat
             }
             notifier.clearConversation(conversationId)
+            persistRemovedMessages(conversationId, expiredMessages)
         }
     }
 
@@ -2918,10 +4065,11 @@ internal fun SpotChatApp(
 
     fun upsertIncomingMessage(
         conversationId: String,
-        message: ChatBubble
+        message: ChatBubble,
+        recordAttention: Boolean = true
     ): Boolean {
         val messageId = message.messageId ?: run {
-            appendMessage(conversationId, message)
+            appendMessage(conversationId, message, recordAttention = recordAttention)
             return true
         }
         val existingMessages = messagesForConversation(conversationId)
@@ -2932,7 +4080,7 @@ internal fun SpotChatApp(
                     existing.senderFingerprint == message.senderFingerprint
             }
         if (existingIndex < 0) {
-            appendMessage(conversationId, message)
+            appendMessage(conversationId, message, recordAttention = recordAttention)
             return true
         }
         val existing = existingMessages[existingIndex]
@@ -2948,6 +4096,116 @@ internal fun SpotChatApp(
         conversationUpdateSequence += 1
         conversationUpdateOrder[conversationId] = conversationUpdateSequence
         return false
+    }
+
+    fun incomingMessage(
+        conversationId: String,
+        senderFingerprint: String,
+        messageId: String
+    ): ChatBubble? =
+        messagesForConversation(conversationId).firstOrNull { message ->
+            !message.mine &&
+                message.senderFingerprint == senderFingerprint &&
+                message.messageId == messageId
+        }
+
+    fun restoreIncomingMessage(
+        conversationId: String,
+        senderFingerprint: String,
+        messageId: String,
+        appliedReceiptMessageId: String,
+        previousMessage: ChatBubble?,
+        previousConversationOrder: Long?,
+        mutationConversationOrder: Long?
+    ) {
+        val currentMessages = messagesForConversation(conversationId)
+        val currentIndex =
+            currentMessages.indexOfFirst { message ->
+                !message.mine &&
+                    message.senderFingerprint == senderFingerprint &&
+                    message.messageId == messageId
+            }
+        if (currentIndex < 0) {
+            return
+        }
+        val currentMessage = currentMessages[currentIndex]
+        if (currentMessage.receiptMessageId != appliedReceiptMessageId) {
+            return
+        }
+        conversationMessages[conversationId] =
+            currentMessages.toMutableList().apply {
+                if (previousMessage == null) {
+                    removeAt(currentIndex)
+                } else {
+                    this[currentIndex] = previousMessage.copy(reactions = currentMessage.reactions)
+                }
+            }
+        if (conversationUpdateOrder[conversationId] == mutationConversationOrder) {
+            if (previousConversationOrder == null) {
+                conversationUpdateOrder.remove(conversationId)
+            } else {
+                conversationUpdateOrder[conversationId] = previousConversationOrder
+            }
+        }
+    }
+
+    suspend fun repairChatStateAfterIncomingRollback() {
+        if (chatStateWritable) {
+            persistChatStateNow()
+        }
+    }
+
+    fun restoreReceiptTracking(
+        receiptsByMessage: MutableMap<String, Set<String>>,
+        countsByMessage: MutableMap<String, Int>,
+        displayMessageId: String,
+        senderFingerprint: String,
+        previousRecipients: Set<String>,
+        previousCountPresent: Boolean,
+        previousCount: Int?,
+        appliedRecipients: Set<String>
+    ) {
+        val currentRecipients = receiptsByMessage[displayMessageId].orEmpty()
+        val restoredRecipients =
+            if (currentRecipients == appliedRecipients) {
+                previousRecipients
+            } else if (senderFingerprint in previousRecipients) {
+                currentRecipients + senderFingerprint
+            } else {
+                currentRecipients - senderFingerprint
+            }
+        if (restoredRecipients.isEmpty()) {
+            receiptsByMessage.remove(displayMessageId)
+        } else {
+            receiptsByMessage[displayMessageId] = restoredRecipients
+        }
+        if (currentRecipients == appliedRecipients && previousCountPresent) {
+            countsByMessage[displayMessageId] = previousCount ?: previousRecipients.size
+        } else if (currentRecipients == appliedRecipients || restoredRecipients.isEmpty()) {
+            countsByMessage.remove(displayMessageId)
+        } else {
+            countsByMessage[displayMessageId] = restoredRecipients.size
+        }
+    }
+
+    suspend fun rememberMalformedAuthenticatedPacket(
+        encryptedMessage: EncryptedChatMessage,
+        ignoredState: String,
+        duplicateState: String,
+        failureState: String
+    ) {
+        try {
+            withContext(Dispatchers.IO) {
+                engine.rememberAuthenticatedPacket(encryptedMessage)
+            }
+            trustState = ignoredState
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: DuplicateMessageException) {
+            trustState = duplicateState
+        } catch (error: Exception) {
+            trustState = error.readableMessage(failureState)
+        }
     }
 
     suspend fun sendSessionChallenge(
@@ -3189,91 +4447,162 @@ internal fun SpotChatApp(
                                     trustState = "拦截未验证路由的消息"
                                     return
                                 }
-                        runCatching {
-                            withContext(Dispatchers.IO) {
-                                engine.decryptText(encryptedMessage)
-                            }
-                        }
-                            .onSuccess { plain ->
-                                val payload = decodeChatPayload(plain.text)
-                                val conversationId =
-                                    if (payload.kind == CHAT_PAYLOAD_KIND_GROUP) {
-                                        NEARBY_GROUP_CONVERSATION_ID
-                                    } else {
-                                        directConversationId(plain.senderFingerprint)
-                                    }
-                                val payloadForwardCount = payload.normalizedForwardCount()
-                                if (shouldBlockFrequentlyForwarded(conversationId, payloadForwardCount)) {
-                                    appendSystemMessage(
-                                        text = "${storedSender.deviceName} 的${forwardLabel(payloadForwardCount)}消息已被群聊设置拦截",
-                                        encrypted = true,
-                                        conversationId = conversationId
-                                    )
-                                    trustState = "已拦截多次转发"
-                                } else {
-                                    val inserted = upsertIncomingMessage(
-                                        conversationId,
-                                        ChatBubble(
-                                            text = payload.text,
-                                            mine = false,
-                                            encrypted = true,
-                                            timestamp = nowTime(),
-                                            senderName =
-                                                if (payload.kind == CHAT_PAYLOAD_KIND_GROUP) {
-                                                    storedSender.deviceName
-                                                } else {
-                                                    null
-                                                },
-                                            senderFingerprint = plain.senderFingerprint,
-                                            messageId = plain.messageId,
-                                            receiptMessageId = plain.envelopeMessageId,
-                                            quotedMessage = payload.quote,
-                                            deliveryState = DeliveryState.Received,
-                                            forwarded = payload.forwarded,
-                                            forwardCount = payloadForwardCount
-                                        )
-                                    )
-                                    trustState = if (inserted) "收到加密消息" else "收到消息更新"
+                        try {
+                            val plain =
+                                withContext(Dispatchers.IO) {
+                                    engine.decryptText(encryptedMessage, rememberReplay = false)
                                 }
-                                sendEncryptedAck(
-                                    transport = transport,
-                                    peer = verifiedRoute,
-                                    senderFingerprint = plain.senderFingerprint,
-                                    messageId = plain.envelopeMessageId,
-                                    failureState = "回执发送失败"
+                            val payload =
+                                decodeChatPayload(plain.text).also { decoded ->
+                                    decoded.validateAuthenticatedIncoming(encryptedMessage)
+                                }
+                            withContext(Dispatchers.IO) {
+                                engine.ensureAuthenticatedPacketIsNew(encryptedMessage)
+                            }
+                            val conversationId =
+                                if (payload.kind == CHAT_PAYLOAD_KIND_GROUP) {
+                                    NEARBY_GROUP_CONVERSATION_ID
+                                } else {
+                                    directConversationId(plain.senderFingerprint)
+                                }
+                            val payloadForwardCount = payload.normalizedForwardCount()
+                            if (shouldBlockFrequentlyForwarded(conversationId, payloadForwardCount)) {
+                                val durableDrop =
+                                    persistChatStateNow { state ->
+                                        state.messagesByConversation[conversationId].orEmpty().none { persisted ->
+                                            persisted.senderFingerprint == plain.senderFingerprint &&
+                                                persisted.receiptMessageId == plain.envelopeMessageId
+                                        }
+                                    }
+                                if (!durableDrop) {
+                                    trustState = "消息拦截状态未能安全保存"
+                                    return
+                                }
+                                withContext(Dispatchers.IO) {
+                                    engine.rememberAuthenticatedPacket(encryptedMessage)
+                                }
+                                appendSystemMessage(
+                                    text = "${storedSender.deviceName} 的${forwardLabel(payloadForwardCount)}消息已被群聊设置拦截",
+                                    encrypted = true,
+                                    conversationId = conversationId
                                 )
-                                if (appSurface == AppSurface.Chat && activeConversationId == conversationId) {
-                                    sendReadReceipt(
+                                trustState = "已拦截多次转发"
+                            } else {
+                                val previousMessage =
+                                    incomingMessage(
                                         conversationId = conversationId,
                                         senderFingerprint = plain.senderFingerprint,
-                                        messageId = plain.envelopeMessageId,
-                                        peer = verifiedRoute
+                                        messageId = plain.messageId
                                     )
-                                }
-                            }
-                            .onFailure { error ->
-                                if (error is DuplicateMessageException) {
-                                    trustState = "重复消息已忽略"
-                                    sendEncryptedAck(
-                                        transport = transport,
-                                        peer = verifiedRoute,
-                                        senderFingerprint = error.senderFingerprint,
-                                        messageId = error.messageId,
-                                        failureState = "重复回执发送失败"
+                                val previousConversationOrder = conversationUpdateOrder[conversationId]
+                                val inserted =
+                                    upsertIncomingMessage(
+                                        conversationId = conversationId,
+                                        message =
+                                            ChatBubble(
+                                                text = payload.text,
+                                                mine = false,
+                                                encrypted = true,
+                                                timestamp = nowTime(),
+                                                senderName =
+                                                    if (payload.kind == CHAT_PAYLOAD_KIND_GROUP) {
+                                                        storedSender.deviceName
+                                                    } else {
+                                                        null
+                                                    },
+                                                senderFingerprint = plain.senderFingerprint,
+                                                messageId = plain.messageId,
+                                                receiptMessageId = plain.envelopeMessageId,
+                                                quotedMessage = payload.quote,
+                                                deliveryState = DeliveryState.Received,
+                                                forwarded = payload.forwarded,
+                                                forwardCount = payloadForwardCount
+                                            ),
+                                        recordAttention = false
                                     )
-                                } else {
-                                    appendMessage(
-                                        activeConversationId,
-                                        ChatBubble(
-                                            text = error.readableMessage("无法解密消息"),
-                                            mine = false,
-                                            encrypted = false,
-                                            timestamp = nowTime()
+                                val mutationConversationOrder = conversationUpdateOrder[conversationId]
+                                val appliedMessage =
+                                    requireNotNull(
+                                        incomingMessage(
+                                            conversationId = conversationId,
+                                            senderFingerprint = plain.senderFingerprint,
+                                            messageId = plain.messageId
                                         )
                                     )
-                                    trustState = "解密失败"
+                                val expectedPersistedMessage = requireNotNull(appliedMessage.toPersisted())
+                                val durable =
+                                    persistChatStateNow { state ->
+                                        state.messagesByConversation[conversationId].orEmpty()
+                                            .any { persisted -> persisted == expectedPersistedMessage }
+                                    }
+                                if (!durable) {
+                                    restoreIncomingMessage(
+                                        conversationId = conversationId,
+                                        senderFingerprint = plain.senderFingerprint,
+                                        messageId = plain.messageId,
+                                        appliedReceiptMessageId = plain.envelopeMessageId,
+                                        previousMessage = previousMessage,
+                                        previousConversationOrder = previousConversationOrder,
+                                        mutationConversationOrder = mutationConversationOrder
+                                    )
+                                    repairChatStateAfterIncomingRollback()
+                                    trustState = "消息未能安全保存，已忽略"
+                                    return
                                 }
+                                withContext(Dispatchers.IO) {
+                                    engine.rememberAuthenticatedPacket(encryptedMessage)
+                                }
+                                if (inserted) {
+                                    recordIncomingAttention(conversationId, appliedMessage)
+                                }
+                                trustState =
+                                    if (inserted) "收到加密消息" else "收到消息更新"
                             }
+                            sendEncryptedAck(
+                                transport = transport,
+                                peer = verifiedRoute,
+                                senderFingerprint = plain.senderFingerprint,
+                                messageId = plain.envelopeMessageId,
+                                failureState = "回执发送失败"
+                            )
+                            if (appSurface == AppSurface.Chat && activeConversationId == conversationId) {
+                                sendReadReceipt(
+                                    conversationId = conversationId,
+                                    senderFingerprint = plain.senderFingerprint,
+                                    messageId = plain.envelopeMessageId,
+                                    peer = verifiedRoute
+                                )
+                            }
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (_: AuthenticatedPayloadDecodingException) {
+                            rememberMalformedAuthenticatedPacket(
+                                encryptedMessage = encryptedMessage,
+                                ignoredState = "认证消息内容无效，已忽略",
+                                duplicateState = "重复的无效消息已忽略",
+                                failureState = "无效消息记录失败"
+                            )
+                        } catch (error: DuplicateMessageException) {
+                            trustState = "重复消息已忽略"
+                            sendEncryptedAck(
+                                transport = transport,
+                                peer = verifiedRoute,
+                                senderFingerprint = error.senderFingerprint,
+                                messageId = error.messageId,
+                                failureState = "重复回执发送失败"
+                            )
+                        } catch (error: Exception) {
+                            appendMessage(
+                                activeConversationId,
+                                ChatBubble(
+                                    text = error.readableMessage("无法解密消息"),
+                                    mine = false,
+                                    encrypted = false,
+                                    timestamp = nowTime()
+                                )
+                            )
+                            trustState = "解密失败"
+                        }
                     }
 
                     PacketKind.ENCRYPTED_VOICE_MESSAGE -> {
@@ -3297,76 +4626,138 @@ internal fun SpotChatApp(
                                     trustState = "拦截未验证路由的语音"
                                     return
                                 }
-                        runCatching {
-                            withContext(Dispatchers.IO) {
-                                engine.decryptVoice(encryptedMessage)
+                        try {
+                            val plain =
+                                withContext(Dispatchers.IO) {
+                                    engine.decryptVoice(encryptedMessage, rememberReplay = false)
+                                }
+                            if (
+                                plain.groupId != null &&
+                                plain.groupId != NEARBY_GROUP_CONVERSATION_ID
+                            ) {
+                                invalidAuthenticatedPayload(
+                                    encryptedMessage,
+                                    "Unsupported voice-message group"
+                                )
                             }
-                        }
-                            .onSuccess { plain ->
-                                val conversationId =
-                                    if (plain.groupId != null) {
-                                        NEARBY_GROUP_CONVERSATION_ID
-                                    } else {
-                                        directConversationId(plain.senderFingerprint)
-                                    }
-                                val inserted = upsertIncomingMessage(
-                                    conversationId,
-                                    ChatBubble(
-                                        text = "语音消息 · ${formatDuration(plain.durationMs)}",
-                                        mine = false,
-                                        encrypted = true,
-                                        timestamp = nowTime(),
-                                        senderName =
-                                            storedSender.deviceName.takeIf { plain.groupId != null },
-                                        senderFingerprint = plain.senderFingerprint,
-                                        messageId = plain.messageId,
-                                        receiptMessageId = plain.envelopeMessageId,
-                                        deliveryState = DeliveryState.Received,
-                                        kind = ChatMessageKind.Voice,
-                                        voiceDurationMs = plain.durationMs,
-                                        voiceAudioBytes = plain.audioBytes
-                                    )
-                                )
-                                trustState = if (inserted) "收到加密语音" else "收到语音重发"
-                                sendEncryptedAck(
-                                    transport = transport,
-                                    peer = verifiedRoute,
+                            withContext(Dispatchers.IO) {
+                                engine.ensureAuthenticatedPacketIsNew(encryptedMessage)
+                            }
+                            val conversationId =
+                                if (plain.groupId != null) {
+                                    NEARBY_GROUP_CONVERSATION_ID
+                                } else {
+                                    directConversationId(plain.senderFingerprint)
+                                }
+                            val previousMessage =
+                                incomingMessage(
+                                    conversationId = conversationId,
                                     senderFingerprint = plain.senderFingerprint,
-                                    messageId = plain.envelopeMessageId,
-                                    failureState = "语音回执发送失败"
+                                    messageId = plain.messageId
                                 )
-                                if (appSurface == AppSurface.Chat && activeConversationId == conversationId) {
-                                    sendReadReceipt(
+                            val previousConversationOrder = conversationUpdateOrder[conversationId]
+                            val inserted =
+                                upsertIncomingMessage(
+                                    conversationId = conversationId,
+                                    message =
+                                        ChatBubble(
+                                            text = "语音消息 · ${formatDuration(plain.durationMs)}",
+                                            mine = false,
+                                            encrypted = true,
+                                            timestamp = nowTime(),
+                                            senderName = storedSender.deviceName.takeIf { plain.groupId != null },
+                                            senderFingerprint = plain.senderFingerprint,
+                                            messageId = plain.messageId,
+                                            receiptMessageId = plain.envelopeMessageId,
+                                            deliveryState = DeliveryState.Received,
+                                            kind = ChatMessageKind.Voice,
+                                            voiceDurationMs = plain.durationMs,
+                                            voiceAudioBytes = plain.audioBytes
+                                        ),
+                                    recordAttention = false
+                                )
+                            val mutationConversationOrder = conversationUpdateOrder[conversationId]
+                            val appliedMessage =
+                                requireNotNull(
+                                    incomingMessage(
                                         conversationId = conversationId,
                                         senderFingerprint = plain.senderFingerprint,
-                                        messageId = plain.envelopeMessageId,
-                                        peer = verifiedRoute
+                                        messageId = plain.messageId
                                     )
+                                )
+                            val expectedPersistedMessage = requireNotNull(appliedMessage.toPersisted())
+                            val durable =
+                                persistChatStateNow { state ->
+                                    state.messagesByConversation[conversationId].orEmpty()
+                                        .any { persisted -> persisted == expectedPersistedMessage }
                                 }
+                            if (!durable) {
+                                restoreIncomingMessage(
+                                    conversationId = conversationId,
+                                    senderFingerprint = plain.senderFingerprint,
+                                    messageId = plain.messageId,
+                                    appliedReceiptMessageId = plain.envelopeMessageId,
+                                    previousMessage = previousMessage,
+                                    previousConversationOrder = previousConversationOrder,
+                                    mutationConversationOrder = mutationConversationOrder
+                                )
+                                repairChatStateAfterIncomingRollback()
+                                trustState = "语音未能安全保存，已忽略"
+                                return
                             }
-                            .onFailure { error ->
-                                if (error is DuplicateMessageException) {
-                                    trustState = "重复语音已忽略"
-                                    sendEncryptedAck(
-                                        transport = transport,
-                                        peer = verifiedRoute,
-                                        senderFingerprint = error.senderFingerprint,
-                                        messageId = error.messageId,
-                                        failureState = "重复语音回执发送失败"
-                                    )
-                                } else {
-                                    appendMessage(
-                                        activeConversationId,
-                                        ChatBubble(
-                                            text = error.readableMessage("无法解密语音"),
-                                            mine = false,
-                                            encrypted = false,
-                                            timestamp = nowTime()
-                                        )
-                                    )
-                                    trustState = "语音解密失败"
-                                }
+                            withContext(Dispatchers.IO) {
+                                engine.rememberAuthenticatedPacket(encryptedMessage)
                             }
+                            if (inserted) {
+                                recordIncomingAttention(conversationId, appliedMessage)
+                            }
+                            trustState =
+                                if (inserted) "收到加密语音" else "收到语音重发"
+                            sendEncryptedAck(
+                                transport = transport,
+                                peer = verifiedRoute,
+                                senderFingerprint = plain.senderFingerprint,
+                                messageId = plain.envelopeMessageId,
+                                failureState = "语音回执发送失败"
+                            )
+                            if (appSurface == AppSurface.Chat && activeConversationId == conversationId) {
+                                sendReadReceipt(
+                                    conversationId = conversationId,
+                                    senderFingerprint = plain.senderFingerprint,
+                                    messageId = plain.envelopeMessageId,
+                                    peer = verifiedRoute
+                                )
+                            }
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (_: AuthenticatedPayloadDecodingException) {
+                            rememberMalformedAuthenticatedPacket(
+                                encryptedMessage = encryptedMessage,
+                                ignoredState = "认证语音内容无效，已忽略",
+                                duplicateState = "重复的无效语音已忽略",
+                                failureState = "无效语音记录失败"
+                            )
+                        } catch (error: DuplicateMessageException) {
+                            trustState = "重复语音已忽略"
+                            sendEncryptedAck(
+                                transport = transport,
+                                peer = verifiedRoute,
+                                senderFingerprint = error.senderFingerprint,
+                                messageId = error.messageId,
+                                failureState = "重复语音回执发送失败"
+                            )
+                        } catch (error: Exception) {
+                            appendMessage(
+                                activeConversationId,
+                                ChatBubble(
+                                    text = error.readableMessage("无法解密语音"),
+                                    mine = false,
+                                    encrypted = false,
+                                    timestamp = nowTime()
+                                )
+                            )
+                            trustState = "语音解密失败"
+                        }
                     }
 
                     PacketKind.ENCRYPTED_REACTION -> {
@@ -3384,41 +4775,102 @@ internal fun SpotChatApp(
                             trustState = "拦截未验证路由的回应"
                             return
                         }
-                        runCatching {
-                            withContext(Dispatchers.IO) {
-                                engine.decryptReaction(encryptedMessage)
-                            }
-                        }
-                            .onSuccess { reaction ->
-                                val candidateConversationIds =
-                                    listOf(
-                                        directConversationId(reaction.senderFingerprint),
-                                        NEARBY_GROUP_CONVERSATION_ID
-                                    ).distinct()
-                                val targetConversationId =
-                                    candidateConversationIds.firstOrNull { conversationId ->
-                                        messagesForConversation(conversationId)
-                                            .any { message -> message.messageId == reaction.targetMessageId }
-                                    }
-                                if (targetConversationId == null) {
-                                    trustState = "回应目标不存在"
-                                    return@onSuccess
+                        try {
+                            val reaction =
+                                withContext(Dispatchers.IO) {
+                                    engine.decryptReaction(encryptedMessage, rememberReplay = false)
                                 }
-                                applyMessageReaction(
-                                    conversationId = targetConversationId,
-                                    targetMessageId = reaction.targetMessageId,
-                                    senderFingerprint = reaction.senderFingerprint,
-                                    reactionCode = reaction.emoji
+                            if (reactionChoices.none { choice -> choice.code == reaction.emoji }) {
+                                invalidAuthenticatedPayload(
+                                    encryptedMessage,
+                                    "Unsupported reaction code"
                                 )
-                                trustState = "${storedSender.deviceName} 回应了消息"
                             }
-                            .onFailure { error ->
-                                if (error is DuplicateMessageException) {
-                                    trustState = "重复回应已忽略"
-                                } else {
-                                    trustState = "回应验证失败"
+                            withContext(Dispatchers.IO) {
+                                engine.ensureAuthenticatedPacketIsNew(encryptedMessage)
+                            }
+                            val candidateConversationIds =
+                                listOf(
+                                    directConversationId(reaction.senderFingerprint),
+                                    NEARBY_GROUP_CONVERSATION_ID
+                                ).distinct()
+                            val targetConversationId =
+                                candidateConversationIds.firstOrNull { conversationId ->
+                                    messagesForConversation(conversationId)
+                                        .any { message -> message.messageId == reaction.targetMessageId }
                                 }
+                            if (targetConversationId == null) {
+                                withContext(Dispatchers.IO) {
+                                    engine.rememberAuthenticatedPacket(encryptedMessage)
+                                }
+                                trustState = "回应目标不存在"
+                                return
                             }
+                            val targetMessage =
+                                requireNotNull(
+                                    messagesForConversation(targetConversationId)
+                                        .firstOrNull { message ->
+                                            message.messageId == reaction.targetMessageId
+                                        }
+                                )
+                            val previousReaction =
+                                targetMessage.reactions[reaction.senderFingerprint]
+                            applyMessageReaction(
+                                conversationId = targetConversationId,
+                                targetMessageId = reaction.targetMessageId,
+                                senderFingerprint = reaction.senderFingerprint,
+                                reactionCode = reaction.emoji
+                            )
+                            val durable =
+                                persistChatStateNow { state ->
+                                    state.messagesByConversation[targetConversationId].orEmpty()
+                                        .firstOrNull { persisted ->
+                                            persisted.messageId == reaction.targetMessageId
+                                        }
+                                        ?.reactions
+                                        ?.get(reaction.senderFingerprint) == reaction.emoji
+                                }
+                            if (!durable) {
+                                conversationMessages[targetConversationId] =
+                                    messagesForConversation(targetConversationId).map { message ->
+                                        if (
+                                            message.messageId == reaction.targetMessageId &&
+                                            message.reactions[reaction.senderFingerprint] == reaction.emoji
+                                        ) {
+                                            val restoredReactions =
+                                                if (previousReaction == null) {
+                                                    message.reactions - reaction.senderFingerprint
+                                                } else {
+                                                    message.reactions +
+                                                        (reaction.senderFingerprint to previousReaction)
+                                                }
+                                            message.copy(reactions = restoredReactions)
+                                        } else {
+                                            message
+                                        }
+                                    }
+                                repairChatStateAfterIncomingRollback()
+                                trustState = "回应未能安全保存，已忽略"
+                                return
+                            }
+                            withContext(Dispatchers.IO) {
+                                engine.rememberAuthenticatedPacket(encryptedMessage)
+                            }
+                            trustState = "${storedSender.deviceName} 回应了消息"
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (_: AuthenticatedPayloadDecodingException) {
+                            rememberMalformedAuthenticatedPacket(
+                                encryptedMessage = encryptedMessage,
+                                ignoredState = "认证回应内容无效，已忽略",
+                                duplicateState = "重复的无效回应已忽略",
+                                failureState = "无效回应记录失败"
+                            )
+                        } catch (_: DuplicateMessageException) {
+                            trustState = "重复回应已忽略"
+                        } catch (_: Exception) {
+                            trustState = "回应验证失败"
+                        }
                     }
 
                     PacketKind.ENCRYPTED_ACK -> {
@@ -3435,54 +4887,182 @@ internal fun SpotChatApp(
                             trustState = "拦截未验证路由的回执"
                             return
                         }
-                        runCatching {
+                        try {
+                            val ack =
+                                withContext(Dispatchers.IO) {
+                                    engine.decryptAck(encryptedAck, rememberReplay = false)
+                                }
                             withContext(Dispatchers.IO) {
-                                engine.decryptAck(encryptedAck)
+                                engine.ensureAuthenticatedPacketIsNew(encryptedAck)
                             }
-                        }
-                            .onSuccess { ack ->
-                                val outboundMessage = outgoingMessages[ack.messageId]
-                                if (
-                                    outboundMessage == null ||
-                                    outboundMessage.recipientFingerprint != encryptedAck.senderFingerprint
-                                ) {
-                                    trustState = "已忽略未知或不匹配的回执"
-                                    return@onSuccess
+                            val outboundMessage = outgoingMessages[ack.messageId]
+                            if (
+                                outboundMessage == null ||
+                                outboundMessage.recipientFingerprint != encryptedAck.senderFingerprint
+                            ) {
+                                withContext(Dispatchers.IO) {
+                                    engine.rememberAuthenticatedPacket(encryptedAck)
                                 }
-                                val state =
-                                    when (ack.status) {
-                                        DeliveryReceiptStatus.Delivered -> DeliveryState.Delivered
-                                        DeliveryReceiptStatus.Read -> DeliveryState.Read
+                                trustState = "已忽略未知或不匹配的回执"
+                                return
+                            }
+                            val displayMessageId = outboundMessage.displayMessageId
+                            val previousMessage =
+                                messagesForConversation(outboundMessage.conversationId)
+                                    .firstOrNull { message ->
+                                        message.messageId == displayMessageId
                                     }
-                                if (ack.status == DeliveryReceiptStatus.Read) {
-                                    updateMessageState(
-                                        messageId = ack.messageId,
-                                        deliveryState = DeliveryState.Delivered,
-                                        receiptSenderFingerprint = encryptedAck.senderFingerprint
-                                    )
+                            val previousDeliveredRecipients =
+                                deliveredReceiptsByMessage[displayMessageId].orEmpty()
+                            val previousDeliveredCountPresent =
+                                deliveredCounts.containsKey(displayMessageId)
+                            val previousDeliveredCount = deliveredCounts[displayMessageId]
+                            val previousReadRecipients =
+                                readReceiptsByMessage[displayMessageId].orEmpty()
+                            val previousReadCountPresent = readCounts.containsKey(displayMessageId)
+                            val previousReadCount = readCounts[displayMessageId]
+                            val state =
+                                when (ack.status) {
+                                    DeliveryReceiptStatus.Delivered -> DeliveryState.Delivered
+                                    DeliveryReceiptStatus.Read -> DeliveryState.Read
                                 }
+                            if (ack.status == DeliveryReceiptStatus.Read) {
                                 updateMessageState(
                                     messageId = ack.messageId,
-                                    deliveryState = state,
+                                    deliveryState = DeliveryState.Delivered,
                                     receiptSenderFingerprint = encryptedAck.senderFingerprint
                                 )
-                                if (ack.status == DeliveryReceiptStatus.Read) {
-                                    outgoingMessages.remove(ack.messageId)
-                                }
-                                trustState =
+                            }
+                            updateMessageState(
+                                messageId = ack.messageId,
+                                deliveryState = state,
+                                receiptSenderFingerprint = encryptedAck.senderFingerprint
+                            )
+                            if (ack.status == DeliveryReceiptStatus.Read) {
+                                outgoingMessages.remove(ack.messageId)
+                            }
+                            val appliedMessageState =
+                                messagesForConversation(outboundMessage.conversationId)
+                                    .firstOrNull { message ->
+                                        message.messageId == displayMessageId
+                                    }
+                                    ?.deliveryState
+                            val appliedDeliveredRecipients =
+                                deliveredReceiptsByMessage[displayMessageId].orEmpty()
+                            val appliedReadRecipients =
+                                readReceiptsByMessage[displayMessageId].orEmpty()
+                            val tracksRecipientReceipts =
+                                outboundMessage.expectedRecipients.size > 1
+                            val durable =
+                                persistChatStateNow { persistedState ->
+                                    val persistedMessage =
+                                        persistedState.messagesByConversation[outboundMessage.conversationId]
+                                            .orEmpty()
+                                            .firstOrNull { message ->
+                                                message.messageId == displayMessageId
+                                            }
                                     when (ack.status) {
-                                        DeliveryReceiptStatus.Delivered -> "对方已收到"
-                                        DeliveryReceiptStatus.Read -> "对方已读"
+                                        DeliveryReceiptStatus.Delivered ->
+                                            persistedMessage != null &&
+                                                if (tracksRecipientReceipts) {
+                                                    encryptedAck.senderFingerprint in
+                                                        persistedState.deliveredRecipientsByMessage[
+                                                            displayMessageId
+                                                        ].orEmpty()
+                                                } else {
+                                                    persistedMessage.deliveryState ==
+                                                        PersistedDeliveryState.Delivered ||
+                                                        persistedMessage.deliveryState ==
+                                                        PersistedDeliveryState.Read
+                                                }
+
+                                        DeliveryReceiptStatus.Read ->
+                                            persistedMessage != null &&
+                                                ack.messageId !in persistedState.outgoingEnvelopes &&
+                                                if (tracksRecipientReceipts) {
+                                                    encryptedAck.senderFingerprint in
+                                                        persistedState.deliveredRecipientsByMessage[
+                                                            displayMessageId
+                                                        ].orEmpty() &&
+                                                        encryptedAck.senderFingerprint in
+                                                        persistedState.readRecipientsByMessage[
+                                                            displayMessageId
+                                                        ].orEmpty()
+                                                } else {
+                                                    persistedMessage.deliveryState ==
+                                                        PersistedDeliveryState.Read
+                                                }
                                     }
+                                }
+                            if (!durable) {
+                                if (previousMessage != null && appliedMessageState != null) {
+                                    conversationMessages[outboundMessage.conversationId] =
+                                        messagesForConversation(outboundMessage.conversationId)
+                                            .map { message ->
+                                                if (
+                                                    message.messageId == displayMessageId &&
+                                                    message.deliveryState == appliedMessageState
+                                                ) {
+                                                    message.copy(
+                                                        deliveryState = previousMessage.deliveryState
+                                                    )
+                                                } else {
+                                                    message
+                                                }
+                                            }
+                                }
+                                restoreReceiptTracking(
+                                    receiptsByMessage = deliveredReceiptsByMessage,
+                                    countsByMessage = deliveredCounts,
+                                    displayMessageId = displayMessageId,
+                                    senderFingerprint = encryptedAck.senderFingerprint,
+                                    previousRecipients = previousDeliveredRecipients,
+                                    previousCountPresent = previousDeliveredCountPresent,
+                                    previousCount = previousDeliveredCount,
+                                    appliedRecipients = appliedDeliveredRecipients
+                                )
+                                restoreReceiptTracking(
+                                    receiptsByMessage = readReceiptsByMessage,
+                                    countsByMessage = readCounts,
+                                    displayMessageId = displayMessageId,
+                                    senderFingerprint = encryptedAck.senderFingerprint,
+                                    previousRecipients = previousReadRecipients,
+                                    previousCountPresent = previousReadCountPresent,
+                                    previousCount = previousReadCount,
+                                    appliedRecipients = appliedReadRecipients
+                                )
+                                if (
+                                    ack.status == DeliveryReceiptStatus.Read &&
+                                    outgoingMessages[ack.messageId] == null
+                                ) {
+                                    outgoingMessages[ack.messageId] = outboundMessage
+                                }
+                                repairChatStateAfterIncomingRollback()
+                                trustState = "回执未能安全保存，已忽略"
+                                return
                             }
-                            .onFailure { error ->
-                                trustState =
-                                    if (error is DuplicateMessageException) {
-                                        "重复回执已忽略"
-                                    } else {
-                                        "回执验证失败"
-                                    }
+                            withContext(Dispatchers.IO) {
+                                engine.rememberAuthenticatedPacket(encryptedAck)
                             }
+                            trustState =
+                                when (ack.status) {
+                                    DeliveryReceiptStatus.Delivered -> "对方已收到"
+                                    DeliveryReceiptStatus.Read -> "对方已读"
+                                }
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (_: AuthenticatedPayloadDecodingException) {
+                            rememberMalformedAuthenticatedPacket(
+                                encryptedMessage = encryptedAck,
+                                ignoredState = "认证回执内容无效，已忽略",
+                                duplicateState = "重复的无效回执已忽略",
+                                failureState = "无效回执记录失败"
+                            )
+                        } catch (_: DuplicateMessageException) {
+                            trustState = "重复回执已忽略"
+                        } catch (_: Exception) {
+                            trustState = "回执验证失败"
+                        }
                     }
 
                     PacketKind.ACK -> {
@@ -3668,6 +5248,11 @@ internal fun SpotChatApp(
         forwarded: Boolean,
         forwardCount: Int
     ) {
+        if (!chatStateOperational) {
+            updateMessageState(displayMessageId, DeliveryState.Waiting)
+            trustState = "本地聊天状态未就绪，消息未发送"
+            return
+        }
         if (!canSendToConversation(conversation)) {
             pendingOutboundMessages.remove(displayMessageId)
             updateMessageState(displayMessageId, DeliveryState.Failed)
@@ -3707,15 +5292,66 @@ internal fun SpotChatApp(
                 trustState = "已移除不再接收此消息的成员"
                 return@launch
             }
+            val capacityIssue =
+                validateTextSendCapacity(
+                    displayMessageId = displayMessageId,
+                    recipientCount = attemptedRecipients.size,
+                    conversationId = conversation.id,
+                    persistOutbox = requeueOnFailure
+                )
+            if (capacityIssue != null) {
+                updateMessageState(
+                    displayMessageId,
+                    if (requeueOnFailure) DeliveryState.Waiting else DeliveryState.Failed
+                )
+                trustState = outboxCapacityMessage(capacityIssue)
+                return@launch
+            }
+            if (requeueOnFailure) {
+                pendingOutboundMessages[displayMessageId] =
+                    PendingOutboundMessage(
+                        conversationId = conversation.id,
+                        text = text,
+                        displayMessageId = displayMessageId,
+                        remainingTargetFingerprints = attemptedRecipients.toList(),
+                        quotedMessage = quotedMessage,
+                        forwarded = forwarded,
+                        forwardCount = forwardCount
+                    )
+            }
+            if (
+                !persistChatStateNow { persisted ->
+                    if (requeueOnFailure) {
+                        persisted.pendingTextOutbox.any { queued ->
+                            queued.displayMessageId == displayMessageId &&
+                                queued.remainingTargetFingerprints.toSet() == attemptedRecipients
+                        }
+                    } else {
+                        persisted.messagesByConversation[conversation.id].orEmpty()
+                            .any { message -> message.messageId == displayMessageId }
+                    }
+                }
+            ) {
+                updateMessageState(
+                    displayMessageId,
+                    if (requeueOnFailure) DeliveryState.Waiting else DeliveryState.Failed
+                )
+                trustState = "本地聊天状态不可用，消息未发送"
+                return@launch
+            }
             val attemptTargets =
                 targets.filter { (fingerprint, _) -> fingerprint in attemptedRecipients }
             val remainingRecipients =
                 (attemptedRecipients - attemptTargets.map { (fingerprint, _) -> fingerprint }.toSet())
                     .toMutableSet()
-            fun isCurrentRecipient(fingerprint: String): Boolean =
-                fingerprint in expectedRecipientsByMessage[displayMessageId].orEmpty() &&
+            fun isCurrentRecipient(fingerprint: String): Boolean {
+                val queuedTargets =
+                    pendingOutboundMessages[displayMessageId]?.remainingTargetFingerprints.orEmpty()
+                return fingerprint in expectedRecipientsByMessage[displayMessageId].orEmpty() &&
                     !isPeerBlocked(fingerprint) &&
-                    trustedPeer(fingerprint) != null
+                    trustedPeer(fingerprint) != null &&
+                    (!requeueOnFailure || fingerprint in queuedTargets)
+            }
             var sentCount = 0
             attemptTargets.forEach { (peerFingerprint, peer) ->
                 if (!isCurrentRecipient(peerFingerprint)) {
@@ -3756,15 +5392,38 @@ internal fun SpotChatApp(
                     return@forEach
                 }
                 val currentExpectedRecipients = expectedRecipientsByMessage[displayMessageId].orEmpty()
-                rememberOutgoingEnvelope(
-                    packetMessageId,
-                    OutgoingMessageRef(
-                        conversationId = conversation.id,
-                        displayMessageId = displayMessageId,
-                        recipientFingerprint = peerFingerprint,
-                        expectedRecipients = currentExpectedRecipients
+                if (
+                    !rememberOutgoingEnvelope(
+                        packetMessageId,
+                        OutgoingMessageRef(
+                            conversationId = conversation.id,
+                            displayMessageId = displayMessageId,
+                            recipientFingerprint = peerFingerprint,
+                            expectedRecipients = currentExpectedRecipients
+                        )
                     )
-                )
+                ) {
+                    remainingRecipients += peerFingerprint
+                    return@forEach
+                }
+                if (
+                    !persistChatStateNow { persisted ->
+                        persisted.outgoingEnvelopes.containsKey(packetMessageId)
+                    }
+                ) {
+                    outgoingMessages.remove(packetMessageId)
+                    remainingRecipients += peerFingerprint
+                    return@forEach
+                }
+                val persistedEnvelope = outgoingMessages[packetMessageId]
+                if (
+                    persistedEnvelope?.recipientFingerprint != peerFingerprint ||
+                    !isCurrentRecipient(peerFingerprint)
+                ) {
+                    outgoingMessages.remove(packetMessageId)
+                    remainingRecipients += peerFingerprint
+                    return@forEach
+                }
 
                 runCatching {
                     sendPacket(currentTransport(), peer, packet)
@@ -3867,6 +5526,7 @@ internal fun SpotChatApp(
                     trustState = "发送失败"
                 }
             }
+            persistChatStateNow()
             } finally {
                 inFlightOutboundMessages.remove(displayMessageId)
                 if (
@@ -3909,6 +5569,10 @@ internal fun SpotChatApp(
         message: ChatBubble,
         reactionCode: String
     ) {
+        if (!chatStateOperational) {
+            trustState = "本地聊天状态未就绪，回应未发送"
+            return
+        }
         if (isConversationBlocked(conversation)) {
             trustState = "已阻止此联系人"
             return
@@ -3927,6 +5591,9 @@ internal fun SpotChatApp(
         }
         trustState = "正在发送回应"
         coroutineScope.launch {
+            if (!persistChatStateNow()) {
+                return@launch
+            }
             var sentCount = 0
             targets.forEach { (peerFingerprint, peer) ->
                 val packet =
@@ -3979,6 +5646,11 @@ internal fun SpotChatApp(
         targets: List<Pair<String, TransportPeer>>,
         requeueOnFailure: Boolean
     ) {
+        if (!chatStateOperational) {
+            updateMessageState(displayMessageId, DeliveryState.Waiting)
+            trustState = "本地聊天状态未就绪，语音未发送"
+            return
+        }
         if (!canSendToConversation(conversation)) {
             pendingOutboundVoiceMessages.remove(displayMessageId)
             updateMessageState(displayMessageId, DeliveryState.Failed)
@@ -4018,15 +5690,65 @@ internal fun SpotChatApp(
                 trustState = "已移除不再接收此语音的成员"
                 return@launch
             }
+            val capacityIssue =
+                validateVoiceSendCapacity(
+                    displayMessageId = displayMessageId,
+                    audioByteCount = audioBytes.size,
+                    recipientCount = attemptedRecipients.size,
+                    conversationId = conversation.id,
+                    persistOutbox = requeueOnFailure
+                )
+            if (capacityIssue != null) {
+                updateMessageState(
+                    displayMessageId,
+                    if (requeueOnFailure) DeliveryState.Waiting else DeliveryState.Failed
+                )
+                trustState = outboxCapacityMessage(capacityIssue)
+                return@launch
+            }
+            if (requeueOnFailure) {
+                pendingOutboundVoiceMessages[displayMessageId] =
+                    PendingOutboundVoiceMessage(
+                        conversationId = conversation.id,
+                        displayMessageId = displayMessageId,
+                        remainingTargetFingerprints = attemptedRecipients.toList(),
+                        durationMs = durationMs,
+                        audioBytes = audioBytes
+                    )
+            }
+            if (
+                !persistChatStateNow { persisted ->
+                    if (requeueOnFailure) {
+                        persisted.pendingVoiceOutbox.any { queued ->
+                            queued.displayMessageId == displayMessageId &&
+                                queued.remainingTargetFingerprints.toSet() == attemptedRecipients
+                        }
+                    } else {
+                        persisted.messagesByConversation[conversation.id].orEmpty()
+                            .any { message -> message.messageId == displayMessageId }
+                    }
+                }
+            ) {
+                updateMessageState(
+                    displayMessageId,
+                    if (requeueOnFailure) DeliveryState.Waiting else DeliveryState.Failed
+                )
+                trustState = "本地聊天状态不可用，语音未发送"
+                return@launch
+            }
             val attemptTargets =
                 targets.filter { (fingerprint, _) -> fingerprint in attemptedRecipients }
             val remainingRecipients =
                 (attemptedRecipients - attemptTargets.map { (fingerprint, _) -> fingerprint }.toSet())
                     .toMutableSet()
-            fun isCurrentVoiceRecipient(fingerprint: String): Boolean =
-                fingerprint in expectedRecipientsByMessage[displayMessageId].orEmpty() &&
+            fun isCurrentVoiceRecipient(fingerprint: String): Boolean {
+                val queuedTargets =
+                    pendingOutboundVoiceMessages[displayMessageId]?.remainingTargetFingerprints.orEmpty()
+                return fingerprint in expectedRecipientsByMessage[displayMessageId].orEmpty() &&
                     !isPeerBlocked(fingerprint) &&
-                    trustedPeer(fingerprint) != null
+                    trustedPeer(fingerprint) != null &&
+                    (!requeueOnFailure || fingerprint in queuedTargets)
+            }
             var sentCount = 0
             attemptTargets.forEach { (peerFingerprint, peer) ->
                 if (!isCurrentVoiceRecipient(peerFingerprint)) {
@@ -4062,15 +5784,38 @@ internal fun SpotChatApp(
                     return@forEach
                 }
                 val currentExpectedRecipients = expectedRecipientsByMessage[displayMessageId].orEmpty()
-                rememberOutgoingEnvelope(
-                    packetMessageId,
-                    OutgoingMessageRef(
-                        conversationId = conversation.id,
-                        displayMessageId = displayMessageId,
-                        recipientFingerprint = peerFingerprint,
-                        expectedRecipients = currentExpectedRecipients
+                if (
+                    !rememberOutgoingEnvelope(
+                        packetMessageId,
+                        OutgoingMessageRef(
+                            conversationId = conversation.id,
+                            displayMessageId = displayMessageId,
+                            recipientFingerprint = peerFingerprint,
+                            expectedRecipients = currentExpectedRecipients
+                        )
                     )
-                )
+                ) {
+                    remainingRecipients += peerFingerprint
+                    return@forEach
+                }
+                if (
+                    !persistChatStateNow { persisted ->
+                        persisted.outgoingEnvelopes.containsKey(packetMessageId)
+                    }
+                ) {
+                    outgoingMessages.remove(packetMessageId)
+                    remainingRecipients += peerFingerprint
+                    return@forEach
+                }
+                val persistedEnvelope = outgoingMessages[packetMessageId]
+                if (
+                    persistedEnvelope?.recipientFingerprint != peerFingerprint ||
+                    !isCurrentVoiceRecipient(peerFingerprint)
+                ) {
+                    outgoingMessages.remove(packetMessageId)
+                    remainingRecipients += peerFingerprint
+                    return@forEach
+                }
 
                 runCatching {
                     sendPacket(currentTransport(), peer, packet)
@@ -4161,6 +5906,7 @@ internal fun SpotChatApp(
                     trustState = "语音发送失败"
                 }
             }
+            persistChatStateNow()
             } finally {
                 inFlightOutboundVoiceMessages.remove(displayMessageId)
                 if (
@@ -4200,6 +5946,11 @@ internal fun SpotChatApp(
         conversation: ChatConversation,
         recordedVoice: RecordedVoiceMessage
     ) {
+        if (!chatStateOperational) {
+            trustState = "本地聊天状态未就绪，语音未发送"
+            recordedVoice.file.delete()
+            return
+        }
         if (!canSendToConversation(conversation)) {
             trustState = "公告模式下不能发送语音"
             recordedVoice.file.delete()
@@ -4233,6 +5984,20 @@ internal fun SpotChatApp(
 
         val displayMessageId = UUID.randomUUID().toString()
         val intendedRecipients = conversation.memberFingerprints.filterNot(::isPeerBlocked)
+        val capacityIssue =
+            validateVoiceSendCapacity(
+                displayMessageId = displayMessageId,
+                audioByteCount = recordedVoice.audioBytes.size,
+                recipientCount = intendedRecipients.size,
+                conversationId = conversation.id,
+                persistOutbox = intendedRecipients.isNotEmpty()
+            )
+        if (capacityIssue != null) {
+            trustState = outboxCapacityMessage(capacityIssue)
+            recordedVoice.file.delete()
+            return
+        }
+        val initialChatMutation = captureDurableChatMutation()
         expectedRecipientsByMessage[displayMessageId] = intendedRecipients.toSet()
         appendMessage(
             conversation.id,
@@ -4248,6 +6013,20 @@ internal fun SpotChatApp(
                 voiceAudioBytes = recordedVoice.audioBytes
             )
         )
+        val queuedVoiceMessage =
+            if (intendedRecipients.isNotEmpty()) {
+                PendingOutboundVoiceMessage(
+                    conversationId = conversation.id,
+                    displayMessageId = displayMessageId,
+                    remainingTargetFingerprints = intendedRecipients,
+                    durationMs = recordedVoice.durationMs,
+                    audioBytes = recordedVoice.audioBytes
+                ).also { pending ->
+                    pendingOutboundVoiceMessages[displayMessageId] = pending
+                }
+            } else {
+                null
+            }
 
         val targets = targetsForConversation(conversation)
         if (targets.isEmpty()) {
@@ -4265,7 +6044,7 @@ internal fun SpotChatApp(
                     )
                 updateMessageState(displayMessageId, DeliveryState.Waiting)
             }
-            trustState =
+            val offlineState =
                 if (allowedTargetFingerprints.isEmpty()) {
                     "成员均已阻止"
                 } else if (conversation.memberFingerprints.any(::isPeerBlocked)) {
@@ -4273,19 +6052,85 @@ internal fun SpotChatApp(
                 } else {
                     "成员未在线"
                 }
-            recordedVoice.file.delete()
+            if (queuedVoiceMessage == null) {
+                trustState = offlineState
+                recordedVoice.file.delete()
+            } else {
+                val appliedChatMutation = captureDurableChatMutation()
+                val expectedPersistedMessage =
+                    requireNotNull(
+                        messagesForConversation(conversation.id)
+                            .firstOrNull { message -> message.messageId == displayMessageId }
+                            ?.toPersisted()
+                    )
+                trustState = "正在安全保存待发送语音"
+                coroutineScope.launch {
+                    val persisted =
+                        persistChatStateNow { state ->
+                            state.pendingVoiceOutbox.any { queued ->
+                                queued.displayMessageId == displayMessageId &&
+                                    queued.remainingTargetFingerprints.toSet() ==
+                                    intendedRecipients.toSet() &&
+                                    queued.durationMs == recordedVoice.durationMs
+                            } &&
+                                state.messagesByConversation[conversation.id].orEmpty().any { message ->
+                                    message == expectedPersistedMessage
+                                }
+                        }
+                    if (persisted) {
+                        trustState = offlineState
+                    } else {
+                        rollbackDurableChatMutation(initialChatMutation, appliedChatMutation)
+                        if (chatStateWritable) {
+                            persistChatStateNow()
+                        }
+                        trustState = "语音未能安全保存，未加入待发送"
+                    }
+                    recordedVoice.file.delete()
+                }
+            }
             return
         }
 
-        sendPreparedVoiceMessage(
-            conversation = conversation,
-            displayMessageId = displayMessageId,
-            durationMs = recordedVoice.durationMs,
-            audioBytes = recordedVoice.audioBytes,
-            targets = targets,
-            requeueOnFailure = true
-        )
-        recordedVoice.file.delete()
+        if (queuedVoiceMessage == null) {
+            updateMessageState(displayMessageId, DeliveryState.Failed)
+            recordedVoice.file.delete()
+            return
+        }
+        val appliedChatMutation = captureDurableChatMutation()
+        inFlightOutboundVoiceMessages[displayMessageId] = true
+        coroutineScope.launch {
+            val persisted =
+                try {
+                    persistChatStateNow { state ->
+                        state.pendingVoiceOutbox.any { queued ->
+                            queued.displayMessageId == displayMessageId &&
+                                queued.remainingTargetFingerprints.toSet() ==
+                                intendedRecipients.toSet()
+                        }
+                    }
+                } finally {
+                    inFlightOutboundVoiceMessages.remove(displayMessageId)
+                }
+            if (!persisted) {
+                rollbackDurableChatMutation(initialChatMutation, appliedChatMutation)
+                if (chatStateWritable) {
+                    persistChatStateNow()
+                }
+                trustState = "语音未能安全保存，未发送"
+                recordedVoice.file.delete()
+                return@launch
+            }
+            recordedVoice.file.delete()
+            sendPreparedVoiceMessage(
+                conversation = conversation,
+                displayMessageId = displayMessageId,
+                durationMs = recordedVoice.durationMs,
+                audioBytes = recordedVoice.audioBytes,
+                targets = targets,
+                requeueOnFailure = true
+            )
+        }
     }
 
     fun sendMessageToConversation(
@@ -4300,14 +6145,14 @@ internal fun SpotChatApp(
         if (cleanText.isBlank()) {
             return
         }
-
-        draftsByConversation.remove(conversation.id)
-
+        if (!chatStateOperational) {
+            trustState = "本地聊天状态未就绪，消息未发送"
+            return
+        }
         if (!canSendToConversation(conversation)) {
             trustState = "公告模式下不能发送消息"
             return
         }
-
         if (isConversationBlocked(conversation)) {
             trustState = "已阻止此联系人"
             appendSystemMessage(
@@ -4320,9 +6165,23 @@ internal fun SpotChatApp(
 
         val displayMessageId = UUID.randomUUID().toString()
         val remainingTargetFingerprints = conversation.memberFingerprints.filterNot(::isPeerBlocked)
+        val capacityIssue =
+            validateTextSendCapacity(
+                displayMessageId = displayMessageId,
+                recipientCount = remainingTargetFingerprints.size,
+                conversationId = conversation.id,
+                persistOutbox = requeueWhenOffline && remainingTargetFingerprints.isNotEmpty()
+            )
+        if (capacityIssue != null) {
+            trustState = outboxCapacityMessage(capacityIssue)
+            return
+        }
+
+        val initialChatMutation = captureDurableChatMutation()
+        draftsByConversation.remove(conversation.id)
         expectedRecipientsByMessage[displayMessageId] = remainingTargetFingerprints.toSet()
+
         if (transportMode == TransportMode.Lan && !hasLanConnection()) {
-            trustState = "局域网未连接"
             appendMessage(
                 conversation.id,
                 ChatBubble(
@@ -4342,8 +6201,8 @@ internal fun SpotChatApp(
                         }
                 )
             )
-            if (requeueWhenOffline && remainingTargetFingerprints.isNotEmpty()) {
-                pendingOutboundMessages[displayMessageId] =
+            val queuedTextMessage =
+                if (requeueWhenOffline && remainingTargetFingerprints.isNotEmpty()) {
                     PendingOutboundMessage(
                         conversationId = conversation.id,
                         text = cleanText,
@@ -4352,8 +6211,45 @@ internal fun SpotChatApp(
                         quotedMessage = quotedMessage,
                         forwarded = forwarded,
                         forwardCount = forwardCount
+                    ).also { pending -> pendingOutboundMessages[displayMessageId] = pending }
+                } else {
+                    null
+                }
+            if (queuedTextMessage == null) {
+                trustState = "局域网未连接"
+            } else {
+                val appliedChatMutation = captureDurableChatMutation()
+                val expectedPersistedMessage =
+                    requireNotNull(
+                        messagesForConversation(conversation.id)
+                            .firstOrNull { message -> message.messageId == displayMessageId }
+                            ?.toPersisted()
                     )
-                trustState = "等待网络恢复"
+                trustState = "正在安全保存待发送消息"
+                coroutineScope.launch {
+                    val persisted =
+                        persistChatStateNow { state ->
+                            state.pendingTextOutbox.any { queued ->
+                                queued.displayMessageId == displayMessageId &&
+                                    queued.conversationId == conversation.id &&
+                                    queued.text == cleanText &&
+                                    queued.remainingTargetFingerprints.toSet() ==
+                                    remainingTargetFingerprints.toSet()
+                            } &&
+                                state.messagesByConversation[conversation.id].orEmpty().any { message ->
+                                    message == expectedPersistedMessage
+                                }
+                        }
+                    if (persisted) {
+                        trustState = "等待网络恢复"
+                    } else {
+                        rollbackDurableChatMutation(initialChatMutation, appliedChatMutation)
+                        if (chatStateWritable) {
+                            persistChatStateNow()
+                        }
+                        trustState = "消息未能安全保存，未加入待发送"
+                    }
+                }
             }
             return
         }
@@ -4375,7 +6271,7 @@ internal fun SpotChatApp(
 
         val targets = targetsForConversation(conversation)
         if (targets.isEmpty()) {
-            trustState =
+            var offlineState =
                 if (conversation.memberFingerprints.any(::isPeerBlocked)) {
                     "可发送成员未在线"
                 } else {
@@ -4395,22 +6291,58 @@ internal fun SpotChatApp(
                     forwardCount = forwardCount
                 )
             )
-            if (requeueWhenOffline) {
-                val allowedTargetFingerprints = conversation.memberFingerprints.filterNot(::isPeerBlocked)
-                if (allowedTargetFingerprints.isEmpty()) {
-                    updateMessageState(displayMessageId, DeliveryState.Failed)
-                    trustState = "成员均已阻止"
+            val queuedTextMessage =
+                if (requeueWhenOffline && remainingTargetFingerprints.isNotEmpty()) {
+                    PendingOutboundMessage(
+                        conversationId = conversation.id,
+                        text = cleanText,
+                        displayMessageId = displayMessageId,
+                        remainingTargetFingerprints = remainingTargetFingerprints,
+                        quotedMessage = quotedMessage,
+                        forwarded = forwarded,
+                        forwardCount = forwardCount
+                    ).also { pending -> pendingOutboundMessages[displayMessageId] = pending }
                 } else {
-                    pendingOutboundMessages[displayMessageId] =
-                        PendingOutboundMessage(
-                            conversationId = conversation.id,
-                            text = cleanText,
-                            displayMessageId = displayMessageId,
-                            remainingTargetFingerprints = allowedTargetFingerprints,
-                            quotedMessage = quotedMessage,
-                            forwarded = forwarded,
-                            forwardCount = forwardCount
-                        )
+                    if (requeueWhenOffline) {
+                        updateMessageState(displayMessageId, DeliveryState.Failed)
+                        offlineState = "成员均已阻止"
+                    }
+                    null
+                }
+            if (queuedTextMessage == null) {
+                trustState = offlineState
+            } else {
+                val appliedChatMutation = captureDurableChatMutation()
+                val expectedPersistedMessage =
+                    requireNotNull(
+                        messagesForConversation(conversation.id)
+                            .firstOrNull { message -> message.messageId == displayMessageId }
+                            ?.toPersisted()
+                    )
+                trustState = "正在安全保存待发送消息"
+                coroutineScope.launch {
+                    val persisted =
+                        persistChatStateNow { state ->
+                            state.pendingTextOutbox.any { queued ->
+                                queued.displayMessageId == displayMessageId &&
+                                    queued.conversationId == conversation.id &&
+                                    queued.text == cleanText &&
+                                    queued.remainingTargetFingerprints.toSet() ==
+                                    remainingTargetFingerprints.toSet()
+                            } &&
+                                state.messagesByConversation[conversation.id].orEmpty().any { message ->
+                                    message == expectedPersistedMessage
+                                }
+                        }
+                    if (persisted) {
+                        trustState = offlineState
+                    } else {
+                        rollbackDurableChatMutation(initialChatMutation, appliedChatMutation)
+                        if (chatStateWritable) {
+                            persistChatStateNow()
+                        }
+                        trustState = "消息未能安全保存，未加入待发送"
+                    }
                 }
             }
             return
@@ -4447,7 +6379,6 @@ internal fun SpotChatApp(
         val quote = pendingQuotedMessage
         pendingQuotedMessage = null
         val conversation = activeConversation()
-        draftsByConversation.remove(conversation.id)
         sendMessageToConversation(conversation, text, quotedMessage = quote)
     }
 
@@ -4478,7 +6409,6 @@ internal fun SpotChatApp(
             trustState = "公告模式下不能发送草稿"
             return
         }
-        draftsByConversation.remove(conversation.id)
         activeConversationId = conversation.id
         sendMessageToConversation(conversation, draft.text)
     }
@@ -4558,10 +6488,43 @@ internal fun SpotChatApp(
             return
         }
         if (!canSendToConversation(conversation)) {
-            updateMessageState(edit.messageId, DeliveryState.Failed)
             trustState = "公告模式下不能编辑重发"
             return
         }
+        if (isConversationBlocked(conversation)) {
+            trustState = "已阻止此联系人"
+            return
+        }
+
+        val beforeMutation = captureDurableChatMutation()
+        val beforeStarredIds = starredMessageIdsByConversation.toMap()
+        val beforePinnedIds = pinnedMessageIdsByConversation.toMap()
+        val beforeSelectedActionMessage = selectedActionMessage
+        val queuedRecipients =
+            pendingOutboundMessages[edit.messageId]?.remainingTargetFingerprints
+        val expectedRecipients =
+            expectedRecipientsForMessage(
+                displayMessageId = edit.messageId,
+                conversation = conversation,
+                queuedRecipients = queuedRecipients
+            )
+        val intendedRecipients =
+            (queuedRecipients?.toSet() ?: expectedRecipients)
+                .intersect(expectedRecipients)
+                .toList()
+        val capacityIssue =
+            validateTextSendCapacity(
+                displayMessageId = edit.messageId,
+                recipientCount = intendedRecipients.size,
+                conversationId = conversation.id,
+                persistOutbox = intendedRecipients.isNotEmpty()
+            )
+        if (capacityIssue != null) {
+            rollbackDurableChatMutation(beforeMutation, captureDurableChatMutation())
+            trustState = outboxCapacityMessage(capacityIssue)
+            return
+        }
+
         val oldStableId = currentMessage.stableStarId()
         val editedMessage = currentMessage.copy(text = cleanText)
         val newStableId = editedMessage.stableStarId()
@@ -4582,62 +6545,131 @@ internal fun SpotChatApp(
                 pinnedMessageIdsByConversation[conversation.id] = newStableId
             }
         }
-        val intendedRecipients =
-            expectedRecipientsForMessage(
-                displayMessageId = edit.messageId,
-                conversation = conversation,
-                queuedRecipients = pendingOutboundMessages[edit.messageId]?.remainingTargetFingerprints
-            ).toList()
-        pendingOutboundMessages[edit.messageId] =
-            PendingOutboundMessage(
-                conversationId = conversation.id,
-                text = cleanText,
-                displayMessageId = edit.messageId,
-                remainingTargetFingerprints = intendedRecipients,
-                quotedMessage = editedMessage.quotedMessage,
-                forwarded = editedMessage.forwarded,
-                forwardCount = editedMessage.forwardCount
-            )
+        pendingOutboundVoiceMessages.remove(edit.messageId)
+        outgoingMessages
+            .filterValues { outgoing -> outgoing.displayMessageId == edit.messageId }
+            .keys
+            .toList()
+            .forEach { packetMessageId -> outgoingMessages.remove(packetMessageId) }
+        deliveredReceiptsByMessage.remove(edit.messageId)
+        readReceiptsByMessage.remove(edit.messageId)
+        deliveredCounts.remove(edit.messageId)
+        readCounts.remove(edit.messageId)
+        if (intendedRecipients.isEmpty()) {
+            pendingOutboundMessages.remove(edit.messageId)
+            expectedRecipientsByMessage.remove(edit.messageId)
+        } else {
+            pendingOutboundMessages[edit.messageId] =
+                PendingOutboundMessage(
+                    conversationId = conversation.id,
+                    text = cleanText,
+                    displayMessageId = edit.messageId,
+                    remainingTargetFingerprints = intendedRecipients,
+                    quotedMessage = editedMessage.quotedMessage,
+                    forwarded = editedMessage.forwarded,
+                    forwardCount = editedMessage.forwardCount
+                )
+            expectedRecipientsByMessage[edit.messageId] = expectedRecipients
+        }
         selectedActionMessage =
             selectedActionMessage?.let { actionMessage ->
                 if (actionMessage.messageId == edit.messageId) editedMessage else actionMessage
             }
         activeConversationId = conversation.id
         appSurface = AppSurface.Chat
+
         val targets = targetsForFingerprints(intendedRecipients)
-        if (targets.isEmpty()) {
-            val allowedTargetFingerprints = intendedRecipients
-            if (allowedTargetFingerprints.isEmpty()) {
-                updateMessageState(edit.messageId, DeliveryState.Failed)
-                trustState = "成员均已阻止"
-                return
+        val nextDeliveryState =
+            when {
+                intendedRecipients.isEmpty() -> DeliveryState.Failed
+                targets.isEmpty() -> DeliveryState.Waiting
+                else -> DeliveryState.Sending
             }
-            updateMessageState(edit.messageId, DeliveryState.Waiting)
-            pendingOutboundMessages[edit.messageId] =
-                PendingOutboundMessage(
-                    conversationId = conversation.id,
-                    text = cleanText,
-                    displayMessageId = edit.messageId,
-                    remainingTargetFingerprints = allowedTargetFingerprints,
-                    quotedMessage = editedMessage.quotedMessage,
-                    forwarded = editedMessage.forwarded,
-                    forwardCount = editedMessage.forwardCount
+        updateMessageState(edit.messageId, nextDeliveryState)
+        val appliedMutation = captureDurableChatMutation()
+        val appliedStarredIds = starredMessageIdsByConversation.toMap()
+        val appliedPinnedIds = pinnedMessageIdsByConversation.toMap()
+        val appliedSelectedActionMessage = selectedActionMessage
+        val expectedRecipientSet = intendedRecipients.toSet()
+        val persistedDeliveryState = PersistedDeliveryState.valueOf(nextDeliveryState.name)
+        val successState =
+            when {
+                intendedRecipients.isEmpty() -> "成员均已阻止"
+                targets.isEmpty() -> "已编辑，等待重发"
+                else -> "已编辑，正在重发"
+            }
+        persistDurableUserMutation(
+            before = beforeMutation,
+            applied = appliedMutation,
+            requiredState = { state ->
+                val persistedMessage =
+                    state.messagesByConversation[conversation.id].orEmpty()
+                        .firstOrNull { message -> message.messageId == edit.messageId }
+                val textOutboxMatches =
+                    if (expectedRecipientSet.isEmpty()) {
+                        state.pendingTextOutbox.none { queued ->
+                            queued.displayMessageId == edit.messageId
+                        }
+                    } else {
+                        state.pendingTextOutbox.any { queued ->
+                            queued.conversationId == conversation.id &&
+                                queued.displayMessageId == edit.messageId &&
+                                queued.text == cleanText &&
+                                queued.remainingTargetFingerprints.toSet() == expectedRecipientSet &&
+                                queued.quotedMessage == editedMessage.quotedMessage?.toPersisted() &&
+                                queued.forwarded == editedMessage.forwarded &&
+                                queued.forwardCount == editedMessage.forwardCount
+                        }
+                    }
+                persistedMessage?.text == cleanText &&
+                    persistedMessage.deliveryState == persistedDeliveryState &&
+                    textOutboxMatches &&
+                    state.pendingVoiceOutbox.none { queued ->
+                        queued.displayMessageId == edit.messageId
+                    } &&
+                    state.outgoingEnvelopes.values.none { outgoing ->
+                        outgoing.displayMessageId == edit.messageId
+                    } &&
+                    (if (expectedRecipientSet.isEmpty()) {
+                        edit.messageId !in state.expectedRecipientsByMessage
+                    } else {
+                        state.expectedRecipientsByMessage[edit.messageId] == expectedRecipients
+                    }) &&
+                    edit.messageId !in state.deliveredRecipientsByMessage &&
+                    edit.messageId !in state.readRecipientsByMessage
+            },
+            successState = successState,
+            failureState = "编辑未能安全保存，已恢复原消息",
+            onSuccess = {
+                if (targets.isNotEmpty()) {
+                    sendPreparedMessage(
+                        conversation = conversation,
+                        text = cleanText,
+                        displayMessageId = edit.messageId,
+                        targets = targets,
+                        requeueOnFailure = true,
+                        quotedMessage = editedMessage.quotedMessage,
+                        forwarded = editedMessage.forwarded,
+                        forwardCount = editedMessage.forwardCount
+                    )
+                }
+            },
+            onRollback = {
+                rollbackMapChanges(
+                    starredMessageIdsByConversation,
+                    beforeStarredIds,
+                    appliedStarredIds
                 )
-            trustState = "已编辑，等待重发"
-            return
-        }
-        updateMessageState(edit.messageId, DeliveryState.Sending)
-        sendPreparedMessage(
-            conversation = conversation,
-            text = cleanText,
-            displayMessageId = edit.messageId,
-            targets = targets,
-            requeueOnFailure = true,
-            quotedMessage = editedMessage.quotedMessage,
-            forwarded = editedMessage.forwarded,
-            forwardCount = editedMessage.forwardCount
+                rollbackMapChanges(
+                    pinnedMessageIdsByConversation,
+                    beforePinnedIds,
+                    appliedPinnedIds
+                )
+                if (selectedActionMessage == appliedSelectedActionMessage) {
+                    selectedActionMessage = beforeSelectedActionMessage
+                }
+            }
         )
-        trustState = "已编辑，正在重发"
     }
 
     fun prepareEditRetryMessage(
@@ -4667,14 +6699,10 @@ internal fun SpotChatApp(
     ) {
         val displayMessageId = message.messageId ?: return
         if (!canSendToConversation(conversation)) {
-            pendingOutboundMessages.remove(displayMessageId)
-            pendingOutboundVoiceMessages.remove(displayMessageId)
-            updateMessageState(displayMessageId, DeliveryState.Failed)
             trustState = "公告模式下不能重发"
             return
         }
         if (isConversationBlocked(conversation)) {
-            updateMessageState(displayMessageId, DeliveryState.Failed)
             trustState = "已阻止此联系人"
             return
         }
@@ -4682,6 +6710,11 @@ internal fun SpotChatApp(
             trustState = "这条消息不需要重发"
             return
         }
+        val voiceDurationMs =
+            if (message.kind == ChatMessageKind.Voice) message.voiceDurationMs ?: return else null
+        val voiceAudioBytes =
+            if (message.kind == ChatMessageKind.Voice) message.voiceAudioBytes ?: return else null
+        val beforeMutation = captureDurableChatMutation()
         val queuedRecipients =
             when (message.kind) {
                 ChatMessageKind.Text ->
@@ -4695,39 +6728,151 @@ internal fun SpotChatApp(
             (queuedRecipients?.toSet() ?: expectedRecipients)
                 .intersect(expectedRecipients)
                 .toList()
+        val capacityIssue =
+            when (message.kind) {
+                ChatMessageKind.Text ->
+                    validateTextSendCapacity(
+                        displayMessageId = displayMessageId,
+                        recipientCount = remainingRecipients.size,
+                        conversationId = conversation.id,
+                        persistOutbox = remainingRecipients.isNotEmpty()
+                    )
+                ChatMessageKind.Voice ->
+                    validateVoiceSendCapacity(
+                        displayMessageId = displayMessageId,
+                        audioByteCount = voiceAudioBytes?.size ?: return,
+                        recipientCount = remainingRecipients.size,
+                        conversationId = conversation.id,
+                        persistOutbox = remainingRecipients.isNotEmpty()
+                    )
+            }
+        if (capacityIssue != null) {
+            rollbackDurableChatMutation(beforeMutation, captureDurableChatMutation())
+            trustState = outboxCapacityMessage(capacityIssue)
+            return
+        }
         val targets = targetsForFingerprints(remainingRecipients)
         if (targets.isEmpty()) {
             val allowedTargetFingerprints = remainingRecipients
             if (allowedTargetFingerprints.isEmpty()) {
+                pendingOutboundMessages.remove(displayMessageId)
+                pendingOutboundVoiceMessages.remove(displayMessageId)
+                outgoingMessages
+                    .filterValues { outgoing -> outgoing.displayMessageId == displayMessageId }
+                    .keys
+                    .toList()
+                    .forEach { packetMessageId -> outgoingMessages.remove(packetMessageId) }
+                expectedRecipientsByMessage.remove(displayMessageId)
+                deliveredReceiptsByMessage.remove(displayMessageId)
+                readReceiptsByMessage.remove(displayMessageId)
+                deliveredCounts.remove(displayMessageId)
+                readCounts.remove(displayMessageId)
                 updateMessageState(displayMessageId, DeliveryState.Failed)
-                trustState = "成员均已阻止"
-                return
-            }
-            updateMessageState(displayMessageId, DeliveryState.Waiting)
-            trustState = "等待对方上线"
-            when (message.kind) {
-                ChatMessageKind.Text ->
-                    pendingOutboundMessages[displayMessageId] =
-                        PendingOutboundMessage(
-                            conversationId = conversation.id,
-                            text = message.text,
-                            displayMessageId = displayMessageId,
-                            remainingTargetFingerprints = allowedTargetFingerprints,
-                            quotedMessage = message.quotedMessage,
-                            forwarded = message.forwarded,
-                            forwardCount = message.forwardCount
-                        )
+            } else {
+                expectedRecipientsByMessage[displayMessageId] = expectedRecipients
+                updateMessageState(displayMessageId, DeliveryState.Waiting)
+                when (message.kind) {
+                    ChatMessageKind.Text -> {
+                        pendingOutboundVoiceMessages.remove(displayMessageId)
+                        pendingOutboundMessages[displayMessageId] =
+                            PendingOutboundMessage(
+                                conversationId = conversation.id,
+                                text = message.text,
+                                displayMessageId = displayMessageId,
+                                remainingTargetFingerprints = allowedTargetFingerprints,
+                                quotedMessage = message.quotedMessage,
+                                forwarded = message.forwarded,
+                                forwardCount = message.forwardCount
+                            )
+                    }
 
-                ChatMessageKind.Voice ->
-                    pendingOutboundVoiceMessages[displayMessageId] =
-                        PendingOutboundVoiceMessage(
-                            conversationId = conversation.id,
-                            displayMessageId = displayMessageId,
-                            remainingTargetFingerprints = allowedTargetFingerprints,
-                            durationMs = message.voiceDurationMs ?: return,
-                            audioBytes = message.voiceAudioBytes ?: return
-                        )
+                    ChatMessageKind.Voice -> {
+                        pendingOutboundMessages.remove(displayMessageId)
+                        pendingOutboundVoiceMessages[displayMessageId] =
+                            PendingOutboundVoiceMessage(
+                                conversationId = conversation.id,
+                                displayMessageId = displayMessageId,
+                                remainingTargetFingerprints = allowedTargetFingerprints,
+                                durationMs = voiceDurationMs ?: return,
+                                audioBytes = voiceAudioBytes ?: return
+                            )
+                    }
+                }
             }
+            val appliedMutation = captureDurableChatMutation()
+            val expectedRecipientSet = expectedRecipients
+            val allowedRecipientSet = allowedTargetFingerprints.toSet()
+            val encodedVoiceAudio =
+                voiceAudioBytes?.let { audio -> Base64.getEncoder().encodeToString(audio) }
+            persistDurableUserMutation(
+                before = beforeMutation,
+                applied = appliedMutation,
+                requiredState = { state ->
+                    val persistedMessage =
+                        state.messagesByConversation[conversation.id].orEmpty()
+                            .firstOrNull { stored -> stored.messageId == displayMessageId }
+                    val queueMatches =
+                        if (allowedRecipientSet.isEmpty()) {
+                            state.pendingTextOutbox.none { queued ->
+                                queued.displayMessageId == displayMessageId
+                            } &&
+                                state.pendingVoiceOutbox.none { queued ->
+                                    queued.displayMessageId == displayMessageId
+                                }
+                        } else {
+                            when (message.kind) {
+                                ChatMessageKind.Text ->
+                                    state.pendingTextOutbox.any { queued ->
+                                        queued.conversationId == conversation.id &&
+                                            queued.displayMessageId == displayMessageId &&
+                                            queued.text == message.text &&
+                                            queued.remainingTargetFingerprints.toSet() == allowedRecipientSet &&
+                                            queued.quotedMessage == message.quotedMessage?.toPersisted() &&
+                                            queued.forwarded == message.forwarded &&
+                                            queued.forwardCount == message.forwardCount
+                                    } &&
+                                        state.pendingVoiceOutbox.none { queued ->
+                                            queued.displayMessageId == displayMessageId
+                                        }
+                                ChatMessageKind.Voice ->
+                                    state.pendingVoiceOutbox.any { queued ->
+                                        queued.conversationId == conversation.id &&
+                                            queued.displayMessageId == displayMessageId &&
+                                            queued.remainingTargetFingerprints.toSet() == allowedRecipientSet &&
+                                            queued.durationMs == voiceDurationMs &&
+                                            queued.audioBase64 == encodedVoiceAudio
+                                    } &&
+                                        state.pendingTextOutbox.none { queued ->
+                                            queued.displayMessageId == displayMessageId
+                                        }
+                            }
+                        }
+                    persistedMessage?.deliveryState ==
+                        (if (allowedRecipientSet.isEmpty()) {
+                            PersistedDeliveryState.Failed
+                        } else {
+                            PersistedDeliveryState.Waiting
+                        }) &&
+                        queueMatches &&
+                        (if (allowedRecipientSet.isEmpty()) {
+                            displayMessageId !in state.expectedRecipientsByMessage &&
+                                displayMessageId !in state.deliveredRecipientsByMessage &&
+                                displayMessageId !in state.readRecipientsByMessage &&
+                                state.outgoingEnvelopes.values.none { outgoing ->
+                                    outgoing.displayMessageId == displayMessageId
+                                }
+                        } else {
+                            state.expectedRecipientsByMessage[displayMessageId] == expectedRecipientSet
+                        })
+                },
+                successState =
+                    if (allowedRecipientSet.isEmpty()) {
+                        "成员均已阻止"
+                    } else {
+                        "等待对方上线"
+                    },
+                failureState = "重试未能安全保存，已恢复"
+            )
             return
         }
         updateMessageState(displayMessageId, DeliveryState.Sending)
@@ -4748,8 +6893,8 @@ internal fun SpotChatApp(
                 sendPreparedVoiceMessage(
                     conversation = conversation,
                     displayMessageId = displayMessageId,
-                    durationMs = message.voiceDurationMs ?: return,
-                    audioBytes = message.voiceAudioBytes ?: return,
+                    durationMs = voiceDurationMs ?: return,
+                    audioBytes = voiceAudioBytes ?: return,
                     targets = targets,
                     requeueOnFailure = true
                 )
@@ -4759,7 +6904,6 @@ internal fun SpotChatApp(
 
     fun retryConversationMessages(conversation: ChatConversation) {
         if (!canSendToConversation(conversation)) {
-            clearPendingOutboundForConversation(conversation.id, markFailed = true)
             trustState = "公告模式下不能重发"
             return
         }
@@ -4771,7 +6915,6 @@ internal fun SpotChatApp(
         retryableMessages.forEach { message ->
             retryMessage(conversation, message)
         }
-        trustState = "正在重发 ${retryableMessages.size} 条消息"
     }
 
     fun clearRetryableMessages(conversation: ChatConversation): Int {
@@ -4794,6 +6937,7 @@ internal fun SpotChatApp(
             pendingMessageEdit?.takeUnless { edit ->
                 retryableMessages.any { message -> message.messageId == edit.messageId }
             }
+        persistRemovedMessages(conversation.id, retryableMessages)
         return retryableMessages.size
     }
 
@@ -4943,8 +7087,12 @@ internal fun SpotChatApp(
         blockedPeerFingerprints.toMap(),
         peerRouteRevision,
         recipientSetRevision,
-        outboundQueueWakeRevision
+        outboundQueueWakeRevision,
+        chatStateOperational
     ) {
+        if (!chatStateOperational) {
+            return@LaunchedEffect
+        }
         pendingOutboundMessages.values
             .toList()
             .filter { queuedReply ->
@@ -5161,7 +7309,10 @@ internal fun SpotChatApp(
         )
     }
 
-    LaunchedEffect(notificationIntent, trustedPeers.size) {
+    LaunchedEffect(notificationIntent, trustedPeers.size, chatStateOperational) {
+        if (!chatStateOperational) {
+            return@LaunchedEffect
+        }
         val intent = notificationIntent ?: return@LaunchedEffect
         handleTextReplyTileIntent(intent)
         handleVoiceTileIntent(intent)
@@ -5179,8 +7330,29 @@ internal fun SpotChatApp(
         }
     }
 
-    DisposableEffect(replayProtection, voicePlaybackCache) {
+    DisposableEffect(
+        replayProtection,
+        voicePlaybackCache,
+        chatStateStore,
+        chatStateDisposalScope
+    ) {
         onDispose {
+            if (chatStateLoadComplete && chatStateWritable) {
+                val snapshotSequence = chatStateSnapshotSequence.incrementAndGet()
+                val finalState = currentPersistedChatState()
+                chatStateDisposalScope.launch {
+                    runCatching {
+                        synchronized(chatStateWriteLock) {
+                            if (snapshotSequence > chatStateLastWrittenSequence.get()) {
+                                chatStateStore.save(finalState).also { savedState ->
+                                    chatStateLastWrittenSnapshot.set(savedState)
+                                    chatStateLastWrittenSequence.set(snapshotSequence)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             voiceRecorder.cancel()
             stopActiveVoicePlayback()
             voicePlaybackCache.clear()
@@ -5437,7 +7609,7 @@ internal fun SpotChatApp(
         messageSearchLauncher.launch(inputIntent)
     }
 
-    LaunchedEffect(transportMode, deviceName, lanDiscoveryEnabled) {
+    LaunchedEffect(transportMode, deviceName, lanDiscoveryEnabled, chatStateOperational) {
         val transport = currentTransport()
         activePeer = null
         activePeerFingerprint = null
@@ -5450,6 +7622,16 @@ internal fun SpotChatApp(
         pendingSessionChallenges.clear()
         handshakeAttemptsByRoute.clear()
         knownPeersByFingerprint.clear()
+
+        if (!chatStateOperational) {
+            trustState =
+                if (chatStateLoadComplete) {
+                    "本地聊天状态不可用，已暂停收发"
+                } else {
+                    "正在恢复本地聊天状态"
+                }
+            return@LaunchedEffect
+        }
 
         if (transportMode == TransportMode.Lan && !lanDiscoveryEnabled) {
             trustState = "点按局域网开始发现"

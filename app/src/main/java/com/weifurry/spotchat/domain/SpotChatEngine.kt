@@ -92,6 +92,15 @@ class DuplicateMessageException(
     val senderFingerprint: String
 ) : IllegalStateException("Duplicate message $messageId from $senderFingerprint")
 
+class AuthenticatedPayloadDecodingException(
+    val messageId: String,
+    val senderFingerprint: String,
+    cause: Throwable
+) : IllegalArgumentException(
+        "Authenticated payload $messageId from $senderFingerprint is invalid",
+        cause
+    )
+
 class SpotChatEngine(
     private val localDeviceName: String,
     private val localIdentity: KeyPair,
@@ -284,6 +293,9 @@ class SpotChatEngine(
         require(messageId.isNotBlank() && messageId.length <= MAX_MESSAGE_ID_CHARS) {
             "Invalid logical message id"
         }
+        require(text.isNotBlank() && text.length <= MAX_TEXT_PAYLOAD_CHARS) {
+            "Invalid text message"
+        }
         val envelopeMessageId = UUID.randomUUID().toString()
         val payload = TextMessagePayload(logicalMessageId = messageId, text = text)
         val frame =
@@ -312,11 +324,17 @@ class SpotChatEngine(
         sentAtEpochMillis: Long = System.currentTimeMillis(),
         messageId: String = UUID.randomUUID().toString()
     ): WirePacket {
-        require(audioBytes.isNotEmpty()) {
-            "Voice message audio cannot be empty"
+        require(
+            audioBytes.isNotEmpty() &&
+                audioBytes.size <= EncryptedChatStateStore.MAX_SINGLE_VOICE_BYTES
+        ) {
+            "Invalid voice message audio size"
         }
-        require(durationMs > 0L) {
-            "Voice message duration must be positive"
+        require(durationMs in MIN_VOICE_DURATION_MS..MAX_VOICE_DURATION_MS) {
+            "Invalid voice message duration"
+        }
+        require(codec == VOICE_CODEC_AAC) {
+            "Unsupported voice message codec"
         }
         require(messageId.isNotBlank() && messageId.length <= MAX_MESSAGE_ID_CHARS) {
             "Invalid logical message id"
@@ -365,8 +383,8 @@ class SpotChatEngine(
         require(targetMessageId.isNotBlank() && targetMessageId.length <= MAX_MESSAGE_ID_CHARS) {
             "Invalid reaction target message id"
         }
-        require(emoji.isNotBlank()) {
-            "Reaction emoji cannot be blank"
+        require(emoji.isNotBlank() && emoji.length <= MAX_REACTION_EMOJI_CHARS) {
+            "Invalid reaction emoji"
         }
         val messageId = UUID.randomUUID().toString()
         val payload =
@@ -438,6 +456,15 @@ class SpotChatEngine(
         status: DeliveryReceiptStatus = DeliveryReceiptStatus.Delivered,
         receivedAtEpochMillis: Long = System.currentTimeMillis()
     ): WirePacket {
+        require(
+            deliveredMessageId.isNotBlank() &&
+                deliveredMessageId.length <= MAX_MESSAGE_ID_CHARS
+        ) {
+            "Invalid acknowledged message id"
+        }
+        require(receivedAtEpochMillis >= 0L) {
+            "Invalid acknowledgment timestamp"
+        }
         val sessionKey = sessionKeyFor(peerFingerprint)
         val ackEnvelopeId = UUID.randomUUID().toString()
         val ack =
@@ -472,70 +499,180 @@ class SpotChatEngine(
         )
     }
 
-    fun decryptText(message: EncryptedChatMessage): PlainChatMessage {
-        val plaintext = decryptPayload(message, PacketKind.ENCRYPTED_MESSAGE, rememberReplay = true)
-        val payload = json.decodeFromString<TextMessagePayload>(plaintext.toString(Charsets.UTF_8))
-        require(
-            payload.logicalMessageId.isNotBlank() &&
-                payload.logicalMessageId.length <= MAX_MESSAGE_ID_CHARS
-        ) {
-            "Invalid logical message id"
+    fun decryptText(
+        message: EncryptedChatMessage,
+        rememberReplay: Boolean = true
+    ): PlainChatMessage {
+        val plaintext = decryptPayload(message, PacketKind.ENCRYPTED_MESSAGE, rememberReplay)
+        return decodeAuthenticatedPayload(message, rememberReplay) {
+            val payload =
+                json.decodeFromString<TextMessagePayload>(plaintext.toString(Charsets.UTF_8))
+            require(
+                payload.logicalMessageId.isNotBlank() &&
+                    payload.logicalMessageId.length <= MAX_MESSAGE_ID_CHARS
+            ) {
+                "Invalid logical message id"
+            }
+            require(
+                payload.text.isNotBlank() && payload.text.length <= MAX_TEXT_PAYLOAD_CHARS
+            ) {
+                "Invalid text message"
+            }
+            PlainChatMessage(
+                messageId = payload.logicalMessageId,
+                envelopeMessageId = message.messageId,
+                senderFingerprint = message.senderFingerprint,
+                sentAtEpochMillis = message.sentAtEpochMillis,
+                text = payload.text
+            )
         }
-        return PlainChatMessage(
-            messageId = payload.logicalMessageId,
-            envelopeMessageId = message.messageId,
-            senderFingerprint = message.senderFingerprint,
-            sentAtEpochMillis = message.sentAtEpochMillis,
-            text = payload.text
-        )
     }
 
-    fun decryptVoice(message: EncryptedChatMessage): PlainVoiceMessage {
-        val plaintext = decryptPayload(message, PacketKind.ENCRYPTED_VOICE_MESSAGE, rememberReplay = true)
-        val payload = json.decodeFromString<VoiceMessagePayload>(plaintext.toString(Charsets.UTF_8))
-        require(
-            payload.logicalMessageId.isNotBlank() &&
-                payload.logicalMessageId.length <= MAX_MESSAGE_ID_CHARS
-        ) {
-            "Invalid logical voice message id"
+    fun decryptVoice(
+        message: EncryptedChatMessage,
+        rememberReplay: Boolean = true
+    ): PlainVoiceMessage {
+        val plaintext = decryptPayload(message, PacketKind.ENCRYPTED_VOICE_MESSAGE, rememberReplay)
+        return decodeAuthenticatedPayload(message, rememberReplay) {
+            val payload =
+                json.decodeFromString<VoiceMessagePayload>(plaintext.toString(Charsets.UTF_8))
+            require(
+                payload.logicalMessageId.isNotBlank() &&
+                    payload.logicalMessageId.length <= MAX_MESSAGE_ID_CHARS
+            ) {
+                "Invalid logical voice message id"
+            }
+            require(payload.codec == VOICE_CODEC_AAC) {
+                "Unsupported voice message codec"
+            }
+            require(payload.durationMs in MIN_VOICE_DURATION_MS..MAX_VOICE_DURATION_MS) {
+                "Invalid voice message duration"
+            }
+            require(
+                payload.audioBase64.isNotEmpty() &&
+                    payload.audioBase64.length <= MAX_VOICE_AUDIO_BASE64_CHARS
+            ) {
+                "Invalid voice audio encoding"
+            }
+            require(
+                (payload.groupId == null ||
+                    payload.groupId.isNotBlank() && payload.groupId.length <= MAX_GROUP_ID_CHARS) &&
+                    (payload.groupName == null || payload.groupName.length <= MAX_GROUP_NAME_CHARS) &&
+                    (payload.groupId != null || payload.groupName == null)
+            ) {
+                "Invalid voice group metadata"
+            }
+            val audioBytes = Base64.getDecoder().decode(payload.audioBase64)
+            require(
+                audioBytes.isNotEmpty() &&
+                    audioBytes.size <= EncryptedChatStateStore.MAX_SINGLE_VOICE_BYTES
+            ) {
+                "Invalid voice message audio size"
+            }
+            PlainVoiceMessage(
+                messageId = payload.logicalMessageId,
+                envelopeMessageId = message.messageId,
+                senderFingerprint = message.senderFingerprint,
+                sentAtEpochMillis = message.sentAtEpochMillis,
+                codec = payload.codec,
+                durationMs = payload.durationMs,
+                audioBytes = audioBytes,
+                groupId = payload.groupId,
+                groupName = payload.groupName
+            )
         }
-        require(
-            (payload.groupId == null ||
-                payload.groupId.isNotBlank() && payload.groupId.length <= MAX_GROUP_ID_CHARS) &&
-                (payload.groupName == null || payload.groupName.length <= MAX_GROUP_NAME_CHARS) &&
-                (payload.groupId != null || payload.groupName == null)
-        ) {
-            "Invalid voice group metadata"
-        }
-        return PlainVoiceMessage(
-            messageId = payload.logicalMessageId,
-            envelopeMessageId = message.messageId,
-            senderFingerprint = message.senderFingerprint,
-            sentAtEpochMillis = message.sentAtEpochMillis,
-            codec = payload.codec,
-            durationMs = payload.durationMs,
-            audioBytes = Base64.getDecoder().decode(payload.audioBase64),
-            groupId = payload.groupId,
-            groupName = payload.groupName
-        )
     }
 
-    fun decryptReaction(message: EncryptedChatMessage): PlainReaction {
-        val plaintext = decryptPayload(message, PacketKind.ENCRYPTED_REACTION, rememberReplay = true)
-        val payload = json.decodeFromString<ReactionPayload>(plaintext.toString(Charsets.UTF_8))
-        return PlainReaction(
-            messageId = message.messageId,
-            senderFingerprint = message.senderFingerprint,
-            sentAtEpochMillis = message.sentAtEpochMillis,
-            targetMessageId = payload.targetMessageId,
-            emoji = payload.emoji
-        )
+    fun decryptReaction(
+        message: EncryptedChatMessage,
+        rememberReplay: Boolean = true
+    ): PlainReaction {
+        val plaintext = decryptPayload(message, PacketKind.ENCRYPTED_REACTION, rememberReplay)
+        return decodeAuthenticatedPayload(message, rememberReplay) {
+            val payload =
+                json.decodeFromString<ReactionPayload>(plaintext.toString(Charsets.UTF_8))
+            require(
+                payload.targetMessageId.isNotBlank() &&
+                    payload.targetMessageId.length <= MAX_MESSAGE_ID_CHARS
+            ) {
+                "Invalid reaction target message id"
+            }
+            require(
+                payload.emoji.isNotBlank() && payload.emoji.length <= MAX_REACTION_EMOJI_CHARS
+            ) {
+                "Invalid reaction emoji"
+            }
+            PlainReaction(
+                messageId = message.messageId,
+                senderFingerprint = message.senderFingerprint,
+                sentAtEpochMillis = message.sentAtEpochMillis,
+                targetMessageId = payload.targetMessageId,
+                emoji = payload.emoji
+            )
+        }
     }
 
-    fun decryptAck(message: EncryptedChatMessage): DeliveryAck {
-        val plaintext = decryptPayload(message, PacketKind.ENCRYPTED_ACK, rememberReplay = true)
-        return json.decodeFromString(plaintext.toString(Charsets.UTF_8))
+    fun decryptAck(
+        message: EncryptedChatMessage,
+        rememberReplay: Boolean = true
+    ): DeliveryAck {
+        val plaintext = decryptPayload(message, PacketKind.ENCRYPTED_ACK, rememberReplay)
+        return decodeAuthenticatedPayload(message, rememberReplay) {
+            val ack = json.decodeFromString<DeliveryAck>(plaintext.toString(Charsets.UTF_8))
+            require(ack.messageId.isNotBlank() && ack.messageId.length <= MAX_MESSAGE_ID_CHARS) {
+                "Invalid acknowledged message id"
+            }
+            require(ack.receivedAtEpochMillis >= 0L) {
+                "Invalid acknowledgment timestamp"
+            }
+            ack
+        }
     }
+
+    /**
+     * Rejects a packet that already has an unexpired durable replay marker without writing one.
+     *
+     * Call this after authentication, replay-window validation, and payload validation but before
+     * mutating application state. A successful check does not reserve the packet; the durable state
+     * must still be persisted before [rememberAuthenticatedPacket] is called.
+     */
+    fun ensureAuthenticatedPacketIsNew(message: EncryptedChatMessage) {
+        if (replayProtection.hasSeen(message.senderFingerprint, message.messageId)) {
+            throw DuplicateMessageException(message.messageId, message.senderFingerprint)
+        }
+    }
+
+    /**
+     * Records an already authenticated encrypted packet after its application state is durable.
+     *
+     * Persisting the message first and the replay marker second intentionally favors an
+     * idempotent duplicate after a crash over permanently losing a message whose packet was
+     * marked as seen before its history entry reached disk.
+     */
+    fun rememberAuthenticatedPacket(message: EncryptedChatMessage) {
+        validateReplayWindow(message)
+        if (!replayProtection.markIfNew(message.senderFingerprint, message.messageId)) {
+            throw DuplicateMessageException(message.messageId, message.senderFingerprint)
+        }
+    }
+
+    private inline fun <T> decodeAuthenticatedPayload(
+        message: EncryptedChatMessage,
+        rememberReplay: Boolean,
+        decode: () -> T
+    ): T =
+        try {
+            decode()
+        } catch (error: IllegalArgumentException) {
+            if (rememberReplay) {
+                throw error
+            }
+            throw AuthenticatedPayloadDecodingException(
+                messageId = message.messageId,
+                senderFingerprint = message.senderFingerprint,
+                cause = error
+            )
+        }
 
     private fun decryptPayload(
         message: EncryptedChatMessage,
@@ -566,18 +703,21 @@ class SpotChatEngine(
                     )
             )
         if (rememberReplay) {
-            val nowEpochMillis = System.currentTimeMillis()
-            require(
-                message.sentAtEpochMillis > nowEpochMillis - ReplayPolicy.MAX_PACKET_AGE_MS &&
-                    message.sentAtEpochMillis <= nowEpochMillis + ReplayPolicy.MAX_FUTURE_SKEW_MS
-            ) {
-                "Encrypted packet timestamp is outside the accepted replay window"
-            }
-            if (!replayProtection.markIfNew(message.senderFingerprint, message.messageId)) {
-                throw DuplicateMessageException(message.messageId, message.senderFingerprint)
-            }
+            rememberAuthenticatedPacket(message)
+        } else {
+            validateReplayWindow(message)
         }
         return plaintext
+    }
+
+    private fun validateReplayWindow(message: EncryptedChatMessage) {
+        val nowEpochMillis = System.currentTimeMillis()
+        require(
+            message.sentAtEpochMillis > nowEpochMillis - ReplayPolicy.MAX_PACKET_AGE_MS &&
+                message.sentAtEpochMillis <= nowEpochMillis + ReplayPolicy.MAX_FUTURE_SKEW_MS
+        ) {
+            "Encrypted packet timestamp is outside the accepted replay window"
+        }
     }
 
     private fun payloadAssociatedData(
@@ -639,6 +779,12 @@ class SpotChatEngine(
 
     companion object {
         const val VOICE_CODEC_AAC = "aac-m4a"
+        private const val MIN_VOICE_DURATION_MS = 1L
+        private const val MAX_VOICE_DURATION_MS = 10L * 60L * 1_000L
+        private const val MAX_VOICE_AUDIO_BASE64_CHARS =
+            ((EncryptedChatStateStore.MAX_SINGLE_VOICE_BYTES + 2) / 3) * 4
+        private const val MAX_TEXT_PAYLOAD_CHARS = 1_024
+        private const val MAX_REACTION_EMOJI_CHARS = 32
         private const val MAX_CONFIRMED_SESSIONS = 64
         private const val MAX_PENDING_SESSIONS = 32
         private const val MAX_DEVICE_NAME_CHARS = 64

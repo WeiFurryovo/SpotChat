@@ -9,11 +9,13 @@ import android.database.sqlite.SQLiteOpenHelper
 class SqliteReplayProtection(
     context: Context,
     private val localFingerprint: String,
-    private val maxEntries: Int = ReplayPolicy.DEFAULT_MAX_ENTRIES
+    private val maxEntries: Int = ReplayPolicy.DEFAULT_MAX_ENTRIES,
+    private val nowEpochMillis: () -> Long = System::currentTimeMillis
 ) : SQLiteOpenHelper(context.applicationContext, DATABASE_NAME, null, DATABASE_VERSION),
     ReplayProtection {
     private var cachedRowCount: Long? = null
     private var lastMaintenanceAtEpochMillis = 0L
+    private var cleanedOtherFingerprints = false
 
     init {
         require(localFingerprint.isNotBlank()) {
@@ -53,13 +55,26 @@ class SqliteReplayProtection(
         }
     }
 
-    override fun onOpen(database: SQLiteDatabase) {
-        super.onOpen(database)
-        database.delete(
+    @Synchronized
+    override fun hasSeen(
+        senderFingerprint: String,
+        messageId: String
+    ): Boolean {
+        validateReplayKey(senderFingerprint, messageId)
+        val expiresBefore = nowEpochMillis() - ReplayPolicy.ENTRY_RETENTION_MS
+        return DatabaseUtils.queryNumEntries(
+            readableDatabase,
             TABLE_SEEN_PACKETS,
-            "$COLUMN_LOCAL_FINGERPRINT <> ?",
-            arrayOf(localFingerprint)
-        )
+            "$COLUMN_LOCAL_FINGERPRINT = ? AND " +
+                "$COLUMN_SENDER_FINGERPRINT = ? AND " +
+                "$COLUMN_MESSAGE_ID = ? AND $COLUMN_SEEN_AT > ?",
+            arrayOf(
+                localFingerprint,
+                senderFingerprint,
+                messageId,
+                expiresBefore.toString()
+            )
+        ) > 0L
     }
 
     @Synchronized
@@ -67,21 +82,36 @@ class SqliteReplayProtection(
         senderFingerprint: String,
         messageId: String
     ): Boolean {
-        require(senderFingerprint.isNotBlank()) {
-            "Replay sender fingerprint cannot be blank"
-        }
-        require(messageId.isNotBlank()) {
-            "Replay message id cannot be blank"
-        }
-        val nowEpochMillis = System.currentTimeMillis()
+        validateReplayKey(senderFingerprint, messageId)
+        val now = nowEpochMillis()
+        val expiresBefore = now - ReplayPolicy.ENTRY_RETENTION_MS
         val database = writableDatabase
-        maintain(database, nowEpochMillis)
+        maintain(database, now)
+        val removedExpiredMatchingRows =
+            database.delete(
+                TABLE_SEEN_PACKETS,
+                "$COLUMN_LOCAL_FINGERPRINT = ? AND " +
+                    "$COLUMN_SENDER_FINGERPRINT = ? AND " +
+                    "$COLUMN_MESSAGE_ID = ? AND $COLUMN_SEEN_AT <= ?",
+                arrayOf(
+                    localFingerprint,
+                    senderFingerprint,
+                    messageId,
+                    expiresBefore.toString()
+                )
+            )
+        if (removedExpiredMatchingRows > 0) {
+            cachedRowCount =
+                cachedRowCount?.let { count ->
+                    (count - removedExpiredMatchingRows).coerceAtLeast(0L)
+                }
+        }
         val values =
             ContentValues().apply {
                 put(COLUMN_LOCAL_FINGERPRINT, localFingerprint)
                 put(COLUMN_SENDER_FINGERPRINT, senderFingerprint)
                 put(COLUMN_MESSAGE_ID, messageId)
-                put(COLUMN_SEEN_AT, nowEpochMillis)
+                put(COLUMN_SEEN_AT, now)
             }
         val inserted = database.insertWithOnConflict(
             TABLE_SEEN_PACKETS,
@@ -109,6 +139,15 @@ class SqliteReplayProtection(
         database: SQLiteDatabase,
         nowEpochMillis: Long
     ) {
+        if (!cleanedOtherFingerprints) {
+            database.delete(
+                TABLE_SEEN_PACKETS,
+                "$COLUMN_LOCAL_FINGERPRINT <> ?",
+                arrayOf(localFingerprint)
+            )
+            cleanedOtherFingerprints = true
+            cachedRowCount = null
+        }
         if (
             cachedRowCount != null &&
             nowEpochMillis - lastMaintenanceAtEpochMillis < MAINTENANCE_INTERVAL_MS &&
@@ -132,6 +171,18 @@ class SqliteReplayProtection(
                 arrayOf(localFingerprint)
             )
         lastMaintenanceAtEpochMillis = nowEpochMillis
+    }
+
+    private fun validateReplayKey(
+        senderFingerprint: String,
+        messageId: String
+    ) {
+        require(senderFingerprint.isNotBlank()) {
+            "Replay sender fingerprint cannot be blank"
+        }
+        require(messageId.isNotBlank()) {
+            "Replay message id cannot be blank"
+        }
     }
 
     private fun createSeenAtIndex(database: SQLiteDatabase) {
