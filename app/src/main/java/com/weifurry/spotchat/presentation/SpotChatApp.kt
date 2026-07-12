@@ -142,6 +142,7 @@ import com.weifurry.spotchat.protocol.SessionChallenge
 import com.weifurry.spotchat.protocol.WirePacket
 import com.weifurry.spotchat.transport.BluetoothChatTransport
 import com.weifurry.spotchat.transport.LanChatTransport
+import com.weifurry.spotchat.transport.requiredBluetoothRuntimePermissions
 import com.weifurry.spotchat.transport.RelayChatTransport
 import com.weifurry.spotchat.transport.SpotChatTransport
 import com.weifurry.spotchat.transport.TransportEvent
@@ -149,12 +150,14 @@ import com.weifurry.spotchat.transport.TransportKind
 import com.weifurry.spotchat.transport.TransportPeer
 import com.weifurry.spotchat.voice.RecordedVoiceMessage
 import com.weifurry.spotchat.voice.SpotChatVoiceRecorder
+import com.weifurry.spotchat.voice.VoicePlaybackCache
 import com.weifurry.spotchat.wear.QuickVoiceTileService
 import com.weifurry.spotchat.wear.QuickTextReplyTileService
 import com.weifurry.spotchat.wear.RecentChatsTileService
 import com.weifurry.spotchat.wear.SpotChatWearStateStore
 import com.weifurry.spotchat.wear.WearChatSnapshot
 import com.weifurry.spotchat.wear.WearConversationSummary
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -711,13 +714,7 @@ internal fun SpotChatApp(
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
-    val defaultDeviceName =
-        remember {
-            listOf(Build.MANUFACTURER, Build.MODEL)
-                .joinToString(separator = " ")
-                .trim()
-                .ifBlank { "SpotChat Watch" }
-        }
+    val defaultDeviceName = "SpotChat Watch"
     val profileStore =
         remember(context) {
             ProfileStore(context)
@@ -750,8 +747,8 @@ internal fun SpotChatApp(
             TrustedPeerStore(context)
         }
     val lanTransport =
-        remember(context, deviceName) {
-            LanChatTransport(deviceName, context)
+        remember(context) {
+            LanChatTransport(context = context)
         }
     val bluetoothTransport =
         remember(context) {
@@ -772,6 +769,10 @@ internal fun SpotChatApp(
     val voiceRecorder =
         remember(context) {
             SpotChatVoiceRecorder(context)
+        }
+    val voicePlaybackCache =
+        remember(context) {
+            VoicePlaybackCache(context.cacheDir)
         }
     val wearStateStore =
         remember(context) {
@@ -865,7 +866,8 @@ internal fun SpotChatApp(
     var pendingQuotedMessage by remember { mutableStateOf<QuotedMessage?>(null) }
     var pendingDirectReply by remember { mutableStateOf<PendingDirectReply?>(null) }
     var transportMode by remember { mutableStateOf(TransportMode.Lan) }
-    var trustState by remember { mutableStateOf("未配对") }
+    var lanDiscoveryEnabled by remember { mutableStateOf(false) }
+    var trustState by remember { mutableStateOf("点按局域网开始发现") }
     var activePeer by remember { mutableStateOf<TransportPeer?>(null) }
     var activePeerFingerprint by remember { mutableStateOf<String?>(null) }
     var pendingPeer by remember { mutableStateOf<TrustedPeer?>(null) }
@@ -897,6 +899,7 @@ internal fun SpotChatApp(
     var recordingElapsedMillis by remember { mutableStateOf(0L) }
     var recordingConversationId by remember { mutableStateOf<String?>(null) }
     var activePlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var activePlaybackFile by remember { mutableStateOf<File?>(null) }
     var wearChatSnapshot by remember(wearStateStore) {
         mutableStateOf(wearStateStore.load())
     }
@@ -914,6 +917,22 @@ internal fun SpotChatApp(
         recordingConversationId = null
     }
 
+    fun releaseVoicePlayback(
+        player: MediaPlayer?,
+        playbackFile: File?
+    ) {
+        runCatching { player?.release() }
+        voicePlaybackCache.delete(playbackFile)
+    }
+
+    fun stopActiveVoicePlayback() {
+        val player = activePlayer
+        val playbackFile = activePlaybackFile
+        activePlayer = null
+        activePlaybackFile = null
+        releaseVoicePlayback(player, playbackFile)
+    }
+
     fun showActionConfirmation(
         title: String,
         detail: String
@@ -928,13 +947,9 @@ internal fun SpotChatApp(
     }
 
     fun hasBluetoothRuntimePermissions(): Boolean =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
-            (
-                context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
-                    PackageManager.PERMISSION_GRANTED &&
-                    context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) ==
-                    PackageManager.PERMISSION_GRANTED
-            )
+        requiredBluetoothRuntimePermissions(Build.VERSION.SDK_INT).all { permission ->
+            context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+        }
 
     val permissionLauncher =
         rememberLauncherForActivityResult(
@@ -1627,7 +1642,8 @@ internal fun SpotChatApp(
         peer: TransportPeer
     ) {
         runCatching {
-            sendPacket(transport, peer, engine.helloPacket(transportHints(), about = profile.about))
+            // Keep profile text out of unauthenticated discovery packets.
+            sendPacket(transport, peer, engine.helloPacket(transportHints()))
         }.onFailure { error ->
             trustState = "握手失败"
             appendMessage(
@@ -2953,8 +2969,7 @@ internal fun SpotChatApp(
         val packet =
             engine.sessionChallengePacket(
                 responderHello = responderHello,
-                transports = transportHints(),
-                about = profile.about
+                transports = transportHints()
             )
         val challenge = packet.sessionChallenge ?: error("Missing session challenge")
         pendingSessionChallenges[challenge.challengeId] =
@@ -3074,8 +3089,7 @@ internal fun SpotChatApp(
                         val nowEpochMillis = System.currentTimeMillis()
                         val localHello =
                             engine.helloPacket(
-                                transports = transportHints(),
-                                about = profile.about
+                                transports = transportHints()
                             ).hello ?: error("Missing local hello")
                         if (
                             challenge.challengeId.isBlank() ||
@@ -3543,15 +3557,23 @@ internal fun SpotChatApp(
     }
 
     fun selectMode(mode: TransportMode) {
+        if (mode == TransportMode.Lan) {
+            val shouldEnable = transportMode != TransportMode.Lan || !lanDiscoveryEnabled
+            transportMode = TransportMode.Lan
+            lanDiscoveryEnabled = shouldEnable
+            trustState =
+                if (shouldEnable) {
+                    "局域网发现中"
+                } else {
+                    "局域网发现已关闭"
+                }
+            return
+        }
         if (mode == TransportMode.Bluetooth && !hasBluetoothRuntimePermissions()) {
             trustState = "蓝牙需要授权"
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                permissionLauncher.launch(
-                    arrayOf(
-                        Manifest.permission.BLUETOOTH_CONNECT,
-                        Manifest.permission.BLUETOOTH_SCAN
-                    )
-                )
+            val permissions = requiredBluetoothRuntimePermissions(Build.VERSION.SDK_INT)
+            if (permissions.isNotEmpty()) {
+                permissionLauncher.launch(permissions.toTypedArray())
             }
             return
         }
@@ -3565,12 +3587,7 @@ internal fun SpotChatApp(
             return
         }
         transportMode = mode
-        trustState =
-            when (mode) {
-                TransportMode.Lan -> "局域网发现中"
-                TransportMode.Bluetooth -> "蓝牙待连接"
-                TransportMode.Relay -> "中继预留"
-            }
+        trustState = "蓝牙待连接"
     }
 
     fun updateProfile(updated: ProfileSettings) {
@@ -4858,36 +4875,49 @@ internal fun SpotChatApp(
             appSurface = AppSurface.MessageActions
             return
         }
+        stopActiveVoicePlayback()
+        var playbackFile: File? = null
+        var player: MediaPlayer? = null
         runCatching {
-            activePlayer?.release()
-            val playbackDir = context.cacheDir.resolve("voice-playback").apply { mkdirs() }
-            val playbackFile = playbackDir.resolve("${message.messageId ?: UUID.randomUUID()}.m4a")
-            playbackFile.writeBytes(audioBytes)
-            MediaPlayer().apply {
-                setDataSource(playbackFile.absolutePath)
-                setOnCompletionListener { player ->
-                    player.release()
-                    playbackFile.delete()
-                    if (activePlayer === player) {
-                        activePlayer = null
-                    }
+            playbackFile = voicePlaybackCache.create(audioBytes)
+            player = MediaPlayer()
+            val currentFile = checkNotNull(playbackFile)
+            val currentPlayer = checkNotNull(player)
+            currentPlayer.setDataSource(currentFile.absolutePath)
+            currentPlayer.setOnCompletionListener { completedPlayer ->
+                if (activePlayer === completedPlayer) {
+                    activePlayer = null
+                    activePlaybackFile = null
                 }
-                setOnErrorListener { player, _, _ ->
-                    player.release()
-                    playbackFile.delete()
-                    if (activePlayer === player) {
-                        activePlayer = null
-                    }
-                    trustState = "语音播放失败"
-                    true
-                }
-                prepare()
-                playbackParams = playbackParams.setSpeed(voicePlaybackSpeed.speed)
-                start()
-                activePlayer = this
+                releaseVoicePlayback(completedPlayer, currentFile)
             }
-            trustState = "正在播放语音 ${voicePlaybackSpeed.label}"
+            currentPlayer.setOnErrorListener { failedPlayer, _, _ ->
+                val wasActive = activePlayer === failedPlayer
+                if (wasActive) {
+                    activePlayer = null
+                    activePlaybackFile = null
+                }
+                releaseVoicePlayback(failedPlayer, currentFile)
+                if (wasActive) {
+                    trustState = "语音播放失败"
+                }
+                true
+            }
+            currentPlayer.prepare()
+            currentPlayer.playbackParams =
+                currentPlayer.playbackParams.setSpeed(voicePlaybackSpeed.speed)
+            activePlayer = currentPlayer
+            activePlaybackFile = currentFile
+            currentPlayer.start()
+            if (activePlayer === currentPlayer) {
+                trustState = "正在播放语音 ${voicePlaybackSpeed.label}"
+            }
         }.onFailure { error ->
+            if (activePlayer === player) {
+                activePlayer = null
+                activePlaybackFile = null
+            }
+            releaseVoicePlayback(player, playbackFile)
             trustState = error.readableMessage("语音播放失败")
         }
     }
@@ -5149,11 +5179,11 @@ internal fun SpotChatApp(
         }
     }
 
-    DisposableEffect(replayProtection) {
+    DisposableEffect(replayProtection, voicePlaybackCache) {
         onDispose {
             voiceRecorder.cancel()
-            activePlayer?.release()
-            activePlayer = null
+            stopActiveVoicePlayback()
+            voicePlaybackCache.clear()
             replayProtection.close()
         }
     }
@@ -5407,7 +5437,7 @@ internal fun SpotChatApp(
         messageSearchLauncher.launch(inputIntent)
     }
 
-    LaunchedEffect(transportMode, deviceName) {
+    LaunchedEffect(transportMode, deviceName, lanDiscoveryEnabled) {
         val transport = currentTransport()
         activePeer = null
         activePeerFingerprint = null
@@ -5420,6 +5450,11 @@ internal fun SpotChatApp(
         pendingSessionChallenges.clear()
         handshakeAttemptsByRoute.clear()
         knownPeersByFingerprint.clear()
+
+        if (transportMode == TransportMode.Lan && !lanDiscoveryEnabled) {
+            trustState = "点按局域网开始发现"
+            return@LaunchedEffect
+        }
 
         runCatching { transport.start() }
             .onFailure { error ->
@@ -5534,6 +5569,7 @@ internal fun SpotChatApp(
                         draftsByConversation = draftsByConversation,
                         lockedConversationIds = lockedConversationIds,
                         transportMode = transportMode,
+                        lanDiscoveryEnabled = lanDiscoveryEnabled,
                         trustState = trustState,
                         fingerprint = localFingerprint,
                         pairingCode = pairingCode,
@@ -6481,6 +6517,7 @@ private fun WatchConversationListSurface(
     draftsByConversation: Map<String, ConversationDraft>,
     lockedConversationIds: Map<String, Boolean>,
     transportMode: TransportMode,
+    lanDiscoveryEnabled: Boolean,
     trustState: String,
     fingerprint: String,
     pairingCode: String?,
@@ -6571,6 +6608,7 @@ private fun WatchConversationListSurface(
 
                     TransportOrbit(
                         transportMode = transportMode,
+                        lanDiscoveryEnabled = lanDiscoveryEnabled,
                         surfaceSpec = surfaceSpec,
                         onSelectMode = onSelectMode
                     )
@@ -6842,6 +6880,7 @@ private fun StatusDot(
 @Composable
 private fun TransportOrbit(
     transportMode: TransportMode,
+    lanDiscoveryEnabled: Boolean,
     surfaceSpec: WatchSurfaceSpec,
     onSelectMode: (TransportMode) -> Unit
 ) {
@@ -6863,7 +6902,9 @@ private fun TransportOrbit(
             .forEach { mode ->
                 OrbitButton(
                     mode = mode,
-                    selected = transportMode == mode,
+                    selected =
+                        transportMode == mode &&
+                            (mode != TransportMode.Lan || lanDiscoveryEnabled),
                     compact = compact,
                     modifier = Modifier.weight(1f),
                     onClick = { onSelectMode(mode) }

@@ -57,6 +57,23 @@ class SpotChatEngineTest {
     }
 
     @Test
+    fun handshakePacketsOmitProfileAboutTextByDefault() {
+        val watch = SpotChatEngine("watch", SpotChatCrypto.generateIdentity())
+        val phone = SpotChatEngine("phone", SpotChatCrypto.generateIdentity())
+        val phoneHello = phone.helloPacket().hello ?: error("missing phone hello")
+        val watchHello = watch.helloPacket().hello ?: error("missing watch hello")
+        val challenge =
+            watch.sessionChallengePacket(
+                responderHello = phoneHello
+            ).sessionChallenge ?: error("missing challenge")
+
+        assertEquals("", phoneHello.about)
+        assertEquals("", watchHello.about)
+        assertEquals("", challenge.challengerHello.about)
+        assertEquals("", challenge.responderHello.about)
+    }
+
+    @Test
     fun sessionChallengeConfirmationAuthenticatesResponder() {
         val watch = SpotChatEngine("watch", SpotChatCrypto.generateIdentity())
         val phone = SpotChatEngine("phone", SpotChatCrypto.generateIdentity())

@@ -31,7 +31,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 class LanChatTransport(
-    private val deviceName: String,
     context: Context? = null,
     private val servicePort: Int = DEFAULT_SERVICE_PORT,
     private val discoveryPort: Int = DEFAULT_DISCOVERY_PORT
@@ -271,14 +270,7 @@ class LanChatTransport(
         )
     }
 
-    private fun beaconPayload(): String {
-        val encodedName =
-            Base64
-                .getUrlEncoder()
-                .withoutPadding()
-                .encodeToString(deviceName.toByteArray(Charsets.UTF_8))
-        return "$BEACON_PREFIX|$instanceId|$encodedName|$servicePort"
-    }
+    private fun beaconPayload(): String = discoveryBeaconPayload(instanceId, servicePort)
 
     private fun acquireMulticastLock() {
         if (multicastLock?.isHeld == true) {
@@ -363,6 +355,7 @@ class LanChatTransport(
         const val DEFAULT_DISCOVERY_PORT = 38442
         private const val BEACON_PREFIX = "SPOTCHAT_V1"
         private const val BEACON_PARTS = 4
+        private const val DISCOVERY_DEVICE_NAME = "SpotChat 设备"
         private const val CONNECT_TIMEOUT_MS = 2_500
         private const val READ_TIMEOUT_MS = 15_000
         private const val WRITE_TIMEOUT_MS = 10_000L
@@ -372,5 +365,17 @@ class LanChatTransport(
         private const val DISCOVERY_INTERVAL_MS = 3_000L
         private const val MULTICAST_LOCK_TAG = "SpotChatLanDiscovery"
         private val VALID_PORT_RANGE = 1..65_535
+
+        internal fun discoveryBeaconPayload(
+            instanceId: String,
+            servicePort: Int
+        ): String {
+            val encodedName =
+                Base64
+                    .getUrlEncoder()
+                    .withoutPadding()
+                    .encodeToString(DISCOVERY_DEVICE_NAME.toByteArray(Charsets.UTF_8))
+            return "$BEACON_PREFIX|$instanceId|$encodedName|$servicePort"
+        }
     }
 }

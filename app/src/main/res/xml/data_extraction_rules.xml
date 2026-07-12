@@ -8,6 +8,9 @@
             domain="sharedpref"
             path="spotchat_trusted_peers.xml" />
         <exclude
+            domain="sharedpref"
+            path="spotchat_wear_state.xml" />
+        <exclude
             domain="database"
             path="spotchat_replay.db" />
         <exclude
@@ -24,6 +27,9 @@
         <exclude
             domain="sharedpref"
             path="spotchat_trusted_peers.xml" />
+        <exclude
+            domain="sharedpref"
+            path="spotchat_wear_state.xml" />
         <exclude
             domain="database"
             path="spotchat_replay.db" />
