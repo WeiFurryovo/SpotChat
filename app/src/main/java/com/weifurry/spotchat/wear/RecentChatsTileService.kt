@@ -11,12 +11,16 @@ import androidx.wear.tiles.TileBuilders
 import androidx.wear.tiles.TileService
 import com.google.common.util.concurrent.Futures
 import com.weifurry.spotchat.notifications.SpotChatNotificationIntents
+import com.weifurry.spotchat.notifications.SpotChatNotificationTokenStore
 import com.weifurry.spotchat.presentation.MainActivity
 import java.util.Locale
 
 class RecentChatsTileService : TileService() {
     private val wearStateStore by lazy {
         SpotChatWearStateStore(this)
+    }
+    private val tokenStore by lazy {
+        SpotChatNotificationTokenStore(this)
     }
 
     override fun onTileRequest(
@@ -267,6 +271,12 @@ class RecentChatsTileService : TileService() {
                             EXTRA_TILE_OPEN,
                             ActionBuilders.AndroidBooleanExtra.Builder()
                                 .setValue(true)
+                                .build()
+                        )
+                        addKeyToExtraMapping(
+                            SpotChatNotificationIntents.EXTRA_INTENT_TOKEN,
+                            ActionBuilders.AndroidStringExtra.Builder()
+                                .setValue(tokenStore.token())
                                 .build()
                         )
                     }

@@ -7,16 +7,17 @@ class SpotChatNotificationTokenStore(context: Context) {
     private val prefs =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    fun token(): String {
-        prefs.getString(KEY_TOKEN, null)?.let { existingToken ->
-            if (existingToken.isNotBlank()) {
-                return existingToken
+    fun token(): String =
+        synchronized(tokenLock) {
+            prefs.getString(KEY_TOKEN, null)?.let { existingToken ->
+                if (existingToken.isNotBlank()) {
+                    return@synchronized existingToken
+                }
             }
+            val generatedToken = UUID.randomUUID().toString()
+            prefs.edit().putString(KEY_TOKEN, generatedToken).apply()
+            generatedToken
         }
-        val generatedToken = UUID.randomUUID().toString()
-        prefs.edit().putString(KEY_TOKEN, generatedToken).apply()
-        return generatedToken
-    }
 
     fun isValid(token: String?): Boolean =
         token != null && token == token()
@@ -24,5 +25,6 @@ class SpotChatNotificationTokenStore(context: Context) {
     private companion object {
         private const val PREFS_NAME = "spotchat_notification_tokens"
         private const val KEY_TOKEN = "intent_token"
+        private val tokenLock = Any()
     }
 }

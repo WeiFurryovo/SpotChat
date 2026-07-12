@@ -174,6 +174,10 @@ import com.weifurry.spotchat.wear.RecentChatsTileService
 import com.weifurry.spotchat.wear.SpotChatWearStateStore
 import com.weifurry.spotchat.wear.WearChatSnapshot
 import com.weifurry.spotchat.wear.WearConversationSummary
+import com.weifurry.spotchat.wear.WearEntryIntentFields
+import com.weifurry.spotchat.wear.WearEntryIntentResolution
+import com.weifurry.spotchat.wear.WearEntryRequest
+import com.weifurry.spotchat.wear.resolveWearEntryIntent
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Base64
@@ -2412,17 +2416,8 @@ internal fun SpotChatApp(
         runCatching {
             // Keep profile text out of unauthenticated discovery packets.
             sendPacket(transport, peer, sessionCoordinator.helloPacket(transportHints()))
-        }.onFailure { error ->
+        }.onFailure {
             trustState = "握手失败"
-            appendMessage(
-                NEARBY_GROUP_CONVERSATION_ID,
-                ChatBubble(
-                    text = error.readableMessage("无法发送配对信息"),
-                    mine = false,
-                    encrypted = false,
-                    timestamp = nowTime()
-                )
-            )
         }
     }
 
@@ -4090,36 +4085,25 @@ internal fun SpotChatApp(
         transport: TransportKind,
         event: TransportEvent
     ) {
-        when (event) {
-            is TransportEvent.StateChanged -> {
-                trustState = event.message
+        when (val action = classifyTransportIngress(event)) {
+            is TransportIngressAction.Status -> {
+                trustState = action.text
             }
 
-            is TransportEvent.PeerFound -> {
-                activePeer = event.peer
-                trustState = "发现 ${event.peer.name}"
-                if (sessionCoordinator.shouldSendHello(event.peer)) {
+            is TransportIngressAction.PeerDiscovered -> {
+                val discoveredPeer = action.peer
+                activePeer = discoveredPeer
+                trustState = "发现 ${discoveredPeer.name}"
+                if (sessionCoordinator.shouldSendHello(discoveredPeer)) {
                     coroutineScope.launch {
-                        sendHello(transport, event.peer)
+                        sendHello(transport, discoveredPeer)
                     }
                 }
             }
 
-            is TransportEvent.FrameReceived -> {
-                val packet =
-                    runCatching { ChatCodec.decode(event.frame) }
-                        .getOrElse { error ->
-                            appendMessage(
-                                activeConversationId,
-                                ChatBubble(
-                                    text = error.readableMessage("收到无法解析的数据"),
-                                    mine = false,
-                                    encrypted = false,
-                                    timestamp = nowTime()
-                                )
-                            )
-                            return
-                        }
+            is TransportIngressAction.DecodedFrame -> {
+                val sourcePeer = action.peer
+                val packet = action.packet
                 if (packet.version != WirePacket.CURRENT_VERSION) {
                     trustState = "已忽略不兼容协议 v${packet.version}"
                     return
@@ -4127,7 +4111,7 @@ internal fun SpotChatApp(
                 when (packet.kind) {
                     PacketKind.HELLO -> {
                         val hello = packet.hello ?: return
-                        if (!sessionCoordinator.allowHandshake(event.peer)) {
+                        if (!sessionCoordinator.allowHandshake(sourcePeer)) {
                             trustState = "握手请求过于频繁，已暂时忽略"
                             return
                         }
@@ -4137,7 +4121,7 @@ internal fun SpotChatApp(
                                     trustState = error.readableMessage("无效的设备握手")
                                     return
                                 }
-                        val mergedPeer = mergePeerWithHello(event.peer, hello)
+                        val mergedPeer = mergePeerWithHello(sourcePeer, hello)
                         activePeer = mergedPeer
                         pairingCode = openedPeer.pairingCode
                         trustState = "正在验证 ${openedPeer.deviceName}"
@@ -4166,7 +4150,7 @@ internal fun SpotChatApp(
                             trustState = "已忽略无效身份挑战"
                             return
                         }
-                        if (!sessionCoordinator.allowHandshake(event.peer)) {
+                        if (!sessionCoordinator.allowHandshake(sourcePeer)) {
                             trustState = "身份挑战过于频繁，已暂时忽略"
                             return
                         }
@@ -4176,7 +4160,7 @@ internal fun SpotChatApp(
                                     trustState = error.readableMessage("无法验证挑战设备")
                                     return
                                 }
-                        val mergedPeer = mergePeerWithHello(event.peer, challenge.challengerHello)
+                        val mergedPeer = mergePeerWithHello(sourcePeer, challenge.challengerHello)
                         val confirmation =
                             runCatching {
                                 sessionCoordinator.createConfirmation(
@@ -4207,7 +4191,7 @@ internal fun SpotChatApp(
                                 val match =
                                     sessionCoordinator.matchConfirmation(
                                         encryptedConfirmation = encryptedConfirmation,
-                                        peer = event.peer
+                                        peer = sourcePeer
                                     )
                             ) {
                                 ConfirmationMatch.Missing -> return
@@ -4246,10 +4230,6 @@ internal fun SpotChatApp(
                         val storedSender = trustedPeer(encryptedMessage.senderFingerprint)
                         if (storedSender == null) {
                             trustState = "拦截未确认消息"
-                            appendSystemMessage(
-                                text = "未确认设备发来的消息已拦截",
-                                encrypted = false
-                            )
                             return
                         }
                         if (isPeerBlocked(encryptedMessage.senderFingerprint)) {
@@ -4257,7 +4237,7 @@ internal fun SpotChatApp(
                             return
                         }
                         val verifiedRoute =
-                            verifiedRouteFor(encryptedMessage.senderFingerprint, event.peer)
+                            verifiedRouteFor(encryptedMessage.senderFingerprint, sourcePeer)
                                 ?: run {
                                     trustState = "拦截未验证路由的消息"
                                     return
@@ -4406,16 +4386,7 @@ internal fun SpotChatApp(
                                 messageId = error.messageId,
                                 failureState = "重复回执发送失败"
                             )
-                        } catch (error: Exception) {
-                            appendMessage(
-                                activeConversationId,
-                                ChatBubble(
-                                    text = error.readableMessage("无法解密消息"),
-                                    mine = false,
-                                    encrypted = false,
-                                    timestamp = nowTime()
-                                )
-                            )
+                        } catch (_: Exception) {
                             trustState = "解密失败"
                         }
                     }
@@ -4425,10 +4396,6 @@ internal fun SpotChatApp(
                         val storedSender = trustedPeer(encryptedMessage.senderFingerprint)
                         if (storedSender == null) {
                             trustState = "拦截未确认语音"
-                            appendSystemMessage(
-                                text = "未确认设备发来的语音已拦截",
-                                encrypted = false
-                            )
                             return
                         }
                         if (isPeerBlocked(encryptedMessage.senderFingerprint)) {
@@ -4436,7 +4403,7 @@ internal fun SpotChatApp(
                             return
                         }
                         val verifiedRoute =
-                            verifiedRouteFor(encryptedMessage.senderFingerprint, event.peer)
+                            verifiedRouteFor(encryptedMessage.senderFingerprint, sourcePeer)
                                 ?: run {
                                     trustState = "拦截未验证路由的语音"
                                     return
@@ -4561,16 +4528,7 @@ internal fun SpotChatApp(
                                 messageId = error.messageId,
                                 failureState = "重复语音回执发送失败"
                             )
-                        } catch (error: Exception) {
-                            appendMessage(
-                                activeConversationId,
-                                ChatBubble(
-                                    text = error.readableMessage("无法解密语音"),
-                                    mine = false,
-                                    encrypted = false,
-                                    timestamp = nowTime()
-                                )
-                            )
+                        } catch (_: Exception) {
                             trustState = "语音解密失败"
                         }
                     }
@@ -4586,7 +4544,7 @@ internal fun SpotChatApp(
                             trustState = "已忽略被阻止回应"
                             return
                         }
-                        if (verifiedRouteFor(encryptedMessage.senderFingerprint, event.peer) == null) {
+                        if (verifiedRouteFor(encryptedMessage.senderFingerprint, sourcePeer) == null) {
                             trustState = "拦截未验证路由的回应"
                             return
                         }
@@ -4698,7 +4656,7 @@ internal fun SpotChatApp(
                             trustState = "已忽略被阻止回执"
                             return
                         }
-                        if (verifiedRouteFor(encryptedAck.senderFingerprint, event.peer) == null) {
+                        if (verifiedRouteFor(encryptedAck.senderFingerprint, sourcePeer) == null) {
                             trustState = "拦截未验证路由的回执"
                             return
                         }
@@ -4884,19 +4842,6 @@ internal fun SpotChatApp(
                         trustState = "忽略未认证回执"
                     }
                 }
-            }
-
-            is TransportEvent.Failure -> {
-                trustState = event.message
-                appendMessage(
-                    activeConversationId,
-                    ChatBubble(
-                        text = event.cause.readableMessage(event.message),
-                        mine = false,
-                        encrypted = false,
-                        timestamp = nowTime()
-                    )
-                )
             }
         }
     }
@@ -5168,6 +5113,7 @@ internal fun SpotChatApp(
                     (!requeueOnFailure || fingerprint in queuedTargets)
             }
             var sentCount = 0
+            var deliveryFailureState: String? = null
             attemptTargets.forEach { (peerFingerprint, peer) ->
                 if (!isCurrentRecipient(peerFingerprint)) {
                     return@forEach
@@ -5190,15 +5136,7 @@ internal fun SpotChatApp(
                     }
                 if (packetResult.isFailure) {
                     remainingRecipients += peerFingerprint
-                    appendMessage(
-                        conversation.id,
-                        ChatBubble(
-                            text = packetResult.exceptionOrNull().readableMessage("无法加密消息"),
-                            mine = false,
-                            encrypted = false,
-                            timestamp = nowTime()
-                        )
-                    )
+                    deliveryFailureState = "消息加密失败"
                     return@forEach
                 }
                 val packet = packetResult.getOrNull() ?: return@forEach
@@ -5244,20 +5182,12 @@ internal fun SpotChatApp(
                     sendPacket(transportMode.kind, peer, packet)
                 }.onSuccess {
                     sentCount += 1
-                }.onFailure { error ->
+                }.onFailure {
                     outgoingMessages.remove(packetMessageId)
+                    deliveryFailureState = "消息发送失败"
                     if (isCurrentRecipient(peerFingerprint)) {
                         remainingRecipients += peerFingerprint
                     }
-                    appendMessage(
-                        conversation.id,
-                        ChatBubble(
-                            text = error.readableMessage("无法发送消息"),
-                            mine = false,
-                            encrypted = false,
-                            timestamp = nowTime()
-                        )
-                    )
                 }
             }
 
@@ -5333,12 +5263,14 @@ internal fun SpotChatApp(
                             forwardCount = forwardCount
                         )
                     updateMessageState(displayMessageId, DeliveryState.Waiting)
-                    trustState = "等待对方上线"
+                    trustState =
+                        deliveryFailureState?.let { failure -> "$failure，等待重试" }
+                            ?: "等待对方上线"
                 }
 
                 else -> {
                     updateMessageState(displayMessageId, DeliveryState.Failed)
-                    trustState = "发送失败"
+                    trustState = deliveryFailureState ?: "发送失败"
                 }
             }
             persistChatStateNow()
@@ -5565,6 +5497,7 @@ internal fun SpotChatApp(
                     (!requeueOnFailure || fingerprint in queuedTargets)
             }
             var sentCount = 0
+            var deliveryFailureState: String? = null
             attemptTargets.forEach { (peerFingerprint, peer) ->
                 if (!isCurrentVoiceRecipient(peerFingerprint)) {
                     return@forEach
@@ -5582,15 +5515,7 @@ internal fun SpotChatApp(
                     }
                 if (packetResult.isFailure) {
                     remainingRecipients += peerFingerprint
-                    appendMessage(
-                        conversation.id,
-                        ChatBubble(
-                            text = packetResult.exceptionOrNull().readableMessage("无法加密语音"),
-                            mine = false,
-                            encrypted = false,
-                            timestamp = nowTime()
-                        )
-                    )
+                    deliveryFailureState = "语音加密失败"
                     return@forEach
                 }
                 val packet = packetResult.getOrNull() ?: return@forEach
@@ -5636,20 +5561,12 @@ internal fun SpotChatApp(
                     sendPacket(transportMode.kind, peer, packet)
                 }.onSuccess {
                     sentCount += 1
-                }.onFailure { error ->
+                }.onFailure {
                     outgoingMessages.remove(packetMessageId)
+                    deliveryFailureState = "语音发送失败"
                     if (isCurrentVoiceRecipient(peerFingerprint)) {
                         remainingRecipients += peerFingerprint
                     }
-                    appendMessage(
-                        conversation.id,
-                        ChatBubble(
-                            text = error.readableMessage("无法发送语音"),
-                            mine = false,
-                            encrypted = false,
-                            timestamp = nowTime()
-                        )
-                    )
                 }
             }
 
@@ -5713,12 +5630,14 @@ internal fun SpotChatApp(
                             audioBytes = audioBytes
                         )
                     updateMessageState(displayMessageId, DeliveryState.Waiting)
-                    trustState = "等待语音重发"
+                    trustState =
+                        deliveryFailureState?.let { failure -> "$failure，等待重试" }
+                            ?: "等待语音重发"
                 }
 
                 else -> {
                     updateMessageState(displayMessageId, DeliveryState.Failed)
-                    trustState = "语音发送失败"
+                    trustState = deliveryFailureState ?: "语音发送失败"
                 }
             }
             persistChatStateNow()
@@ -7024,13 +6943,8 @@ internal fun SpotChatApp(
         }
     }
 
-    fun handleTileIntent(intent: Intent) {
-        if (!intent.getBooleanExtra(RecentChatsTileService.EXTRA_TILE_OPEN, false)) {
-            return
-        }
-        val conversationId =
-            intent.getStringExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID)
-                ?: return
+    fun handleRecentChatsEntry(request: WearEntryRequest.RecentChats) {
+        val conversationId = request.conversationId ?: return
         val conversation =
             conversationById(conversationId)
                 ?: return showWearEntryRecovery(
@@ -7045,12 +6959,8 @@ internal fun SpotChatApp(
         )
     }
 
-    fun handleVoiceTileIntent(intent: Intent) {
-        if (!intent.getBooleanExtra(QuickVoiceTileService.EXTRA_VOICE_TILE_OPEN, false)) {
-            return
-        }
-        val conversationId =
-            intent.getStringExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID)
+    fun handleQuickVoiceEntry(request: WearEntryRequest.QuickVoice) {
+        val conversationId = request.conversationId
         val conversation = conversationId?.let(::conversationById)
         if (conversation == null) {
             if (conversationId == null) {
@@ -7073,19 +6983,8 @@ internal fun SpotChatApp(
         trustState = "点麦克风开始语音"
     }
 
-    fun handleTextReplyTileIntent(intent: Intent) {
-        if (!intent.getBooleanExtra(QuickTextReplyTileService.EXTRA_TEXT_REPLY_TILE_OPEN, false)) {
-            return
-        }
-        if (
-            !notificationTokenStore.isValid(
-                intent.getStringExtra(SpotChatNotificationIntents.EXTRA_INTENT_TOKEN)
-            )
-        ) {
-            return
-        }
-        val conversationId =
-            intent.getStringExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID)
+    fun handleQuickTextReplyEntry(request: WearEntryRequest.QuickTextReply) {
+        val conversationId = request.conversationId
         val conversation = conversationId?.let(::conversationById)
         if (conversation == null) {
             if (conversationId == null) {
@@ -7106,8 +7005,7 @@ internal fun SpotChatApp(
             action = WearEntryAction.QuickReply
         )
         val replyText =
-            intent
-                .getStringExtra(QuickTextReplyTileService.EXTRA_TILE_REPLY_TEXT)
+            request.replyText
                 ?.trim()
                 ?.take(MAX_CUSTOM_MESSAGE_CHARS)
                 .orEmpty()
@@ -7129,10 +7027,52 @@ internal fun SpotChatApp(
             return@LaunchedEffect
         }
         val intent = notificationIntent ?: return@LaunchedEffect
-        handleTextReplyTileIntent(intent)
-        handleVoiceTileIntent(intent)
-        handleTileIntent(intent)
-        handleNotificationIntent(intent)
+        val wearEntryResolution =
+            resolveWearEntryIntent(
+                fields =
+                    WearEntryIntentFields(
+                        recentChatsOpen =
+                            intent.getBooleanExtra(
+                                RecentChatsTileService.EXTRA_TILE_OPEN,
+                                false
+                            ),
+                        quickVoiceOpen =
+                            intent.getBooleanExtra(
+                                QuickVoiceTileService.EXTRA_VOICE_TILE_OPEN,
+                                false
+                            ),
+                        quickTextReplyOpen =
+                            intent.getBooleanExtra(
+                                QuickTextReplyTileService.EXTRA_TEXT_REPLY_TILE_OPEN,
+                                false
+                            ),
+                        token =
+                            intent.getStringExtra(
+                                SpotChatNotificationIntents.EXTRA_INTENT_TOKEN
+                            ),
+                        conversationId =
+                            intent.getStringExtra(
+                                SpotChatNotificationIntents.EXTRA_CONVERSATION_ID
+                            ),
+                        replyText =
+                            intent.getStringExtra(
+                                QuickTextReplyTileService.EXTRA_TILE_REPLY_TEXT
+                            )
+                    ),
+                isTokenValid = notificationTokenStore::isValid
+            )
+        when (wearEntryResolution) {
+            is WearEntryIntentResolution.Accepted -> {
+                when (val request = wearEntryResolution.request) {
+                    is WearEntryRequest.RecentChats -> handleRecentChatsEntry(request)
+                    is WearEntryRequest.QuickVoice -> handleQuickVoiceEntry(request)
+                    is WearEntryRequest.QuickTextReply -> handleQuickTextReplyEntry(request)
+                }
+            }
+
+            WearEntryIntentResolution.NotWearEntry -> handleNotificationIntent(intent)
+            WearEntryIntentResolution.Rejected -> Unit
+        }
         onNotificationIntentHandled(intent)
     }
 
