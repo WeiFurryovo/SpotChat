@@ -9,8 +9,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.os.Build
 import android.view.inputmethod.EditorInfo
 import androidx.activity.compose.BackHandler
@@ -140,6 +138,8 @@ import com.weifurry.spotchat.domain.ProfileStore
 import com.weifurry.spotchat.domain.SqliteReplayProtection
 import com.weifurry.spotchat.domain.StoredTrustedPeer
 import com.weifurry.spotchat.domain.SpotChatEngine
+import com.weifurry.spotchat.domain.SessionCoordinator
+import com.weifurry.spotchat.domain.SessionCoordinator.ConfirmationMatch
 import com.weifurry.spotchat.domain.TrustedPeer
 import com.weifurry.spotchat.domain.TrustedPeerStore
 import com.weifurry.spotchat.notifications.SpotChatNotificationIntents
@@ -147,19 +147,23 @@ import com.weifurry.spotchat.notifications.SpotChatNotificationTokenStore
 import com.weifurry.spotchat.notifications.SpotChatNotifier
 import com.weifurry.spotchat.presentation.theme.SpotChatTheme
 import com.weifurry.spotchat.protocol.ChatCodec
+import com.weifurry.spotchat.protocol.CHAT_PAYLOAD_KIND_DIRECT
+import com.weifurry.spotchat.protocol.CHAT_PAYLOAD_KIND_GROUP
+import com.weifurry.spotchat.protocol.ChatPayload
+import com.weifurry.spotchat.protocol.ChatPayloadCodec
+import com.weifurry.spotchat.protocol.MAX_CHAT_PAYLOAD_TEXT_CHARS
+import com.weifurry.spotchat.protocol.MAX_QUOTED_MESSAGE_CHARS
+import com.weifurry.spotchat.protocol.NEARBY_GROUP_CONVERSATION_ID
+import com.weifurry.spotchat.protocol.QuotedMessage
 import com.weifurry.spotchat.protocol.DeliveryReceiptStatus
 import com.weifurry.spotchat.protocol.EncryptedChatMessage
 import com.weifurry.spotchat.protocol.PacketKind
 import com.weifurry.spotchat.protocol.PeerHello
-import com.weifurry.spotchat.protocol.SessionChallenge
 import com.weifurry.spotchat.protocol.WirePacket
-import com.weifurry.spotchat.transport.BluetoothChatTransport
-import com.weifurry.spotchat.transport.LanChatTransport
 import com.weifurry.spotchat.transport.requiredBluetoothRuntimePermissions
-import com.weifurry.spotchat.transport.RelayChatTransport
-import com.weifurry.spotchat.transport.SpotChatTransport
 import com.weifurry.spotchat.transport.TransportEvent
 import com.weifurry.spotchat.transport.TransportKind
+import com.weifurry.spotchat.transport.TransportManager
 import com.weifurry.spotchat.transport.TransportPeer
 import com.weifurry.spotchat.voice.RecordedVoiceMessage
 import com.weifurry.spotchat.voice.SpotChatVoiceRecorder
@@ -191,17 +195,15 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 
 private enum class TransportMode(
     val label: String,
-    val icon: ImageVector
+    val icon: ImageVector,
+    val kind: TransportKind
 ) {
-    Lan("局域网", Icons.Filled.Lan),
-    Bluetooth("蓝牙", Icons.Filled.Bluetooth),
-    Relay("中继", Icons.Filled.Sync)
+    Lan("局域网", Icons.Filled.Lan, TransportKind.LAN),
+    Bluetooth("蓝牙", Icons.Filled.Bluetooth, TransportKind.BLUETOOTH),
+    Relay("中继", Icons.Filled.Sync, TransportKind.RELAY)
 }
 
 private enum class DeliveryState(
@@ -480,13 +482,6 @@ private data class PendingDirectReply(
     val title: String
 )
 
-private data class PendingSessionChallenge(
-    val peer: TransportPeer,
-    val openedPeer: TrustedPeer,
-    val challenge: SessionChallenge,
-    val expiresAtEpochMillis: Long
-)
-
 private data class PendingMessageEdit(
     val conversationId: String,
     val messageId: String
@@ -501,25 +496,6 @@ private fun ChatBubble.canRetry(): Boolean =
             ChatMessageKind.Voice -> voiceDurationMs != null && voiceAudioBytes != null
         }
 
-@Serializable
-private data class QuotedMessage(
-    val messageId: String,
-    val senderName: String,
-    val text: String
-)
-
-@Serializable
-private data class ChatPayload(
-    val version: Int = 1,
-    val kind: String = CHAT_PAYLOAD_KIND_DIRECT,
-    val text: String,
-    val groupId: String? = null,
-    val groupName: String? = null,
-    val quote: QuotedMessage? = null,
-    val forwarded: Boolean = false,
-    val forwardCount: Int = 0
-)
-
 private fun invalidAuthenticatedPayload(
     encryptedMessage: EncryptedChatMessage,
     reason: String
@@ -533,46 +509,13 @@ private fun invalidAuthenticatedPayload(
 private fun ChatPayload.validateAuthenticatedIncoming(
     encryptedMessage: EncryptedChatMessage
 ) {
-    if (text.isBlank() || text.length > MAX_CUSTOM_MESSAGE_CHARS) {
-        invalidAuthenticatedPayload(encryptedMessage, "Invalid chat message text")
-    }
-    when (kind) {
-        CHAT_PAYLOAD_KIND_DIRECT -> {
-            if (groupId != null || groupName != null) {
-                invalidAuthenticatedPayload(encryptedMessage, "Invalid direct-message group metadata")
-            }
-        }
-
-        CHAT_PAYLOAD_KIND_GROUP -> {
-            if (
-                groupId != NEARBY_GROUP_CONVERSATION_ID ||
-                groupName?.let { name ->
-                    name.isBlank() || name.length > MAX_INCOMING_GROUP_NAME_CHARS
-                } == true
-            ) {
-                invalidAuthenticatedPayload(encryptedMessage, "Invalid group-message metadata")
-            }
-        }
-
-        else -> invalidAuthenticatedPayload(encryptedMessage, "Unsupported chat message kind")
-    }
-    quote?.let { quoted ->
-        if (
-            quoted.messageId.isBlank() ||
-            quoted.messageId.length > MAX_INCOMING_MESSAGE_ID_CHARS ||
-            quoted.senderName.isBlank() ||
-            quoted.senderName.length > MAX_INCOMING_SENDER_NAME_CHARS ||
-            quoted.text.length > MAX_QUOTED_MESSAGE_CHARS
-        ) {
-            invalidAuthenticatedPayload(encryptedMessage, "Invalid quoted message")
-        }
-    }
-    if (
-        forwardCount !in 0..MAX_INCOMING_FORWARD_COUNT ||
-        (forwarded && forwardCount == 0) ||
-        (!forwarded && forwardCount != 0)
-    ) {
-        invalidAuthenticatedPayload(encryptedMessage, "Invalid forwarded-message metadata")
+    try {
+        ChatPayloadCodec.validateIncoming(this)
+    } catch (error: IllegalArgumentException) {
+        invalidAuthenticatedPayload(
+            encryptedMessage = encryptedMessage,
+            reason = error.message ?: "Invalid chat payload"
+        )
     }
 }
 
@@ -590,37 +533,19 @@ private const val CUSTOM_MESSAGE_REMOTE_INPUT_KEY = "spotchat_custom_message"
 private const val SEARCH_MESSAGE_REMOTE_INPUT_KEY = "spotchat_search_message"
 private const val ALIAS_REMOTE_INPUT_KEY = "spotchat_alias"
 private const val GROUP_ABOUT_REMOTE_INPUT_KEY = "spotchat_group_about"
-private const val MAX_CUSTOM_MESSAGE_CHARS = 280
+private const val MAX_CUSTOM_MESSAGE_CHARS = MAX_CHAT_PAYLOAD_TEXT_CHARS
 private const val MAX_SEARCH_QUERY_CHARS = 48
 private const val MAX_GROUP_ABOUT_CHARS = 48
 private const val MAX_SEARCH_RESULTS = 12
 private const val MAX_STARRED_RESULTS = 24
 private const val MAX_NOTIFICATION_CONFIRMATION_PREVIEW_CHARS = 24
-private const val MAX_QUOTED_MESSAGE_CHARS = 72
-private const val MAX_INCOMING_MESSAGE_ID_CHARS = 128
-private const val MAX_INCOMING_SENDER_NAME_CHARS = 96
-private const val MAX_INCOMING_GROUP_NAME_CHARS = 64
-private const val MAX_INCOMING_FORWARD_COUNT = 1_000
 private const val DISAPPEARING_SWEEP_INTERVAL_MS = 15_000L
 private const val MUTE_SWEEP_INTERVAL_MS = 60_000L
 private const val ACTION_CONFIRMATION_VISIBLE_MS = 1_600L
 private const val WEAR_ENTRY_CONTEXT_VISIBLE_MS = 4_000L
-private const val NEARBY_GROUP_CONVERSATION_ID = "group:nearby"
 private const val NEARBY_GROUP_TITLE = "附近群聊"
 private const val DIRECT_CONVERSATION_PREFIX = "direct:"
-private const val CHAT_PAYLOAD_KIND_DIRECT = "direct"
-private const val CHAT_PAYLOAD_KIND_GROUP = "group"
 private const val FREQUENTLY_FORWARDED_THRESHOLD = 4
-private const val SESSION_CHALLENGE_TTL_MS = 30_000L
-private const val SESSION_CHALLENGE_CLOCK_SKEW_MS = 60_000L
-private const val MAX_PENDING_SESSION_CHALLENGES = 32
-private const val MAX_HANDSHAKE_ATTEMPTS_PER_ROUTE = 4
-private const val MAX_HANDSHAKE_ROUTES = 64
-private const val HANDSHAKE_RATE_WINDOW_MS = 10_000L
-private const val HELLO_ROUTE_COOLDOWN_MS = 10_000L
-private const val HELLO_RATE_WINDOW_MS = 10_000L
-private const val MAX_HELLO_SENDS_PER_WINDOW = 4
-private const val MAX_HELLO_ROUTES = 64
 private const val OUTGOING_ENVELOPE_TTL_MS = 8L * 24L * 60L * 60L * 1000L
 private val customMessageQuickChoices = arrayOf("收到", "马上到", "稍后联系")
 private val reactionChoices =
@@ -630,11 +555,6 @@ private val reactionChoices =
         ReactionChoice("laugh", "笑"),
         ReactionChoice("ok", "收到")
     )
-private val chatPayloadJson =
-    Json {
-        encodeDefaults = true
-        ignoreUnknownKeys = true
-    }
 private val chatGreen = Color(0xFF27D7B4)
 private val chatGreenDark = Color(0xFF0F3835)
 private val chatBlue = Color(0xFF7AA7FF)
@@ -1241,21 +1161,17 @@ internal fun SpotChatApp(
         remember(identity, deviceName, replayProtection) {
             SpotChatEngine(deviceName, identity, replayProtection)
         }
+    val sessionCoordinator =
+        remember(engine) {
+            SessionCoordinator(engine)
+        }
     val trustedPeerStore =
         remember(context) {
             TrustedPeerStore(context)
         }
-    val lanTransport =
+    val transportManager =
         remember(context) {
-            LanChatTransport(context = context)
-        }
-    val bluetoothTransport =
-        remember(context) {
-            BluetoothChatTransport(context)
-        }
-    val relayTransport =
-        remember {
-            RelayChatTransport()
+            TransportManager.create(context)
         }
     val notifier =
         remember(context) {
@@ -1413,10 +1329,6 @@ internal fun SpotChatApp(
     var wearChatSnapshot by remember(wearStateStore) {
         mutableStateOf(wearStateStore.load())
     }
-    val helloSentAtByRoute = remember { mutableMapOf<String, Long>() }
-    val helloSendAttempts = remember { mutableListOf<Long>() }
-    val pendingSessionChallenges = remember { mutableMapOf<String, PendingSessionChallenge>() }
-    val handshakeAttemptsByRoute = remember { mutableMapOf<String, MutableList<Long>>() }
     val knownPeersByFingerprint = remember { mutableStateMapOf<String, TransportPeer>() }
     val peerLastSeenAt = remember { mutableStateMapOf<String, Long>() }
 
@@ -1743,26 +1655,15 @@ internal fun SpotChatApp(
         }
     }
 
-    fun currentTransport(): SpotChatTransport =
-        when (transportMode) {
-            TransportMode.Lan -> lanTransport
-            TransportMode.Bluetooth -> bluetoothTransport
-            TransportMode.Relay -> relayTransport
-        }
-
     fun transportHints(): List<String> =
-        when (transportMode) {
-            TransportMode.Lan -> listOf("lan:${LanChatTransport.DEFAULT_SERVICE_PORT}")
-            TransportMode.Bluetooth -> listOf("bluetooth:${BluetoothChatTransport.SPOTCHAT_SERVICE_UUID}")
-            TransportMode.Relay -> listOf("relay:encrypted-mailbox:v1")
-        }
+        transportManager.transportHints(transportMode.kind)
 
     suspend fun sendPacket(
-        transport: SpotChatTransport,
+        transport: TransportKind,
         peer: TransportPeer,
         packet: WirePacket
     ) {
-        transport.send(peer, ChatCodec.encode(packet))
+        transportManager.send(transport, peer, ChatCodec.encode(packet))
     }
 
     fun messagesForConversation(conversationId: String): List<ChatBubble> =
@@ -2505,12 +2406,12 @@ internal fun SpotChatApp(
     }
 
     suspend fun sendHello(
-        transport: SpotChatTransport,
+        transport: TransportKind,
         peer: TransportPeer
     ) {
         runCatching {
             // Keep profile text out of unauthenticated discovery packets.
-            sendPacket(transport, peer, engine.helloPacket(transportHints()))
+            sendPacket(transport, peer, sessionCoordinator.helloPacket(transportHints()))
         }.onFailure { error ->
             trustState = "握手失败"
             appendMessage(
@@ -3025,15 +2926,6 @@ internal fun SpotChatApp(
     fun routeForPeer(fingerprint: String): TransportPeer? =
         knownPeersByFingerprint[fingerprint]
 
-    fun hasLanConnection(): Boolean {
-        val connectivityManager =
-            context.getSystemService(ConnectivityManager::class.java) ?: return false
-        val network = connectivityManager.activeNetwork ?: return false
-        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
-    }
-
     fun hasRetryableMessages(conversationId: String): Boolean =
         messagesForConversation(conversationId).any { message -> message.canRetry() }
 
@@ -3155,7 +3047,7 @@ internal fun SpotChatApp(
     }
 
     suspend fun sendEncryptedAck(
-        transport: SpotChatTransport,
+        transport: TransportKind,
         peer: TransportPeer,
         senderFingerprint: String,
         messageId: String,
@@ -3203,7 +3095,7 @@ internal fun SpotChatApp(
             try {
                 val sent =
                     sendEncryptedAck(
-                        transport = currentTransport(),
+                        transport = transportMode.kind,
                         peer = replyPeer,
                         senderFingerprint = senderFingerprint,
                         messageId = messageId,
@@ -3994,75 +3886,6 @@ internal fun SpotChatApp(
         return verifiedRoute
     }
 
-    fun pruneSessionChallenges(nowEpochMillis: Long = System.currentTimeMillis()) {
-        pendingSessionChallenges
-            .filterValues { challenge -> challenge.expiresAtEpochMillis <= nowEpochMillis }
-            .keys
-            .toList()
-            .forEach(pendingSessionChallenges::remove)
-    }
-
-    fun allowHandshake(
-        peer: TransportPeer,
-        nowEpochMillis: Long = System.currentTimeMillis()
-    ): Boolean {
-        val cutoff = nowEpochMillis - HANDSHAKE_RATE_WINDOW_MS
-        handshakeAttemptsByRoute.values.forEach { attempts ->
-            attempts.removeAll { attemptedAt -> attemptedAt <= cutoff }
-        }
-        handshakeAttemptsByRoute
-            .filterValues { attempts -> attempts.isEmpty() }
-            .keys
-            .toList()
-            .forEach(handshakeAttemptsByRoute::remove)
-        val routeKey = "${peer.kind}:${peer.address}"
-        if (routeKey !in handshakeAttemptsByRoute && handshakeAttemptsByRoute.size >= MAX_HANDSHAKE_ROUTES) {
-            handshakeAttemptsByRoute.entries
-                .minByOrNull { (_, attempts) -> attempts.lastOrNull() ?: Long.MIN_VALUE }
-                ?.key
-                ?.let(handshakeAttemptsByRoute::remove)
-        }
-        val attempts = handshakeAttemptsByRoute.getOrPut(routeKey) { mutableListOf() }
-        if (attempts.size >= MAX_HANDSHAKE_ATTEMPTS_PER_ROUTE) {
-            return false
-        }
-        attempts += nowEpochMillis
-        return true
-    }
-
-    fun shouldSendHello(
-        peer: TransportPeer,
-        nowEpochMillis: Long = System.currentTimeMillis()
-    ): Boolean {
-        val cutoff = nowEpochMillis - HELLO_RATE_WINDOW_MS
-        helloSendAttempts.removeAll { attemptedAt -> attemptedAt <= cutoff }
-        helloSentAtByRoute
-            .filterValues { sentAt -> sentAt <= nowEpochMillis - HELLO_ROUTE_COOLDOWN_MS }
-            .keys
-            .toList()
-            .forEach(helloSentAtByRoute::remove)
-        val routeKey = "${peer.kind}:${peer.address}"
-        if (routeKey in helloSentAtByRoute || helloSendAttempts.size >= MAX_HELLO_SENDS_PER_WINDOW) {
-            return false
-        }
-        if (helloSentAtByRoute.size >= MAX_HELLO_ROUTES) {
-            helloSentAtByRoute.entries
-                .minByOrNull { (_, sentAt) -> sentAt }
-                ?.key
-                ?.let(helloSentAtByRoute::remove)
-        }
-        helloSentAtByRoute[routeKey] = nowEpochMillis
-        helloSendAttempts += nowEpochMillis
-        return true
-    }
-
-    fun makeRoomForSessionChallenge() {
-        while (pendingSessionChallenges.size >= MAX_PENDING_SESSION_CHALLENGES) {
-            val oldestChallengeId = pendingSessionChallenges.keys.firstOrNull() ?: break
-            pendingSessionChallenges.remove(oldestChallengeId)
-        }
-    }
-
     fun upsertIncomingMessage(
         conversationId: String,
         message: ChatBubble,
@@ -4209,38 +4032,22 @@ internal fun SpotChatApp(
     }
 
     suspend fun sendSessionChallenge(
-        transport: SpotChatTransport,
+        transport: TransportKind,
         peer: TransportPeer,
         openedPeer: TrustedPeer,
         responderHello: PeerHello
     ) {
-        pruneSessionChallenges()
-        if (
-            pendingSessionChallenges.values.any { pending ->
-                pending.openedPeer.fingerprint == openedPeer.fingerprint &&
-                    samePeerRoute(pending.peer, peer)
-            }
-        ) {
-            return
-        }
-        makeRoomForSessionChallenge()
-        val packet =
-            engine.sessionChallengePacket(
-                responderHello = responderHello,
-                transports = transportHints()
-            )
-        val challenge = packet.sessionChallenge ?: error("Missing session challenge")
-        pendingSessionChallenges[challenge.challengeId] =
-            PendingSessionChallenge(
+        val outgoing =
+            sessionCoordinator.prepareChallenge(
                 peer = peer,
                 openedPeer = openedPeer,
-                challenge = challenge,
-                expiresAtEpochMillis = System.currentTimeMillis() + SESSION_CHALLENGE_TTL_MS
-            )
+                responderHello = responderHello,
+                transports = transportHints()
+            ) ?: return
         runCatching {
-            sendPacket(transport, peer, packet)
+            sendPacket(transport, peer, outgoing.packet)
         }.onFailure { error ->
-            pendingSessionChallenges.remove(challenge.challengeId)
+            sessionCoordinator.discardChallenge(outgoing.challengeId)
             trustState = error.readableMessage("设备身份验证失败")
         }
     }
@@ -4253,7 +4060,7 @@ internal fun SpotChatApp(
         pairingCode = openedPeer.pairingCode
         val storedPeer = trustedPeer(openedPeer)
         if (storedPeer != null && storedPeer.publicKey == openedPeer.publicKey) {
-            engine.confirmSession(openedPeer.fingerprint)
+            sessionCoordinator.confirmSession(openedPeer.fingerprint)
             rememberPeerRoute(openedPeer.fingerprint, verifiedRoute)
             val refreshedPeer = trustedPeerStore.trust(openedPeer)
             removeTrustedPeer(refreshedPeer)
@@ -4266,8 +4073,8 @@ internal fun SpotChatApp(
         } else {
             pendingPeer
                 ?.takeIf { peer -> peer.fingerprint != openedPeer.fingerprint }
-                ?.let { peer -> engine.rejectPendingSession(peer.fingerprint) }
-            engine.protectPendingSessionForTrust(openedPeer.fingerprint)
+                ?.let { peer -> sessionCoordinator.rejectPendingSession(peer.fingerprint) }
+            sessionCoordinator.protectPendingSessionForTrust(openedPeer.fingerprint)
             activePeerFingerprint = null
             pendingPeer = openedPeer
             pendingPeerRoute = verifiedRoute
@@ -4280,7 +4087,7 @@ internal fun SpotChatApp(
     }
 
     suspend fun handleTransportEvent(
-        transport: SpotChatTransport,
+        transport: TransportKind,
         event: TransportEvent
     ) {
         when (event) {
@@ -4291,7 +4098,7 @@ internal fun SpotChatApp(
             is TransportEvent.PeerFound -> {
                 activePeer = event.peer
                 trustState = "发现 ${event.peer.name}"
-                if (shouldSendHello(event.peer)) {
+                if (sessionCoordinator.shouldSendHello(event.peer)) {
                     coroutineScope.launch {
                         sendHello(transport, event.peer)
                     }
@@ -4320,12 +4127,12 @@ internal fun SpotChatApp(
                 when (packet.kind) {
                     PacketKind.HELLO -> {
                         val hello = packet.hello ?: return
-                        if (!allowHandshake(event.peer)) {
+                        if (!sessionCoordinator.allowHandshake(event.peer)) {
                             trustState = "握手请求过于频繁，已暂时忽略"
                             return
                         }
                         val openedPeer =
-                            runCatching { engine.openSession(hello) }
+                            runCatching { sessionCoordinator.openSession(hello) }
                                 .getOrElse { error ->
                                     trustState = error.readableMessage("无效的设备握手")
                                     return
@@ -4334,7 +4141,7 @@ internal fun SpotChatApp(
                         activePeer = mergedPeer
                         pairingCode = openedPeer.pairingCode
                         trustState = "正在验证 ${openedPeer.deviceName}"
-                        if (shouldSendHello(mergedPeer)) {
+                        if (sessionCoordinator.shouldSendHello(mergedPeer)) {
                             coroutineScope.launch {
                                 sendHello(transport, mergedPeer)
                             }
@@ -4346,25 +4153,25 @@ internal fun SpotChatApp(
                         val challenge = packet.sessionChallenge ?: return
                         val nowEpochMillis = System.currentTimeMillis()
                         val localHello =
-                            engine.helloPacket(
+                            sessionCoordinator.helloPacket(
                                 transports = transportHints()
                             ).hello ?: error("Missing local hello")
                         if (
-                            challenge.challengeId.isBlank() ||
-                            challenge.responderFingerprint != localFingerprint ||
-                            challenge.responderHello != localHello ||
-                            challenge.createdAtEpochMillis < nowEpochMillis - SESSION_CHALLENGE_CLOCK_SKEW_MS ||
-                            challenge.createdAtEpochMillis > nowEpochMillis + SESSION_CHALLENGE_CLOCK_SKEW_MS
+                            !sessionCoordinator.isValidIncomingChallenge(
+                                challenge = challenge,
+                                localHello = localHello,
+                                nowEpochMillis = nowEpochMillis
+                            )
                         ) {
                             trustState = "已忽略无效身份挑战"
                             return
                         }
-                        if (!allowHandshake(event.peer)) {
+                        if (!sessionCoordinator.allowHandshake(event.peer)) {
                             trustState = "身份挑战过于频繁，已暂时忽略"
                             return
                         }
                         val openedPeer =
-                            runCatching { engine.openSession(challenge.challengerHello) }
+                            runCatching { sessionCoordinator.openSession(challenge.challengerHello) }
                                 .getOrElse { error ->
                                     trustState = error.readableMessage("无法验证挑战设备")
                                     return
@@ -4372,7 +4179,7 @@ internal fun SpotChatApp(
                         val mergedPeer = mergePeerWithHello(event.peer, challenge.challengerHello)
                         val confirmation =
                             runCatching {
-                                engine.encryptSessionConfirmationForPeer(
+                                sessionCoordinator.createConfirmation(
                                     peerFingerprint = openedPeer.fingerprint,
                                     challenge = challenge
                                 )
@@ -4395,16 +4202,26 @@ internal fun SpotChatApp(
 
                     PacketKind.ENCRYPTED_SESSION_CONFIRM -> {
                         val encryptedConfirmation = packet.encryptedMessage ?: return
-                        pruneSessionChallenges()
-                        val pending = pendingSessionChallenges[encryptedConfirmation.messageId] ?: return
-                        if (!samePeerRoute(pending.peer, event.peer)) {
-                            trustState = "已拒绝来自其他路由的身份确认"
-                            return
-                        }
+                        val pending =
+                            when (
+                                val match =
+                                    sessionCoordinator.matchConfirmation(
+                                        encryptedConfirmation = encryptedConfirmation,
+                                        peer = event.peer
+                                    )
+                            ) {
+                                ConfirmationMatch.Missing -> return
+                                ConfirmationMatch.RouteMismatch -> {
+                                    trustState = "已拒绝来自其他路由的身份确认"
+                                    return
+                                }
+
+                                is ConfirmationMatch.Found -> match.pending
+                            }
                         val confirmation =
                             runCatching {
                                 withContext(Dispatchers.IO) {
-                                    engine.decryptSessionConfirmation(encryptedConfirmation)
+                                    sessionCoordinator.decryptConfirmation(encryptedConfirmation)
                                 }
                             }
                                 .getOrElse { error ->
@@ -4412,17 +4229,15 @@ internal fun SpotChatApp(
                                     return
                                 }
                         if (
-                            confirmation.challengeId != encryptedConfirmation.messageId ||
-                            confirmation.challengeBinding !=
-                                engine.sessionChallengeBinding(pending.challenge) ||
-                            confirmation.challengerFingerprint != localFingerprint ||
-                            confirmation.responderFingerprint != pending.openedPeer.fingerprint ||
-                            encryptedConfirmation.senderFingerprint != pending.openedPeer.fingerprint
+                            !sessionCoordinator.validateAndConsumeConfirmation(
+                                encryptedConfirmation = encryptedConfirmation,
+                                confirmation = confirmation,
+                                pending = pending
+                            )
                         ) {
                             trustState = "身份确认内容不匹配"
                             return
                         }
-                        pendingSessionChallenges.remove(confirmation.challengeId)
                         acceptVerifiedPeer(pending.openedPeer, pending.peer)
                     }
 
@@ -5092,7 +4907,7 @@ internal fun SpotChatApp(
             trustState = "验证路由已失效，请重新连接"
             return
         }
-        runCatching { engine.confirmSession(peer.fingerprint) }
+        runCatching { sessionCoordinator.confirmSession(peer.fingerprint) }
             .getOrElse {
                 pendingPeer = null
                 pendingPeerRoute = null
@@ -5118,7 +4933,7 @@ internal fun SpotChatApp(
 
     fun rejectPairing() {
         val peer = pendingPeer ?: return
-        engine.rejectPendingSession(peer.fingerprint)
+        sessionCoordinator.rejectPendingSession(peer.fingerprint)
         knownPeersByFingerprint.remove(peer.fingerprint)
         peerLastSeenAt.remove(peer.fingerprint)
         trustedPeerStore.forget(peer.fingerprint, peer.publicKey)
@@ -5426,7 +5241,7 @@ internal fun SpotChatApp(
                 }
 
                 runCatching {
-                    sendPacket(currentTransport(), peer, packet)
+                    sendPacket(transportMode.kind, peer, packet)
                 }.onSuccess {
                     sentCount += 1
                 }.onFailure { error ->
@@ -5607,7 +5422,7 @@ internal fun SpotChatApp(
                         return@forEach
                     }
                 runCatching {
-                    sendPacket(currentTransport(), peer, packet)
+                    sendPacket(transportMode.kind, peer, packet)
                 }.onSuccess {
                     sentCount += 1
                 }
@@ -5818,7 +5633,7 @@ internal fun SpotChatApp(
                 }
 
                 runCatching {
-                    sendPacket(currentTransport(), peer, packet)
+                    sendPacket(transportMode.kind, peer, packet)
                 }.onSuccess {
                     sentCount += 1
                 }.onFailure { error ->
@@ -6181,7 +5996,7 @@ internal fun SpotChatApp(
         draftsByConversation.remove(conversation.id)
         expectedRecipientsByMessage[displayMessageId] = remainingTargetFingerprints.toSet()
 
-        if (transportMode == TransportMode.Lan && !hasLanConnection()) {
+        if (transportMode == TransportMode.Lan && !transportManager.hasLanConnection()) {
             appendMessage(
                 conversation.id,
                 ChatBubble(
@@ -7610,17 +7425,14 @@ internal fun SpotChatApp(
     }
 
     LaunchedEffect(transportMode, deviceName, lanDiscoveryEnabled, chatStateOperational) {
-        val transport = currentTransport()
+        val transportKind = transportMode.kind
         activePeer = null
         activePeerFingerprint = null
-        pendingPeer?.let { peer -> engine.rejectPendingSession(peer.fingerprint) }
+        pendingPeer?.let { peer -> sessionCoordinator.rejectPendingSession(peer.fingerprint) }
         pendingPeer = null
         pendingPeerRoute = null
         pairingCode = null
-        helloSentAtByRoute.clear()
-        helloSendAttempts.clear()
-        pendingSessionChallenges.clear()
-        handshakeAttemptsByRoute.clear()
+        sessionCoordinator.clearHandshakeState()
         knownPeersByFingerprint.clear()
 
         if (!chatStateOperational) {
@@ -7638,7 +7450,7 @@ internal fun SpotChatApp(
             return@LaunchedEffect
         }
 
-        runCatching { transport.start() }
+        runCatching { transportManager.start(transportKind) }
             .onFailure { error ->
                 trustState = error.readableMessage("传输启动失败")
                 return@LaunchedEffect
@@ -7649,30 +7461,30 @@ internal fun SpotChatApp(
         }
 
         if (transportMode == TransportMode.Bluetooth) {
-            runCatching { bluetoothTransport.bondedPeers() }
+            runCatching { transportManager.bondedBluetoothPeers() }
                 .getOrDefault(emptyList())
                 .forEach { peer ->
                     activePeer = peer
                     trustState = "尝试连接 ${peer.name}"
-                    if (shouldSendHello(peer)) {
+                    if (sessionCoordinator.shouldSendHello(peer)) {
                         coroutineScope.launch {
-                            sendHello(transport, peer)
+                            sendHello(transportKind, peer)
                         }
                     }
                 }
         }
 
         try {
-            transport.events.collect { event ->
+            transportManager.events(transportKind).collect { event ->
                 try {
-                    handleTransportEvent(transport, event)
+                    handleTransportEvent(transportKind, event)
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
                     trustState = error.readableMessage("已忽略无效传输数据")
                 }
             }
         } finally {
-            transport.stop()
+            transportManager.stop(transportKind)
         }
     }
 
@@ -15171,7 +14983,7 @@ private fun encodeChatPayload(
     forwarded: Boolean,
     forwardCount: Int
 ): String =
-    chatPayloadJson.encodeToString(
+    ChatPayloadCodec.encode(
         ChatPayload(
             kind =
                 if (conversation.kind == ConversationKind.Group) {
@@ -15204,15 +15016,7 @@ private fun encodeChatPayload(
     )
 
 private fun decodeChatPayload(text: String): ChatPayload =
-    runCatching { chatPayloadJson.decodeFromString<ChatPayload>(text) }
-        .getOrNull()
-        ?.takeIf { payload -> payload.version == 1 && payload.text.isNotBlank() }
-        ?: ChatPayload(
-            kind = CHAT_PAYLOAD_KIND_DIRECT,
-            text = text,
-            forwarded = false,
-            forwardCount = 0
-        )
+    ChatPayloadCodec.decodeOrLegacy(text)
 
 private fun profileInitial(displayName: String): String {
     val trimmedName = displayName.trim()
