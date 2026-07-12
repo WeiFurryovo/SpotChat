@@ -10,11 +10,15 @@ import androidx.wear.watchface.complications.data.ShortTextComplicationData
 import androidx.wear.watchface.complications.datasource.ComplicationDataSourceService
 import androidx.wear.watchface.complications.datasource.ComplicationRequest
 import com.weifurry.spotchat.notifications.SpotChatNotificationIntents
+import com.weifurry.spotchat.notifications.SpotChatNotificationTokenStore
 import com.weifurry.spotchat.presentation.MainActivity
 
 class UnreadThreadsComplicationDataSourceService : ComplicationDataSourceService() {
     private val wearStateStore by lazy {
         SpotChatWearStateStore(this)
+    }
+    private val tokenStore by lazy {
+        SpotChatNotificationTokenStore(this)
     }
 
     override fun onComplicationRequest(
@@ -94,6 +98,10 @@ class UnreadThreadsComplicationDataSourceService : ComplicationDataSourceService
                 .apply {
                     if (conversationId != null) {
                         putExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID, conversationId)
+                        putExtra(
+                            SpotChatNotificationIntents.EXTRA_INTENT_TOKEN,
+                            tokenStore.token()
+                        )
                     }
                 },
             pendingIntentFlags()
