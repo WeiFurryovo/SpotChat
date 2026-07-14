@@ -3,10 +3,101 @@ package com.weifurry.spotchat.presentation
 import com.weifurry.spotchat.notifications.SpotChatNotificationIntents
 import com.weifurry.spotchat.wear.WearEntryRequest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AppEntryRoutingTest {
+    @Test
+    fun launcherAndUnknownActionsAreNotEntryCandidates() {
+        assertEquals(false, isAppEntryCandidate(AppEntryIntentFields()))
+        assertEquals(
+            false,
+            isAppEntryCandidate(
+                AppEntryIntentFields(action = "com.weifurry.spotchat.action.UNKNOWN")
+            )
+        )
+    }
+
+    @Test
+    fun everyProtectedActionAndWearMarkerIsAnEntryCandidate() {
+        notificationActions.forEach { action ->
+            assertEquals(
+                true,
+                isAppEntryCandidate(AppEntryIntentFields(action = action))
+            )
+        }
+        listOf(
+            AppEntryIntentFields(recentChatsOpen = true),
+            AppEntryIntentFields(quickVoiceOpen = true),
+            AppEntryIntentFields(quickTextReplyOpen = true),
+            AppEntryIntentFields(recentChatsOpen = true, quickVoiceOpen = true)
+        ).forEach { fields ->
+            assertEquals(true, isAppEntryCandidate(fields))
+        }
+    }
+
+    @Test
+    fun sideEffectPlansAndTheirRecoveryStatesRequirePersistentClaims() {
+        val directSideEffects =
+            listOf(
+                AppEntryPlan.Reply(
+                    conversationId = CONVERSATION_ID,
+                    kind = AppEntryReplyKind.NotificationReply,
+                    text = "reply"
+                ),
+                AppEntryPlan.MuteEightHours(CONVERSATION_ID),
+                AppEntryPlan.DismissNotification(CONVERSATION_ID),
+                AppEntryPlan.MarkRead(CONVERSATION_ID)
+            )
+        val recoveredSideEffects =
+            listOf(
+                AppEntryAction.Reply,
+                AppEntryAction.QuickReply,
+                AppEntryAction.MarkRead,
+                AppEntryAction.Mute,
+                AppEntryAction.Dismiss
+            ).map { action ->
+                AppEntryPlan.Recover(
+                    source = AppEntrySource.Notification,
+                    targetConversationId = UNKNOWN_CONVERSATION_ID,
+                    action = action
+                )
+            }
+
+        (directSideEffects + recoveredSideEffects).forEach { plan ->
+            assertTrue(plan.requiresPersistentEventClaim())
+        }
+    }
+
+    @Test
+    fun navigationAndBlankReplyPlansDoNotConsumePersistentClaims() {
+        val plans =
+            listOf(
+                AppEntryPlan.Ignore,
+                AppEntryPlan.Reply(
+                    conversationId = CONVERSATION_ID,
+                    kind = AppEntryReplyKind.WearQuickReply,
+                    text = ""
+                ),
+                AppEntryPlan.Recover(
+                    source = AppEntrySource.RecentChatsTile,
+                    targetConversationId = UNKNOWN_CONVERSATION_ID,
+                    action = AppEntryAction.OpenChat
+                ),
+                AppEntryPlan.ShowConversationList(AppEntryAction.Voice),
+                AppEntryPlan.OpenConversation(
+                    conversationId = CONVERSATION_ID,
+                    source = AppEntrySource.RecentChatsTile,
+                    action = AppEntryAction.OpenChat
+                )
+            )
+
+        plans.forEach { plan ->
+            assertFalse(plan.requiresPersistentEventClaim())
+        }
+    }
+
     @Test
     fun ordinaryAndUnknownIntentsAreIgnoredWithoutReadingRemoteReply() {
         var remoteReplyReads = 0

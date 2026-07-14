@@ -10,6 +10,7 @@ import androidx.wear.tiles.RequestBuilders
 import androidx.wear.tiles.TileBuilders
 import androidx.wear.tiles.TileService
 import com.google.common.util.concurrent.Futures
+import com.weifurry.spotchat.entry.newAppEntryEventId
 import com.weifurry.spotchat.notifications.SpotChatNotificationIntents
 import com.weifurry.spotchat.notifications.SpotChatNotificationTokenStore
 import com.weifurry.spotchat.presentation.MainActivity
@@ -200,6 +201,12 @@ class QuickTextReplyTileService : TileService() {
                             )
                         }
                         if (replyText != null) {
+                            addKeyToExtraMapping(
+                                SpotChatNotificationIntents.EXTRA_ENTRY_EVENT_ID,
+                                ActionBuilders.AndroidStringExtra.Builder()
+                                    .setValue(newAppEntryEventId())
+                                    .build()
+                            )
                             addKeyToExtraMapping(
                                 EXTRA_TILE_REPLY_TEXT,
                                 ActionBuilders.AndroidStringExtra.Builder()

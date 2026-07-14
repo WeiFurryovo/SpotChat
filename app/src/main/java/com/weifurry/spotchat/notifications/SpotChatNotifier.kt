@@ -13,6 +13,7 @@ import android.content.pm.PackageManager
 import android.graphics.drawable.Icon
 import android.os.Build
 import com.weifurry.spotchat.R
+import com.weifurry.spotchat.entry.newAppEntryEventId
 import com.weifurry.spotchat.presentation.MainActivity
 
 class SpotChatNotifier(context: Context) {
@@ -208,6 +209,7 @@ class SpotChatNotifier(context: Context) {
             .setAction(action)
             .putExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID, conversationId)
             .putExtra(SpotChatNotificationIntents.EXTRA_INTENT_TOKEN, tokenStore.token())
+            .putExtra(SpotChatNotificationIntents.EXTRA_ENTRY_EVENT_ID, newAppEntryEventId())
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
 
     private fun quickReplyAction(

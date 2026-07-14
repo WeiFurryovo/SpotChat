@@ -12,6 +12,7 @@ object SpotChatNotificationIntents {
     const val EXTRA_QUICK_REPLY_TEXT = "quick_reply_text"
     const val EXTRA_QUICK_REPLY_INDEX = "quick_reply_index"
     const val EXTRA_INTENT_TOKEN = "intent_token"
+    const val EXTRA_ENTRY_EVENT_ID = "entry_event_id"
 
     val quickReplies: Array<CharSequence> = arrayOf("收到", "好", "稍等", "马上")
 
