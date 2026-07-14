@@ -142,7 +142,6 @@ import com.weifurry.spotchat.domain.SessionCoordinator
 import com.weifurry.spotchat.domain.SessionCoordinator.ConfirmationMatch
 import com.weifurry.spotchat.domain.TrustedPeer
 import com.weifurry.spotchat.domain.TrustedPeerStore
-import com.weifurry.spotchat.notifications.SpotChatNotificationIntents
 import com.weifurry.spotchat.notifications.SpotChatNotificationTokenStore
 import com.weifurry.spotchat.notifications.SpotChatNotifier
 import com.weifurry.spotchat.presentation.theme.SpotChatTheme
@@ -168,16 +167,9 @@ import com.weifurry.spotchat.transport.TransportPeer
 import com.weifurry.spotchat.voice.RecordedVoiceMessage
 import com.weifurry.spotchat.voice.SpotChatVoiceRecorder
 import com.weifurry.spotchat.voice.VoicePlaybackCache
-import com.weifurry.spotchat.wear.QuickVoiceTileService
-import com.weifurry.spotchat.wear.QuickTextReplyTileService
-import com.weifurry.spotchat.wear.RecentChatsTileService
 import com.weifurry.spotchat.wear.SpotChatWearStateStore
 import com.weifurry.spotchat.wear.WearChatSnapshot
 import com.weifurry.spotchat.wear.WearConversationSummary
-import com.weifurry.spotchat.wear.WearEntryIntentFields
-import com.weifurry.spotchat.wear.WearEntryIntentResolution
-import com.weifurry.spotchat.wear.WearEntryRequest
-import com.weifurry.spotchat.wear.resolveWearEntryIntent
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Base64
@@ -6845,181 +6837,118 @@ internal fun SpotChatApp(
             .forEach { queuedVoice -> trySendPendingOutboundVoiceMessage(queuedVoice) }
     }
 
-    fun handleNotificationIntent(intent: Intent) {
-        if (!notifier.isTrustedNotificationIntent(intent)) {
-            return
+    fun appEntryWearAction(action: AppEntryAction): WearEntryAction =
+        when (action) {
+            AppEntryAction.OpenChat -> WearEntryAction.OpenChat
+            AppEntryAction.Reply -> WearEntryAction.Reply
+            AppEntryAction.QuickReply -> WearEntryAction.QuickReply
+            AppEntryAction.Voice -> WearEntryAction.Voice
+            AppEntryAction.MarkRead,
+            AppEntryAction.Mute,
+            AppEntryAction.Dismiss -> error("Unsupported entry context action: $action")
         }
-        val conversationId =
-            intent.getStringExtra(SpotChatNotificationIntents.EXTRA_CONVERSATION_ID) ?: return
-        val conversation =
-            conversationById(conversationId)
-                ?: return showWearEntryRecovery(
-                    source = "通知",
-                    targetConversationId = conversationId,
-                    actionLabel =
-                        when (intent.action) {
-                            SpotChatNotificationIntents.ACTION_REPLY,
-                            SpotChatNotificationIntents.ACTION_QUICK_REPLY -> "回复"
-                            SpotChatNotificationIntents.ACTION_MARK_READ -> "标为已读"
-                            SpotChatNotificationIntents.ACTION_MUTE_8H -> "静音"
-                            SpotChatNotificationIntents.ACTION_NOTIFICATION_DISMISSED -> "清除通知"
-                            else -> "打开聊天"
-                        }
-                )
-        if (intent.action == SpotChatNotificationIntents.ACTION_MUTE_8H) {
-            setConversationMute(conversation, MutePreset.EightHours)
-            showActionConfirmation(
-                title = "已静音 ${conversation.title}",
-                detail = "8 小时内不再提醒"
-            )
-            return
-        }
-        clearConversationAlerts(conversation.id)
-        if (intent.action == SpotChatNotificationIntents.ACTION_NOTIFICATION_DISMISSED) {
-            trustState = "已清除 ${conversation.title} 的通知"
-            showActionConfirmation(
-                title = "已清除通知",
-                detail = conversation.title
-            )
-            return
-        }
-        if (intent.action == SpotChatNotificationIntents.ACTION_MARK_READ) {
-            markConversationRead(conversation.id)
-            trustState = "已标为已读"
-            showActionConfirmation(
-                title = "已标为已读",
-                detail = conversation.title
-            )
-            return
-        }
-        val notificationAction =
-            when (intent.action) {
-                SpotChatNotificationIntents.ACTION_REPLY -> WearEntryAction.Reply
-                SpotChatNotificationIntents.ACTION_QUICK_REPLY -> WearEntryAction.QuickReply
-                else -> WearEntryAction.OpenChat
-            }
-        openConversationFromWearEntry(
-            conversation = conversation,
-            source = "通知",
-            action = notificationAction
-        )
 
-        if (intent.action == SpotChatNotificationIntents.ACTION_QUICK_REPLY) {
-            val replyText =
-                intent
-                    .getStringExtra(SpotChatNotificationIntents.EXTRA_QUICK_REPLY_TEXT)
-                    ?.trim()
-                    ?.take(MAX_CUSTOM_MESSAGE_CHARS)
-                    .orEmpty()
-            if (replyText.isNotBlank()) {
-                sendMessageToConversation(conversation, replyText)
-                trustState = "已快捷回复 ${conversation.title}"
+    fun executeAppEntryPlan(plan: AppEntryPlan) {
+        when (plan) {
+            AppEntryPlan.Ignore -> Unit
+
+            is AppEntryPlan.Recover ->
+                showWearEntryRecovery(
+                    source = plan.source.label,
+                    targetConversationId = plan.targetConversationId,
+                    actionLabel = plan.action.label
+                )
+
+            is AppEntryPlan.ShowConversationList -> {
+                appSurface = AppSurface.ConversationList
+                trustState =
+                    when (plan.action) {
+                        AppEntryAction.Voice -> "选择聊天后点麦克风录音"
+                        AppEntryAction.QuickReply -> "选择聊天后再快捷回复"
+                        else -> error("Unsupported conversation list entry action: ${plan.action}")
+                    }
+            }
+
+            is AppEntryPlan.OpenConversation -> {
+                val conversation = conversationById(plan.conversationId) ?: return
+                if (plan.source == AppEntrySource.Notification) {
+                    clearConversationAlerts(conversation.id)
+                }
+                openConversationFromWearEntry(
+                    conversation = conversation,
+                    source = plan.source.label,
+                    action = appEntryWearAction(plan.action)
+                )
+                if (plan.action == AppEntryAction.Voice) {
+                    trustState = "点麦克风开始语音"
+                }
+            }
+
+            is AppEntryPlan.MuteEightHours -> {
+                val conversation = conversationById(plan.conversationId) ?: return
+                setConversationMute(conversation, MutePreset.EightHours)
                 showActionConfirmation(
-                    title = "已快捷回复",
-                    detail = "${conversation.title} · ${notificationReplyPreview(replyText)}"
+                    title = "已静音 ${conversation.title}",
+                    detail = "8 小时内不再提醒"
                 )
             }
-            return
-        }
 
-        if (intent.action != SpotChatNotificationIntents.ACTION_REPLY) {
-            return
-        }
-        val replyText =
-            RemoteInput
-                .getResultsFromIntent(intent)
-                ?.getCharSequence(SpotChatNotificationIntents.EXTRA_REMOTE_REPLY)
-                ?.toString()
-                ?.trim()
-                ?.take(MAX_CUSTOM_MESSAGE_CHARS)
-                .orEmpty()
-        if (replyText.isNotBlank()) {
-            sendMessageToConversation(conversation, replyText)
-            trustState = "已回复 ${conversation.title}"
-            showActionConfirmation(
-                title = "已发送回复",
-                detail = "${conversation.title} · ${notificationReplyPreview(replyText)}"
-            )
-        }
-    }
-
-    fun handleRecentChatsEntry(request: WearEntryRequest.RecentChats) {
-        val conversationId = request.conversationId ?: return
-        val conversation =
-            conversationById(conversationId)
-                ?: return showWearEntryRecovery(
-                    source = "最近聊天 Tile",
-                    targetConversationId = conversationId,
-                    actionLabel = "打开聊天"
+            is AppEntryPlan.DismissNotification -> {
+                val conversation = conversationById(plan.conversationId) ?: return
+                clearConversationAlerts(conversation.id)
+                trustState = "已清除 ${conversation.title} 的通知"
+                showActionConfirmation(
+                    title = "已清除通知",
+                    detail = conversation.title
                 )
-        openConversationFromWearEntry(
-            conversation = conversation,
-            source = "最近聊天 Tile",
-            action = WearEntryAction.OpenChat
-        )
-    }
-
-    fun handleQuickVoiceEntry(request: WearEntryRequest.QuickVoice) {
-        val conversationId = request.conversationId
-        val conversation = conversationId?.let(::conversationById)
-        if (conversation == null) {
-            if (conversationId == null) {
-                appSurface = AppSurface.ConversationList
-                trustState = "选择聊天后点麦克风录音"
-                return
             }
-            showWearEntryRecovery(
-                source = "语音 Tile",
-                targetConversationId = conversationId,
-                actionLabel = "开始语音"
-            )
-            return
-        }
-        openConversationFromWearEntry(
-            conversation = conversation,
-            source = "语音 Tile",
-            action = WearEntryAction.Voice
-        )
-        trustState = "点麦克风开始语音"
-    }
 
-    fun handleQuickTextReplyEntry(request: WearEntryRequest.QuickTextReply) {
-        val conversationId = request.conversationId
-        val conversation = conversationId?.let(::conversationById)
-        if (conversation == null) {
-            if (conversationId == null) {
-                appSurface = AppSurface.ConversationList
-                trustState = "选择聊天后再快捷回复"
-                return
+            is AppEntryPlan.MarkRead -> {
+                val conversation = conversationById(plan.conversationId) ?: return
+                clearConversationAlerts(conversation.id)
+                markConversationRead(conversation.id)
+                trustState = "已标为已读"
+                showActionConfirmation(
+                    title = "已标为已读",
+                    detail = conversation.title
+                )
             }
-            showWearEntryRecovery(
-                source = "快捷回复 Tile",
-                targetConversationId = conversationId,
-                actionLabel = "快捷回复"
-            )
-            return
+
+            is AppEntryPlan.Reply -> {
+                val conversation = conversationById(plan.conversationId) ?: return
+                if (plan.kind != AppEntryReplyKind.WearQuickReply) {
+                    clearConversationAlerts(conversation.id)
+                }
+                openConversationFromWearEntry(
+                    conversation = conversation,
+                    source = plan.kind.source.label,
+                    action = appEntryWearAction(plan.kind.action)
+                )
+                if (plan.text.isBlank()) {
+                    if (plan.kind == AppEntryReplyKind.WearQuickReply) {
+                        trustState = "选择一句快捷回复"
+                    }
+                    return
+                }
+                if (plan.kind == AppEntryReplyKind.WearQuickReply) {
+                    clearConversationAlerts(conversation.id)
+                }
+                sendMessageToConversation(conversation, plan.text)
+                if (plan.kind == AppEntryReplyKind.NotificationReply) {
+                    trustState = "已回复 ${conversation.title}"
+                    showActionConfirmation(
+                        title = "已发送回复",
+                        detail = "${conversation.title} · ${notificationReplyPreview(plan.text)}"
+                    )
+                } else {
+                    trustState = "已快捷回复 ${conversation.title}"
+                    showActionConfirmation(
+                        title = "已快捷回复",
+                        detail = "${conversation.title} · ${notificationReplyPreview(plan.text)}"
+                    )
+                }
+            }
         }
-        openConversationFromWearEntry(
-            conversation = conversation,
-            source = "快捷回复 Tile",
-            action = WearEntryAction.QuickReply
-        )
-        val replyText =
-            request.replyText
-                ?.trim()
-                ?.take(MAX_CUSTOM_MESSAGE_CHARS)
-                .orEmpty()
-        if (replyText.isBlank()) {
-            trustState = "选择一句快捷回复"
-            return
-        }
-        clearConversationAlerts(conversation.id)
-        sendMessageToConversation(conversation, replyText)
-        trustState = "已快捷回复 ${conversation.title}"
-        showActionConfirmation(
-            title = "已快捷回复",
-            detail = "${conversation.title} · ${notificationReplyPreview(replyText)}"
-        )
     }
 
     LaunchedEffect(notificationIntent, trustedPeers.size, chatStateOperational) {
@@ -7027,52 +6956,20 @@ internal fun SpotChatApp(
             return@LaunchedEffect
         }
         val intent = notificationIntent ?: return@LaunchedEffect
-        val wearEntryResolution =
-            resolveWearEntryIntent(
-                fields =
-                    WearEntryIntentFields(
-                        recentChatsOpen =
-                            intent.getBooleanExtra(
-                                RecentChatsTileService.EXTRA_TILE_OPEN,
-                                false
-                            ),
-                        quickVoiceOpen =
-                            intent.getBooleanExtra(
-                                QuickVoiceTileService.EXTRA_VOICE_TILE_OPEN,
-                                false
-                            ),
-                        quickTextReplyOpen =
-                            intent.getBooleanExtra(
-                                QuickTextReplyTileService.EXTRA_TEXT_REPLY_TILE_OPEN,
-                                false
-                            ),
-                        token =
-                            intent.getStringExtra(
-                                SpotChatNotificationIntents.EXTRA_INTENT_TOKEN
-                            ),
-                        conversationId =
-                            intent.getStringExtra(
-                                SpotChatNotificationIntents.EXTRA_CONVERSATION_ID
-                            ),
-                        replyText =
-                            intent.getStringExtra(
-                                QuickTextReplyTileService.EXTRA_TILE_REPLY_TEXT
-                            )
-                    ),
+        val resolution =
+            resolveAppEntryIntent(
+                intent = intent,
                 isTokenValid = notificationTokenStore::isValid
             )
-        when (wearEntryResolution) {
-            is WearEntryIntentResolution.Accepted -> {
-                when (val request = wearEntryResolution.request) {
-                    is WearEntryRequest.RecentChats -> handleRecentChatsEntry(request)
-                    is WearEntryRequest.QuickVoice -> handleQuickVoiceEntry(request)
-                    is WearEntryRequest.QuickTextReply -> handleQuickTextReplyEntry(request)
-                }
-            }
-
-            WearEntryIntentResolution.NotWearEntry -> handleNotificationIntent(intent)
-            WearEntryIntentResolution.Rejected -> Unit
-        }
+        val plan =
+            planAppEntry(
+                resolution = resolution,
+                conversationExists = { conversationId ->
+                    conversationById(conversationId) != null
+                },
+                remoteReplyTextProvider = { notificationRemoteReplyText(intent) }
+            )
+        executeAppEntryPlan(plan)
         onNotificationIntentHandled(intent)
     }
 
