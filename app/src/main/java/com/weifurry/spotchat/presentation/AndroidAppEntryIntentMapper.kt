@@ -12,46 +12,54 @@ internal fun resolveAppEntryIntent(
     isTokenValid: (String?) -> Boolean
 ): AppEntryResolution =
     resolveAppEntryIntent(
-        fields =
-            AppEntryIntentFields(
-                action = intent.action,
-                token =
-                    intent.getStringExtra(
-                        SpotChatNotificationIntents.EXTRA_INTENT_TOKEN
-                    ),
-                conversationId =
-                    intent.getStringExtra(
-                        SpotChatNotificationIntents.EXTRA_CONVERSATION_ID
-                    ),
-                quickReplyText =
-                    intent.getStringExtra(
-                        SpotChatNotificationIntents.EXTRA_QUICK_REPLY_TEXT
-                    ),
-                recentChatsOpen =
-                    intent.getBooleanExtra(
-                        RecentChatsTileService.EXTRA_TILE_OPEN,
-                        false
-                    ),
-                quickVoiceOpen =
-                    intent.getBooleanExtra(
-                        QuickVoiceTileService.EXTRA_VOICE_TILE_OPEN,
-                        false
-                    ),
-                quickTextReplyOpen =
-                    intent.getBooleanExtra(
-                        QuickTextReplyTileService.EXTRA_TEXT_REPLY_TILE_OPEN,
-                        false
-                    ),
-                tileReplyText =
-                    intent.getStringExtra(
-                        QuickTextReplyTileService.EXTRA_TILE_REPLY_TEXT
-                    )
-            ),
+        fields = appEntryIntentFields(intent),
         isTokenValid = isTokenValid
     )
+
+internal fun isAppEntryCandidate(intent: Intent): Boolean =
+    isAppEntryCandidate(appEntryIntentFields(intent))
+
+internal fun appEntryEventId(intent: Intent): String? =
+    intent.getStringExtra(SpotChatNotificationIntents.EXTRA_ENTRY_EVENT_ID)
 
 internal fun notificationRemoteReplyText(intent: Intent): String? =
     RemoteInput
         .getResultsFromIntent(intent)
         ?.getCharSequence(SpotChatNotificationIntents.EXTRA_REMOTE_REPLY)
         ?.toString()
+
+private fun appEntryIntentFields(intent: Intent): AppEntryIntentFields =
+    AppEntryIntentFields(
+        action = intent.action,
+        token =
+            intent.getStringExtra(
+                SpotChatNotificationIntents.EXTRA_INTENT_TOKEN
+            ),
+        conversationId =
+            intent.getStringExtra(
+                SpotChatNotificationIntents.EXTRA_CONVERSATION_ID
+            ),
+        quickReplyText =
+            intent.getStringExtra(
+                SpotChatNotificationIntents.EXTRA_QUICK_REPLY_TEXT
+            ),
+        recentChatsOpen =
+            intent.getBooleanExtra(
+                RecentChatsTileService.EXTRA_TILE_OPEN,
+                false
+            ),
+        quickVoiceOpen =
+            intent.getBooleanExtra(
+                QuickVoiceTileService.EXTRA_VOICE_TILE_OPEN,
+                false
+            ),
+        quickTextReplyOpen =
+            intent.getBooleanExtra(
+                QuickTextReplyTileService.EXTRA_TEXT_REPLY_TILE_OPEN,
+                false
+            ),
+        tileReplyText =
+            intent.getStringExtra(
+                QuickTextReplyTileService.EXTRA_TILE_REPLY_TEXT
+            )
+    )

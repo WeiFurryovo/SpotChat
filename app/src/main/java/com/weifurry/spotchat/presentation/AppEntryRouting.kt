@@ -114,6 +114,31 @@ internal sealed interface AppEntryPlan {
     ) : AppEntryPlan
 }
 
+internal fun isAppEntryCandidate(fields: AppEntryIntentFields): Boolean =
+    SpotChatNotificationIntents.handles(fields.action) ||
+        fields.recentChatsOpen ||
+        fields.quickVoiceOpen ||
+        fields.quickTextReplyOpen
+
+internal fun AppEntryPlan.requiresPersistentEventClaim(): Boolean =
+    when (this) {
+        is AppEntryPlan.Reply -> text.isNotBlank()
+        is AppEntryPlan.MuteEightHours,
+        is AppEntryPlan.DismissNotification,
+        is AppEntryPlan.MarkRead -> true
+
+        is AppEntryPlan.Recover ->
+            action == AppEntryAction.Reply ||
+                action == AppEntryAction.QuickReply ||
+                action == AppEntryAction.MarkRead ||
+                action == AppEntryAction.Mute ||
+                action == AppEntryAction.Dismiss
+
+        AppEntryPlan.Ignore,
+        is AppEntryPlan.ShowConversationList,
+        is AppEntryPlan.OpenConversation -> false
+    }
+
 internal fun resolveAppEntryIntent(
     fields: AppEntryIntentFields,
     isTokenValid: (String?) -> Boolean

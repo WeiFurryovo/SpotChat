@@ -1120,8 +1120,10 @@ private fun restorePersistedChatState(
 
 @Composable
 internal fun SpotChatApp(
-    notificationIntent: Intent? = null,
-    onNotificationIntentHandled: (Intent) -> Unit = {}
+    pendingAppEntry: PendingAppEntry<Intent>? = null,
+    claimAppEntry: (Long) -> Intent? = { null },
+    claimAppEntryEvent: (Intent) -> Boolean = { true },
+    completeAppEntry: (Long) -> Unit = {}
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
@@ -6951,26 +6953,33 @@ internal fun SpotChatApp(
         }
     }
 
-    LaunchedEffect(notificationIntent, trustedPeers.size, chatStateOperational) {
+    LaunchedEffect(pendingAppEntry?.id, trustedPeers.size, chatStateOperational) {
         if (!chatStateOperational) {
             return@LaunchedEffect
         }
-        val intent = notificationIntent ?: return@LaunchedEffect
-        val resolution =
-            resolveAppEntryIntent(
-                intent = intent,
-                isTokenValid = notificationTokenStore::isValid
-            )
-        val plan =
-            planAppEntry(
-                resolution = resolution,
-                conversationExists = { conversationId ->
-                    conversationById(conversationId) != null
-                },
-                remoteReplyTextProvider = { notificationRemoteReplyText(intent) }
-            )
-        executeAppEntryPlan(plan)
-        onNotificationIntentHandled(intent)
+        val entry = pendingAppEntry ?: return@LaunchedEffect
+        val intent = claimAppEntry(entry.id) ?: return@LaunchedEffect
+        try {
+            val resolution =
+                resolveAppEntryIntent(
+                    intent = intent,
+                    isTokenValid = notificationTokenStore::isValid
+                )
+            val plan =
+                planAppEntry(
+                    resolution = resolution,
+                    conversationExists = { conversationId ->
+                        conversationById(conversationId) != null
+                    },
+                    remoteReplyTextProvider = { notificationRemoteReplyText(intent) }
+                )
+            if (plan.requiresPersistentEventClaim() && !claimAppEntryEvent(intent)) {
+                return@LaunchedEffect
+            }
+            executeAppEntryPlan(plan)
+        } finally {
+            completeAppEntry(entry.id)
+        }
     }
 
     LaunchedEffect(isRecordingVoice, recordingStartedAtMillis) {
